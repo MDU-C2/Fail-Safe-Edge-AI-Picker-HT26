@@ -1,0 +1,1950 @@
+{
+  "version": "2.6.2",
+  "summary": {
+    "title": "Fail-safe edge-AI vision dishwasher-picker robot",
+    "owner": "MDU",
+    "description": "Full system, ai dishwasher with cloud compute and edge backups/failsafes to ensure proper operation of robot",
+    "id": 0
+  },
+  "detail": {
+    "contributors": [],
+    "diagrams": [
+      {
+        "id": 0,
+        "title": "Gatewayed STRIDE",
+        "diagramType": "STRIDE",
+        "placeholder": "New STRIDE diagram description",
+        "thumbnail": "./public/content/images/thumbnail.stride.jpg",
+        "version": "2.6.2",
+        "cells": [
+          {
+            "position": {
+              "x": 1290,
+              "y": 210
+            },
+            "size": {
+              "width": 60,
+              "height": 60
+            },
+            "attrs": {
+              "text": {
+                "text": "Robot"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 0,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "eecf19fc-aa6b-4962-b40d-20e63b56450e"
+                },
+                {
+                  "group": "right",
+                  "id": "e2e464ee-ddb8-4447-b5e6-c6f20e3a2e1f"
+                },
+                {
+                  "group": "bottom",
+                  "id": "63fe3f0e-9f96-4f52-bc6d-55b453279349"
+                },
+                {
+                  "group": "left",
+                  "id": "69b07427-92c1-4597-947b-9ffe6c6b6850"
+                }
+              ]
+            },
+            "id": "8bad6d75-95b8-42a5-bfeb-a4a810b922e8",
+            "data": {
+              "type": "tm.Process",
+              "name": "Robot",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "03ec7d5a-c716-48eb-a29e-2c586ae13080",
+                  "title": "Spoofed Robot Commands",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Spoofing",
+                  "description": "An attacker attempts to impersonate the Robot Gateway and transmit commands directly to the robot. If the robot cannot verify the identity of the sender, unauthorized instructions may be accepted, resulting in unintended robot movement, disruption of operations, or physical damage.",
+                  "mitigation": "The robot should only accept connections from the Robot Gateway over a dedicated network segment. Source authentication should be enforced using mutual authentication or allow-listed endpoints, while network segmentation and firewall rules should prevent unauthorized devices from communicating with the robot.\n",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 11,
+                  "score": ""
+                },
+                {
+                  "id": "d49b1190-53bc-4b24-a798-29a20af94234",
+                  "title": "Compromised Robot Gateway",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "description": "An attacker gains control of the Robot Gateway and uses its trusted relationship with the robot to issue unauthorized commands. Since the gateway is the sole command path, the attacker effectively gains control over robot operations.",
+                  "mitigation": "Harden the gateway through secure configuration, software integrity controls, monitoring, and strict access management. Commands should also be validated against safety policies before reaching the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 16,
+                  "score": ""
+                },
+                {
+                  "id": "00f832a8-7f1a-4a59-8f1c-500efd592769",
+                  "title": "Unsafe but Authenticated Commands",
+                  "status": "Open",
+                  "severity": "TBD",
+                  "type": "Tampering",
+                  "description": "The robot receives a command from a trusted source that is syntactically valid but would result in unsafe behavior, such as collisions, excessive speed, or movement outside the intended workspace.",
+                  "mitigation": "Validate all incoming commands against safety constraints, operational limits, and workspace restrictions before execution.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 17,
+                  "score": ""
+                },
+                {
+                  "id": "2496e06c-b4b8-426e-8469-f7fcf169a347",
+                  "title": "Unauthorized Physical Access to Robot Network Port",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Spoofing",
+                  "description": "An attacker gains physical access to the robot's Ethernet interface and connects an unauthorized device to the network, potentially bypassing logical security controls.",
+                  "mitigation": "Restrict physical access to the robot and networking equipment through controlled access areas and secured enclosures. Network access controls should prevent unauthorized devices from communicating with the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 18,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 2,
+                "tampering": 1,
+                "repudiation": 0,
+                "informationDisclosure": 0,
+                "denialOfService": 0,
+                "elevationOfPrivilege": 1
+              }
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "RGB-D",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "protocol": "",
+              "threats": [
+                {
+                  "id": "86104aa5-b4d9-492d-b6fb-27bbbaf2b134",
+                  "title": "Manipulated RGB-D Data",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker modifies RGB-D data transmitted from the camera to an AI model. The altered data may cause incorrect object detection, pose estimation, or scene understanding, resulting in inappropriate robot commands being generated.",
+                  "mitigation": "Communications between the camera and AI systems should be authenticated and integrity protected. AI-generated commands should also be validated independently by the Robot Gateway before reaching the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 6,
+                  "score": ""
+                },
+                {
+                  "id": "a4273253-fd9d-4006-81f4-da0a971e217a",
+                  "title": "Camera Feed Interception",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "An attacker gains access to RGB-D streams transmitted across the network. Captured data may reveal operational procedures, robot activities, facility layouts, or information about manipulated objects.",
+                  "mitigation": "Camera traffic should be encrypted and restricted to authorized recipients. Network segmentation should limit visibility of camera streams to approved systems only.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 29,
+                  "score": ""
+                },
+                {
+                  "id": "c0a2d7ac-f6f0-40c1-a91f-6449dfbe992f",
+                  "title": "Camera Stream Unavailable",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "description": "The camera stream becomes unavailable due to network failures, hardware faults, power loss, or malicious interference. AI systems may lose visibility of the environment and become unable to generate reliable instructions.",
+                  "mitigation": "AI models should detect missing or stale image data and stop generating movement instructions. The Robot Gateway should reject commands generated from outdated sensor information and transition the system to a safe state if required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 30,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": []
+            },
+            "labels": [
+              "RGB-D"
+            ],
+            "id": "425c14a1-0eba-4787-9869-c73fae8073e7",
+            "source": {
+              "cell": "4ae43cce-7ffa-43b3-b59d-5bbf4cb28062",
+              "port": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+            },
+            "target": {
+              "cell": "99f3b735-7e4a-428f-a159-6f106f816738",
+              "port": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+            },
+            "vertices": [
+              {
+                "x": 990,
+                "y": 300
+              },
+              {
+                "x": 970,
+                "y": 70
+              }
+            ]
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Internet Trust Boundary",
+              "description": "This represents the WWW and all potential connections to it",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [
+                "4a04cb13-cd34-487b-a489-d4454a77aba8",
+                "6348534d-9750-4412-92da-3b8f3cea87eb"
+              ],
+              "containedElements": [
+                "211b019a-841d-4cc8-a713-050000b1033b"
+              ]
+            },
+            "labels": [
+              "Internet Trust Boundary"
+            ],
+            "id": "30adc1a0-3e92-49fe-a4ec-77e2970f6be4",
+            "source": {
+              "x": 320,
+              "y": 0
+            },
+            "target": {
+              "x": 20,
+              "y": 590
+            },
+            "vertices": [
+              {
+                "x": 360,
+                "y": 190
+              },
+              {
+                "x": 280,
+                "y": 430
+              }
+            ]
+          },
+          {
+            "shape": "trust-boundary-curve",
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Boundary",
+              "name": "Operational Technology (OT) Network Boundary",
+              "description": "Boundary for the Westermo Lynx Network Switch. This seprates all devices connected to the switch and the wider Internet",
+              "isTrustBoundary": true,
+              "hasOpenThreats": false,
+              "crossingFlows": [
+                "e04af627-5679-4652-af10-7a5710328249",
+                "cb9ec0ab-60b8-435e-989f-8eb3c071e6f0"
+              ],
+              "containedElements": [
+                "90d67f38-9a5a-434e-bf71-9d971e230be6"
+              ]
+            },
+            "labels": [
+              "Operational Technology (OT) Network Boundary"
+            ],
+            "id": "6ac31d1e-cae4-4c63-956c-dcff5d91d835",
+            "source": {
+              "x": 550,
+              "y": 0
+            },
+            "target": {
+              "x": 750,
+              "y": 610
+            },
+            "vertices": [
+              {
+                "x": 550,
+                "y": 420
+              }
+            ]
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "Robot Instructions",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "protocol": "",
+              "threats": [
+                {
+                  "id": "574482cc-31e9-4e8f-a287-07953abd3771",
+                  "title": "Modified Commands in Transit",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker intercepts traffic between the Robot Gateway and the robot and modifies valid instructions before they are executed. A legitimate movement command could therefore be altered into an unintended action while still appearing to originate from a trusted source.",
+                  "mitigation": "Communications between the gateway and robot should be protected using authenticated encryption. Message integrity verification and cryptographic authentication should ensure that any modification of commands is detected before execution.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 12,
+                  "score": ""
+                },
+                {
+                  "id": "7172e0ca-75cd-4001-aa71-4e814c531c3c",
+                  "title": "Replay of Valid Robot Commands",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Tampering",
+                  "description": "An attacker captures legitimate communication between the Robot Gateway and the robot and retransmits previously valid commands. Commands may then be executed outside their intended operational context.",
+                  "mitigation": "Use timestamps, sequence numbers, or unique message identifiers to detect and reject replayed messages.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 13,
+                  "score": ""
+                },
+                {
+                  "id": "0f197afe-a1a6-43da-86cb-06c3523e07bc",
+                  "title": "Loss of Communication with Gateway",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "Communication between the Robot Gateway and the robot may be disrupted through network failures, cable disconnection, hardware faults, or malicious traffic, preventing the robot from receiving instructions.",
+                  "mitigation": "Implement connection monitoring through heartbeats and communication timeouts. When communication is lost, the robot should enter a predefined safe state.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 14,
+                  "score": ""
+                },
+                {
+                  "id": "de916d6e-ecd5-413f-9283-b9989d4d8c8b",
+                  "title": "Eavesdropping on Robot Communications",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "An attacker monitors traffic between the Robot Gateway and the robot to obtain operational information, command data, status messages, or network details that could assist future attacks.",
+                  "mitigation": "Encrypt all communications between the gateway and robot using secure protocols that provide confidentiality and integrity protection.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 15,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [],
+              "threatFrequency": {
+                "tampering": 3,
+                "informationDisclosure": 1,
+                "denialOfService": 1
+              }
+            },
+            "labels": [
+              "Robot Instructions"
+            ],
+            "id": "5be55394-874a-4d07-aca1-7711a5bd2140",
+            "source": {
+              "cell": "02587ddf-03b2-436f-8310-e6c49f759cae",
+              "port": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+            },
+            "target": {
+              "cell": "8bad6d75-95b8-42a5-bfeb-a4a810b922e8",
+              "port": "69b07427-92c1-4597-947b-9ffe6c6b6850"
+            },
+            "vertices": [
+              {
+                "x": 1120,
+                "y": 280
+              }
+            ]
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "Instructions to Gateway",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": true,
+              "isPublicNetwork": false,
+              "protocol": "HTTPS",
+              "threats": [
+                {
+                  "id": "d0289743-89cc-462a-9d0b-940987a5016e",
+                  "title": "Modified Local AI Instructions",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Tampering",
+                  "description": "An attacker with access to the local network alters instructions sent from the Raspberry Pi model to the Robot Gateway.",
+                  "mitigation": "Authenticate and encrypt communications within the local network and verify message integrity at the gateway.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 7,
+                  "score": ""
+                },
+                {
+                  "id": "02569f24-26f0-4c33-ba9d-bfb306c3862c",
+                  "title": "Disclosure of AI Outputs",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Information disclosure",
+                  "description": "An attacker monitors internal communications and gains visibility into AI-generated instructions or operational state information.",
+                  "mitigation": "Use encrypted communication channels and restrict network access to authorized devices.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 25,
+                  "score": ""
+                },
+                {
+                  "id": "f13d5459-81cd-4e69-b80e-af55cbe34c72",
+                  "title": "Raspberry Pi Unavailable",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "The Raspberry Pi becomes unavailable due to hardware failure, software faults, power loss, or network issues, preventing it from acting as the secondary compute resource.",
+                  "mitigation": "Continuously monitor connection health and automatically transition to the tertiary Lynx-hosted model when the secondary system becomes unavailable.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 26,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [],
+              "threatFrequency": {
+                "tampering": 1,
+                "informationDisclosure": 2,
+                "denialOfService": 1
+              }
+            },
+            "labels": [
+              "Instructions to Gateway"
+            ],
+            "id": "51507408-858b-4bcc-af79-8a3ccaebaefc",
+            "source": {
+              "cell": "99f3b735-7e4a-428f-a159-6f106f816738",
+              "port": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+            },
+            "target": {
+              "cell": "02587ddf-03b2-436f-8310-e6c49f759cae",
+              "port": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "Instructions to Gateway",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": true,
+              "isPublicNetwork": false,
+              "protocol": "HTTPS",
+              "threats": [
+                {
+                  "id": "1069fe48-1eb8-4d8a-bdea-de17251d8fd1",
+                  "title": "Modified Tertiary AI Instructions",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Tampering",
+                  "description": "An attacker modifies instructions generated by the tertiary Lynx-hosted model before they reach the gateway process.",
+                  "mitigation": "Use authenticated inter-process communication or encrypted local communications and verify message integrity before processing.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 8,
+                  "score": ""
+                },
+                {
+                  "id": "cf51d562-885a-46c6-927f-788b1fecdff3",
+                  "title": "Disclosure of Local AI Communications",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Information disclosure",
+                  "description": "Internal model outputs or robot command proposals are exposed through local communication channels or misconfigurations.",
+                  "mitigation": "Restrict access to containers, isolate workloads, and limit visibility of internal communication channels.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 27,
+                  "score": ""
+                },
+                {
+                  "id": "62ba7a2d-b813-4160-8a9e-22a01cfc2e2f",
+                  "title": "Tertiary AI Service Unavailable",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Denial of service",
+                  "description": "The Lynx-hosted AI becomes unavailable due to software faults, resource exhaustion, or container failures.",
+                  "mitigation": "Implement health monitoring and restart policies. If the tertiary service is unavailable, the gateway should transition the robot into a safe state rather than continuing without a valid command source.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 28,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [
+                "6ac31d1e-cae4-4c63-956c-dcff5d91d835"
+              ],
+              "threatFrequency": {
+                "tampering": 1,
+                "informationDisclosure": 2,
+                "denialOfService": 1
+              }
+            },
+            "labels": [
+              "Instructions to Gateway"
+            ],
+            "id": "e04af627-5679-4652-af10-7a5710328249",
+            "source": {
+              "cell": "90d67f38-9a5a-434e-bf71-9d971e230be6",
+              "port": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+            },
+            "target": {
+              "cell": "02587ddf-03b2-436f-8310-e6c49f759cae",
+              "port": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+            },
+            "vertices": []
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "RGB-D",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": false,
+              "isPublicNetwork": true,
+              "protocol": "",
+              "threats": [
+                {
+                  "id": "86104aa5-b4d9-492d-b6fb-27bbbaf2b134",
+                  "title": "Manipulated RGB-D Data",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker modifies RGB-D data transmitted from the camera to an AI model. The altered data may cause incorrect object detection, pose estimation, or scene understanding, resulting in inappropriate robot commands being generated.",
+                  "mitigation": "Communications between the camera and AI systems should be authenticated and integrity protected. AI-generated commands should also be validated independently by the Robot Gateway before reaching the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 6,
+                  "score": ""
+                },
+                {
+                  "id": "a4273253-fd9d-4006-81f4-da0a971e217a",
+                  "title": "Camera Feed Interception",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "An attacker gains access to RGB-D streams transmitted across the network. Captured data may reveal operational procedures, robot activities, facility layouts, or information about manipulated objects.",
+                  "mitigation": "Camera traffic should be encrypted and restricted to authorized recipients. Network segmentation should limit visibility of camera streams to approved systems only.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 29,
+                  "score": ""
+                },
+                {
+                  "id": "c0a2d7ac-f6f0-40c1-a91f-6449dfbe992f",
+                  "title": "Camera Stream Unavailable",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "description": "The camera stream becomes unavailable due to network failures, hardware faults, power loss, or malicious interference. AI systems may lose visibility of the environment and become unable to generate reliable instructions.",
+                  "mitigation": "AI models should detect missing or stale image data and stop generating movement instructions. The Robot Gateway should reject commands generated from outdated sensor information and transition the system to a safe state if required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 30,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [
+                "30adc1a0-3e92-49fe-a4ec-77e2970f6be4"
+              ],
+              "threatFrequency": {
+                "tampering": 1,
+                "informationDisclosure": 2,
+                "denialOfService": 1
+              }
+            },
+            "labels": [
+              "RGB-D"
+            ],
+            "id": "4a04cb13-cd34-487b-a489-d4454a77aba8",
+            "source": {
+              "cell": "4ae43cce-7ffa-43b3-b59d-5bbf4cb28062",
+              "port": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+            },
+            "target": {
+              "cell": "211b019a-841d-4cc8-a713-050000b1033b",
+              "port": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+            },
+            "vertices": [
+              {
+                "x": 330,
+                "y": 400
+              }
+            ]
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": ""
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "RGB-D",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": false,
+              "isEncrypted": false,
+              "isPublicNetwork": false,
+              "protocol": "",
+              "threats": [
+                {
+                  "id": "86104aa5-b4d9-492d-b6fb-27bbbaf2b134",
+                  "title": "Manipulated RGB-D Data",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker modifies RGB-D data transmitted from the camera to an AI model. The altered data may cause incorrect object detection, pose estimation, or scene understanding, resulting in inappropriate robot commands being generated.",
+                  "mitigation": "Communications between the camera and AI systems should be authenticated and integrity protected. AI-generated commands should also be validated independently by the Robot Gateway before reaching the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 6,
+                  "score": ""
+                },
+                {
+                  "id": "a4273253-fd9d-4006-81f4-da0a971e217a",
+                  "title": "Camera Feed Interception",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "An attacker gains access to RGB-D streams transmitted across the network. Captured data may reveal operational procedures, robot activities, facility layouts, or information about manipulated objects.",
+                  "mitigation": "Camera traffic should be encrypted and restricted to authorized recipients. Network segmentation should limit visibility of camera streams to approved systems only.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 29,
+                  "score": ""
+                },
+                {
+                  "id": "c0a2d7ac-f6f0-40c1-a91f-6449dfbe992f",
+                  "title": "Camera Stream Unavailable",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "description": "The camera stream becomes unavailable due to network failures, hardware faults, power loss, or malicious interference. AI systems may lose visibility of the environment and become unable to generate reliable instructions.",
+                  "mitigation": "AI models should detect missing or stale image data and stop generating movement instructions. The Robot Gateway should reject commands generated from outdated sensor information and transition the system to a safe state if required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 30,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [
+                "6ac31d1e-cae4-4c63-956c-dcff5d91d835"
+              ],
+              "threatFrequency": {
+                "tampering": 0,
+                "informationDisclosure": 0,
+                "denialOfService": 0
+              }
+            },
+            "labels": [
+              "RGB-D"
+            ],
+            "id": "cb9ec0ab-60b8-435e-989f-8eb3c071e6f0",
+            "source": {
+              "cell": "4ae43cce-7ffa-43b3-b59d-5bbf4cb28062",
+              "port": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+            },
+            "target": {
+              "cell": "90d67f38-9a5a-434e-bf71-9d971e230be6",
+              "port": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+            }
+          },
+          {
+            "shape": "flow",
+            "attrs": {
+              "line": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "targetMarker": {
+                  "name": "block"
+                },
+                "sourceMarker": {
+                  "name": "block"
+                },
+                "strokeDasharray": null
+              }
+            },
+            "width": 200,
+            "height": 100,
+            "zIndex": 10,
+            "connector": "smooth",
+            "data": {
+              "type": "tm.Flow",
+              "name": "Instructions to Gateway",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "isBidirectional": true,
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "protocol": "HTTPS",
+              "threats": [
+                {
+                  "id": "d8a84cf5-862d-47ea-ac55-6c769ab1ef77",
+                  "title": "Cloud Commands Modified in Transit",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker intercepts communications between the cloud-based AI and the Robot Gateway and modifies generated instructions before they are processed by the gateway.",
+                  "mitigation": "All communications should use authenticated encryption with certificate validation to ensure commands cannot be modified undetected.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 5,
+                  "score": ""
+                },
+                {
+                  "id": "abd8a1a4-cc11-4dcc-b658-31aa4e1b002d",
+                  "title": "Exposure of Robot Data",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "Robot state information, or command traffic transmitted to the cloud may be intercepted and observed by unauthorized parties.",
+                  "mitigation": "Encrypt all traffic and limit transmitted information to the minimum necessary for model operation.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 23,
+                  "score": ""
+                },
+                {
+                  "id": "dd7aaf9a-e1e8-4311-bd4c-935e93409018",
+                  "title": "Cloud Service Unavailable",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "Internet outages, cloud platform outages, or network disruptions may prevent communication between the primary AI and the gateway.",
+                  "mitigation": "The gateway should automatically fail over to the Raspberry Pi model and continue operation using local resources.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 24,
+                  "score": ""
+                }
+              ],
+              "trustBoundaryIds": [
+                "30adc1a0-3e92-49fe-a4ec-77e2970f6be4"
+              ],
+              "threatFrequency": {
+                "tampering": 1,
+                "informationDisclosure": 3,
+                "denialOfService": 2
+              }
+            },
+            "labels": [
+              "Instructions to Gateway"
+            ],
+            "id": "6348534d-9750-4412-92da-3b8f3cea87eb",
+            "source": {
+              "cell": "211b019a-841d-4cc8-a713-050000b1033b",
+              "port": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+            },
+            "target": {
+              "cell": "02587ddf-03b2-436f-8310-e6c49f759cae",
+              "port": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+            },
+            "vertices": [
+              {
+                "x": 450,
+                "y": 275
+              }
+            ]
+          },
+          {
+            "position": {
+              "x": 720,
+              "y": -9.999999999999993
+            },
+            "size": {
+              "width": 100,
+              "height": 80
+            },
+            "attrs": {
+              "text": {
+                "text": "RPI model\nSecondary"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 14,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+                },
+                {
+                  "group": "right",
+                  "id": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+                },
+                {
+                  "group": "bottom",
+                  "id": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+                },
+                {
+                  "group": "left",
+                  "id": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+                }
+              ]
+            },
+            "id": "99f3b735-7e4a-428f-a159-6f106f816738",
+            "data": {
+              "type": "tm.Process",
+              "name": "RPI model\nSecondary",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "f77b15a9-e88e-46de-9a0e-e1aebfe6ea59",
+                  "title": "Raspberry Pi Model Compromise",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "description": "An attacker gains unauthorized access to the Raspberry Pi model container or host system and is able to manipulate model outputs, configuration, or runtime behavior. During failover scenarios, this could allow malicious or unsafe instructions to be forwarded to the Robot Gateway.",
+                  "mitigation": "The Raspberry Pi should be hardened through secure configuration, restricted administrative access, container isolation, and regular software updates. Commands generated by the model should continue to undergo validation by the Robot Gateway before being considered for execution.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 40,
+                  "score": ""
+                },
+                {
+                  "id": "94bf6cdb-843f-496a-9974-540edb82361c",
+                  "title": "Generation of Unsafe Commands",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Tampering",
+                  "description": "The Raspberry Pi model generates commands that are operationally unsafe due to software defects, incorrect inference results, corrupted inputs, or unexpected operating conditions. These commands may be accepted as valid despite creating safety risks.",
+                  "mitigation": "The Robot Gateway should independently validate all received commands against safety constraints, workspace limitations, collision avoidance rules, and operational policies.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 41,
+                  "score": ""
+                },
+                {
+                  "id": "c29b6003-70ee-4643-adda-84d4fa3feba4",
+                  "title": "Unauthorized Modification of Model Configuration",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker modifies model parameters, configuration files, prompts, or supporting software components, causing the Raspberry Pi model to behave differently than intended. This may result in degraded performance or generation of unsafe instructions.",
+                  "mitigation": "Configuration files should be protected through access controls and integrity verification. Administrative access should be restricted to authorized personnel and configuration changes should be logged.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 42,
+                  "score": ""
+                },
+                {
+                  "id": "3d5113da-8561-4a87-b436-c532fd8c321a",
+                  "title": "Disclosure of Perception Data",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "RGB-D data, inference outputs, object information, or operational state data processed by the Raspberry Pi may be exposed through logs, debugging interfaces, or unauthorized access to the system.",
+                  "mitigation": "Access to stored and processed data should be limited to authorized users. Unnecessary services should be disabled and sensitive information should not be retained longer than required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 43,
+                  "score": ""
+                },
+                {
+                  "id": "717dae26-0b15-4269-92f8-99b6fb6bee15",
+                  "title": "Disclosure of Generated Commands",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "Robot command proposals produced by the Raspberry Pi model may be disclosed to unauthorized users through logs, APIs, or software misconfigurations. This information could reveal system behavior and assist future attacks.",
+                  "mitigation": "Access to operational data and logs should be restricted and monitored. Generated outputs should only be accessible to authorized components of the system.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 44,
+                  "score": ""
+                },
+                {
+                  "id": "5a51f056-8f56-4b6b-b341-4ec3d6cd5b17",
+                  "title": "Raspberry Pi Resource Exhaustion",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "High processing loads, insufficient memory, excessive requests, or software faults may exhaust the Raspberry Pi's available resources and prevent timely generation of commands.",
+                  "mitigation": "Resource limits, service monitoring, and health checks should be implemented. The Robot Gateway should detect degraded model performance and switch to the tertiary model when required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 45,
+                  "score": ""
+                },
+                {
+                  "id": "bdf5a996-7c37-4ced-9447-7f2f40252340",
+                  "title": "Raspberry Pi Model Unavailable",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "The Raspberry Pi model may become unavailable due to hardware failure, container crashes, operating system issues, power loss, or network connectivity problems. This prevents the secondary decision-making path from being used.",
+                  "mitigation": "The system should continuously monitor model availability and automatically fail over to the Lynx-hosted tertiary model when the Raspberry Pi is unavailable.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 46,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 0,
+                "tampering": 2,
+                "repudiation": 0,
+                "informationDisclosure": 2,
+                "denialOfService": 2,
+                "elevationOfPrivilege": 1
+              }
+            }
+          },
+          {
+            "position": {
+              "x": 150,
+              "y": 200
+            },
+            "size": {
+              "width": 110,
+              "height": 110
+            },
+            "attrs": {
+              "text": {
+                "text": "Cloud model\nPrimary"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 15,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+                },
+                {
+                  "group": "right",
+                  "id": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+                },
+                {
+                  "group": "bottom",
+                  "id": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+                },
+                {
+                  "group": "left",
+                  "id": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+                }
+              ]
+            },
+            "id": "211b019a-841d-4cc8-a713-050000b1033b",
+            "data": {
+              "type": "tm.Process",
+              "name": "Cloud model\nPrimary",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "d96fd1f9-5b9c-433d-bff9-da08edf2715a",
+                  "title": "Cloud Model Compromise",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "description": "An attacker gains unauthorized access to the cloud model environment and is able to manipulate model behaviour, generated instructions, or associated services. Because the cloud model serves as the primary decision-making component, a compromise could result in the generation of unsafe or malicious robot commands.",
+                  "mitigation": "The cloud environment should be protected through strong authentication, access controls, network restrictions, and continuous security monitoring. Commands generated by the cloud model should always be independently validated by the Robot Gateway before being considered for execution.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 34,
+                  "score": ""
+                },
+                {
+                  "id": "0680c1a7-76b9-42f6-8aa2-2ebfbf952621",
+                  "title": "Generation of Unsafe Commands",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Tampering",
+                  "description": "The cloud model generates commands that are syntactically correct but operationally unsafe due to model error, unexpected inputs, hallucinations, or incorrect reasoning. These commands may result in hazardous robot actions if accepted without verification.",
+                  "mitigation": "The Robot Gateway should validate all commands against predefined safety constraints, workspace limits, and operational policies before forwarding instructions to the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 35,
+                  "score": ""
+                },
+                {
+                  "id": "4c92ac05-3ca6-469c-8d59-aca3a7e790e4",
+                  "title": "Disclosure of Camera Data",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Information disclosure",
+                  "description": "The cloud model processes RGB-D data originating from the local environment. Unauthorized access to the cloud environment could expose camera feeds, scene information, object locations, or operational data that may be considered sensitive.",
+                  "mitigation": "Only the minimum required data should be transmitted to the cloud. Data should be encrypted during transmission and access to stored information should be restricted through appropriate authorization controls.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 36,
+                  "score": ""
+                },
+                {
+                  "id": "1252db5e-9c24-4459-a39e-c5258496283a",
+                  "title": "Disclosure of Robot Commands",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "Generated robot instructions and decision outputs may be exposed through logs, debugging interfaces, APIs, or unauthorized access to cloud resources. This information could assist an attacker in understanding system behaviour and planning future attacks.",
+                  "mitigation": "Access to logs and operational data should be restricted to authorized users. Sensitive outputs should be protected and retained only as long as necessary.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 37,
+                  "score": ""
+                },
+                {
+                  "id": "b69f60c3-f564-43c5-ad14-03dc0a48e932",
+                  "title": "Cloud Model Unavailable",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "The cloud model may become unavailable due to internet outages, cloud-provider disruptions, resource exhaustion, service failures, or malicious attacks. As the primary compute resource, this would prevent normal operation through the preferred processing path.",
+                  "mitigation": "The system should automatically transition to the Raspberry Pi secondary model when the cloud model becomes unavailable. Health monitoring and connectivity checks should detect failures and trigger failover procedures.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 38,
+                  "score": ""
+                },
+                {
+                  "id": "f077b77a-1ddb-4347-915f-658fc465b321",
+                  "title": "Excessive Resource Consumption",
+                  "status": "Open",
+                  "severity": "TBD",
+                  "type": "Denial of service",
+                  "description": "Unexpected workloads, malformed requests, or malicious activities may consume excessive computational resources within the cloud environment, degrading model performance or preventing timely generation of commands.",
+                  "mitigation": "Resource limits, monitoring, request validation, and scaling mechanisms should be implemented to ensure predictable service availability under varying workloads.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 39,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 0,
+                "tampering": 1,
+                "repudiation": 0,
+                "informationDisclosure": 2,
+                "denialOfService": 2,
+                "elevationOfPrivilege": 1
+              }
+            }
+          },
+          {
+            "position": {
+              "x": 780,
+              "y": 185
+            },
+            "size": {
+              "width": 120,
+              "height": 110
+            },
+            "attrs": {
+              "text": {
+                "text": "Robot Gateway"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 16,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+                },
+                {
+                  "group": "right",
+                  "id": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+                },
+                {
+                  "group": "bottom",
+                  "id": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+                },
+                {
+                  "group": "left",
+                  "id": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+                }
+              ]
+            },
+            "id": "02587ddf-03b2-436f-8310-e6c49f759cae",
+            "data": {
+              "type": "tm.Process",
+              "name": "Robot Gateway",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "7aac02b9-64b4-42d8-bb96-ea39625999ce",
+                  "title": "Execution of Unauthorized Control Commands",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Elevation of privilege",
+                  "description": "An attacker gains access to the Robot Gateway and is able to execute commands with the privileges of the gateway itself. Since the gateway is responsible for selecting and forwarding robot instructions, successful exploitation could allow complete control over robot behaviour regardless of which AI produced the command.",
+                  "mitigation": "The gateway should follow the principle of least privilege and run only the services required for operation. Access controls, container isolation, software hardening, and security monitoring should be implemented to reduce the likelihood and impact of compromise.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 19,
+                  "score": ""
+                },
+                {
+                  "id": "f81887f3-3251-4c75-be70-4f93ad4d8f90",
+                  "title": "Unsafe AI Command Acceptance",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Tampering",
+                  "description": "The Robot Gateway receives instructions from one of the AI systems that are syntactically valid but physically unsafe. Without independent validation, dangerous commands could be forwarded directly to the robot.",
+                  "mitigation": "The gateway should act as a validation layer that verifies workspace limits, speed constraints, collision rules, and operational policies before issuing commands to the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 20,
+                  "score": ""
+                },
+                {
+                  "id": "975f882e-bb9b-4260-bf50-3e0188034e0c",
+                  "title": "Gateway Service Failure",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Denial of service",
+                  "description": "The gateway process becomes unavailable because of software faults, container crashes, resource exhaustion, or hardware problems. As the gateway is the central communication path, a failure can prevent robot control entirely.",
+                  "mitigation": "Implement health monitoring, watchdog mechanisms, automatic container restart policies, and safe-stop procedures for the robot when gateway availability is lost.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 21,
+                  "score": ""
+                },
+                {
+                  "id": "ac2f9672-ff62-4b9b-9cf5-894478ccbbd2",
+                  "title": "Disclosure of Robot Commands and Status Information",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Information disclosure",
+                  "description": "Sensitive operational information such as robot commands, camera-derived decisions, system state, and failover status may be exposed through logs, debugging interfaces, or misconfigured services.",
+                  "mitigation": "Restrict access to logs and administrative interfaces, disable unnecessary services, and ensure sensitive operational data is appropriately protected.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 22,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 0,
+                "tampering": 1,
+                "repudiation": 0,
+                "informationDisclosure": 1,
+                "denialOfService": 1,
+                "elevationOfPrivilege": 1
+              }
+            }
+          },
+          {
+            "position": {
+              "x": 750,
+              "y": 370
+            },
+            "size": {
+              "width": 60,
+              "height": 60
+            },
+            "attrs": {
+              "text": {
+                "text": "Camera"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 17,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+                },
+                {
+                  "group": "right",
+                  "id": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+                },
+                {
+                  "group": "bottom",
+                  "id": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+                },
+                {
+                  "group": "left",
+                  "id": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+                }
+              ]
+            },
+            "id": "4ae43cce-7ffa-43b3-b59d-5bbf4cb28062",
+            "data": {
+              "type": "tm.Process",
+              "name": "Camera",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "dae7bbb9-2496-430f-b807-f32813255b8c",
+                  "title": "Compromised Camera",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Tampering",
+                  "description": "An attacker gains control of the camera and manipulates the generated RGB-D data. Because all AI models rely on the same sensor source, a compromised camera can simultaneously influence every decision-making component in the architecture.",
+                  "mitigation": "The camera should be hardened through secure configuration, firmware management, access control, and network isolation. AI-generated commands should undergo independent safety validation before reaching the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 31,
+                  "score": ""
+                },
+                {
+                  "id": "a8cc43f7-fdf7-413a-90c5-bad3b5a1d204",
+                  "title": "False Scene Injection",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Tampering",
+                  "description": "An attacker causes the camera to observe misleading information, such as unexpected objects, altered lighting conditions, or deceptive visual patterns. The AI models may interpret this information incorrectly and generate inappropriate robot actions.",
+                  "mitigation": "Vision results should be validated using confidence thresholds, temporal consistency checks, and additional safety constraints before actions are executed.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 32,
+                  "score": ""
+                },
+                {
+                  "id": "4208f24f-b297-4b43-87db-7018a4eb5b41",
+                  "title": "Camera Resource Exhaustion",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "Excessive requests or network traffic overwhelm the camera, reducing throughput or preventing image acquisition entirely. This may degrade perception accuracy or make the perception pipeline unavailable.",
+                  "mitigation": "Restrict access to authorized systems, implement rate limiting where possible, and continuously monitor camera health and performance.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 33,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 0,
+                "tampering": 2,
+                "repudiation": 0,
+                "informationDisclosure": 0,
+                "denialOfService": 1,
+                "elevationOfPrivilege": 0
+              }
+            }
+          },
+          {
+            "position": {
+              "x": 580,
+              "y": 90
+            },
+            "size": {
+              "width": 90,
+              "height": 90
+            },
+            "attrs": {
+              "text": {
+                "text": "Lynx model\nTertiary"
+              },
+              "body": {
+                "stroke": "red",
+                "strokeWidth": 2.5,
+                "strokeDasharray": null
+              }
+            },
+            "visible": true,
+            "shape": "process",
+            "zIndex": 18,
+            "ports": {
+              "groups": {
+                "top": {
+                  "position": "top",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "position": "right",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "bottom": {
+                  "position": "bottom",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                },
+                "left": {
+                  "position": "left",
+                  "attrs": {
+                    "circle": {
+                      "r": 4,
+                      "magnet": true,
+                      "stroke": "#5F95FF",
+                      "strokeWidth": 1,
+                      "fill": "#fff",
+                      "style": {
+                        "visibility": "hidden"
+                      }
+                    }
+                  }
+                }
+              },
+              "items": [
+                {
+                  "group": "top",
+                  "id": "7aecc72f-0a3a-44dc-8418-b7ab06deb956"
+                },
+                {
+                  "group": "right",
+                  "id": "6238d7c6-d119-4e38-b05f-7788a7934cb0"
+                },
+                {
+                  "group": "bottom",
+                  "id": "eda22cc4-1f74-4c37-ace6-f655bb107db7"
+                },
+                {
+                  "group": "left",
+                  "id": "beb702bb-e4ec-4951-b87f-9f255d92ad60"
+                }
+              ]
+            },
+            "id": "90d67f38-9a5a-434e-bf71-9d971e230be6",
+            "data": {
+              "type": "tm.Process",
+              "name": "Lynx model\nTertiary",
+              "description": "",
+              "outOfScope": false,
+              "isTrustBoundary": false,
+              "reasonOutOfScope": "",
+              "hasOpenThreats": true,
+              "handlesCardPayment": false,
+              "handlesGoodsOrServices": false,
+              "isWebApplication": false,
+              "privilegeLevel": "",
+              "threats": [
+                {
+                  "id": "513749a7-86c1-43c2-8152-245b19b6e16a",
+                  "title": "Lynx Model Compromise",
+                  "status": "Open",
+                  "severity": "High",
+                  "type": "Elevation of privilege",
+                  "description": "An attacker gains unauthorized access to the Lynx-hosted model container and is able to modify model behavior, generated instructions, or supporting software. Although the model serves as a tertiary processing resource, a compromise could still result in unsafe robot commands being proposed to the Robot Gateway.",
+                  "mitigation": "Container isolation, access controls, and software integrity protections should be implemented on the Lynx platform. Commands generated by the model should continue to be validated by the Robot Gateway before execution.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 47,
+                  "score": ""
+                },
+                {
+                  "id": "59e98ff8-dd06-4fe4-89dd-f7d872698644",
+                  "title": "Generation of Unsafe Commands",
+                  "status": "Open",
+                  "severity": "Critical",
+                  "type": "Tampering",
+                  "description": "The Lynx-hosted model generates commands that are operationally unsafe due to inaccurate perception, inference errors, model limitations, or unexpected operating conditions. Unsafe commands may result in hazardous robot actions if accepted without verification.",
+                  "mitigation": "The Robot Gateway should enforce safety validation independently of the command source. Workspace restrictions, motion limits, collision avoidance rules, and operational constraints should be verified before commands reach the robot.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 48,
+                  "score": ""
+                },
+                {
+                  "id": "f7d5e1e0-37e1-4232-85c2-ccf1b6d31858",
+                  "title": "Disclosure of Model Outputs",
+                  "status": "Open",
+                  "severity": "Low",
+                  "type": "Information disclosure",
+                  "description": "Generated command proposals, perception results, or operational status information may be exposed through logs, management interfaces, or software misconfigurations.",
+                  "mitigation": "Access to logs and operational data should be restricted. Unnecessary services and debugging interfaces should be disabled, and sensitive information should only be retained when operationally required.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 49,
+                  "score": ""
+                },
+                {
+                  "id": "61051034-b54b-4c5a-9904-57ea87adbe02",
+                  "title": "Resource Exhaustion",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "Excessive workload, software faults, or competing services may consume available computational resources on the Lynx platform, preventing the model from operating reliably.",
+                  "mitigation": "Resource limits, service monitoring, and automatic recovery mechanisms should be implemented. Critical services should be prioritized to ensure predictable operation under degraded conditions.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 50,
+                  "score": ""
+                },
+                {
+                  "id": "1e70605a-a138-4032-af38-b63ca0a3bb23",
+                  "title": "Lynx Model Unavailable",
+                  "status": "Open",
+                  "severity": "Medium",
+                  "type": "Denial of service",
+                  "description": "The Lynx-hosted model becomes unavailable due to software faults, container failure, hardware issues, or platform instability. As the final computational fallback in the architecture, this may leave no remaining AI processing path.",
+                  "mitigation": "Health monitoring and automatic restart mechanisms should be implemented to restore service when possible. If no valid processing source remains available, the Robot Gateway should transition the robot to a predefined safe state.",
+                  "modelType": "STRIDE",
+                  "new": false,
+                  "number": 51,
+                  "score": ""
+                }
+              ],
+              "threatFrequency": {
+                "spoofing": 0,
+                "tampering": 1,
+                "repudiation": 0,
+                "informationDisclosure": 1,
+                "denialOfService": 2,
+                "elevationOfPrivilege": 1
+              }
+            }
+          }
+        ],
+        "description": "STRIDE for a central Gateway"
+      }
+    ],
+    "diagramTop": 2,
+    "reviewer": "",
+    "threatTop": 51
+  }
+}
