@@ -25,14 +25,12 @@ The Robot Gateway acts as the sole trusted command path between AI decision-maki
 
 ---
 
-## Repository Structure
+## Folder Structure
 
 ```text
-.
+threat_analysis
 ├── threat-model.json        # Threat Dragon source file
 ├── threat_model.pdf         # Exported threat report
-├── diagrams/
-│   └── architecture.png
 └── README.md
 ```
 
@@ -42,12 +40,11 @@ The Robot Gateway acts as the sole trusted command path between AI decision-maki
 
 This project follows an iterative threat-modeling process:
 
-1. Update the system architecture.
-2. Update the Threat Dragon model.
-3. Add, modify, or review threats.
-4. Assign STRIDE categories.
-5. Review severity and mitigations.
-6. Export updated reports.
+1. Update the Threat Dragon model.
+2. Add, modify, or review threats.
+3. Assign STRIDE categories.
+4. Review severity and mitigations.
+5. Export updated reports.
 
 ### Source of Truth
 
