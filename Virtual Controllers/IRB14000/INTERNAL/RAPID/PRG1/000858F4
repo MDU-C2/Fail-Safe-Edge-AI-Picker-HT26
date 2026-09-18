@@ -1,0 +1,43 @@
+%%%
+    VERSION:1
+    LANGUAGE:ENGLISH
+%%%
+
+MODULE yumi_absacc_recovery(SYSMODULE,VIEWONLY)
+
+    VAR bool yuMiAbsAccRecoveryLoaded := FALSE;
+
+    PROC YuMiAbsaccRecovery()
+
+        IF yuMiAbsAccRecoveryLoaded = FALSE THEN	
+            Load \Dynamic, "RELEASE:/options/yumi_absacc_recovery/yumi_absacc_recovery_proc.sys";
+            yuMiAbsAccRecoveryLoaded := TRUE;
+        ENDIF  
+
+        %"YuMiAbsaccRecoveryProc"%;
+
+        UnLoad "RELEASE:/options/yumi_absacc_recovery/yumi_absacc_recovery_proc.sys";
+        yuMiAbsAccRecoveryLoaded := FALSE;
+        TPShow TP_LATEST;
+        EXIT;
+        ERROR
+        TEST ERRNO
+            CASE ERR_FILNOTFND:
+                RAISE;
+            case ERR_LOADED:
+                SkipWarn;
+                TRYNEXT;
+            default:
+                TPShow TP_LATEST;
+        ENDTEST
+
+        UNDO
+            IF yuMiAbsAccRecoveryLoaded = TRUE THEN	
+                UnLoad "RELEASE:/options/yumi_absacc_recovery/yumi_absacc_recovery_proc.sys";
+                yuMiAbsAccRecoveryLoaded := FALSE;
+            ENDIF  
+            TPShow TP_LATEST;
+    ENDPROC  
+ ENDMODULE
+
+

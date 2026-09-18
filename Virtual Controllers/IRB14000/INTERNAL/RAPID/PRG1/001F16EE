@@ -1,0 +1,82 @@
+MODULE Module1
+
+    PROC main()
+        GoHomeRight;
+    ENDPROC
+
+    PROC GoHomeRight()
+        CONST jointtarget home_right := [[0,-130,30,0,40,0],[-135,9E+09,9E+09,9E+09,9E+09,9E+09]];
+        VAR jointtarget jt;
+        VAR bool done{7};
+        VAR bool progress;
+        VAR num remaining;
+        VAR num pass;
+
+        jt := CJointT();
+        FOR i FROM 1 TO 7 DO
+            done{i} := FALSE;
+        ENDFOR
+
+        pass := 0;
+        WHILE pass < 7 DO
+            progress := FALSE;
+            pass := pass + 1;
+
+            IF NOT done{7} THEN
+                IF TryAxis(jt, home_right, 7) THEN
+                    done{7} := TRUE;
+                    progress := TRUE;
+                ENDIF
+            ENDIF
+
+            FOR i FROM 6 TO 1 STEP -1 DO
+                IF NOT done{i} THEN
+                    IF TryAxis(jt, home_right, i) THEN
+                        done{i} := TRUE;
+                        progress := TRUE;
+                    ENDIF
+                ENDIF
+            ENDFOR
+
+            remaining := 0;
+            FOR i FROM 1 TO 7 DO
+                IF NOT done{i} THEN
+                    remaining := remaining + 1;
+                ENDIF
+            ENDFOR
+
+            IF remaining = 0 THEN
+                RETURN;
+            ENDIF
+
+            IF NOT progress THEN
+                TPWrite "GoHomeRight: blocked, cannot reach home. Axes left: " \Num:=remaining;
+                RETURN;
+            ENDIF
+        ENDWHILE
+    ENDPROC
+
+    FUNC bool TryAxis(INOUT jointtarget jt, jointtarget home, num axis)
+        VAR jointtarget candidate;
+
+        candidate := jt;
+        TEST axis
+            CASE 1: candidate.robax.rax_1 := home.robax.rax_1;
+            CASE 2: candidate.robax.rax_2 := home.robax.rax_2;
+            CASE 3: candidate.robax.rax_3 := home.robax.rax_3;
+            CASE 4: candidate.robax.rax_4 := home.robax.rax_4;
+            CASE 5: candidate.robax.rax_5 := home.robax.rax_5;
+            CASE 6: candidate.robax.rax_6 := home.robax.rax_6;
+            CASE 7: candidate.extax.eax_a := home.extax.eax_a;
+        ENDTEST
+
+        IF NOT IsCollFree(candidate) THEN
+            RETURN FALSE;
+        ENDIF
+
+        MoveAbsJ candidate \NoEOffs, v200, fine, tool0;
+        jt := candidate;
+        RETURN TRUE;
+    ENDFUNC
+
+ENDMODULE
