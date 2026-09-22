@@ -1,0 +1,200 @@
+<Station name="Project1" xmlns="urn:abb-robotics-robotstudio-graphiccomponent">
+  <GraphicComponents>
+    <EmbeddedLibrary source="%ABBLIBRARY%\Components\RapidVariable.rslib" name="ReadGripCommand">
+      <PropertyValue name="DataType" value="bool" />
+      <PropertyValue name="Task" value="" />
+      <PropertyValue name="Module" value="" />
+      <PropertyValue name="Variable" value="" />
+      <PropertyValue name="Value" value="False" />
+      <SignalValue name="Set" value="0" />
+      <SignalValue name="Get" value="0" />
+      <SignalValue name="Executed" value="0" />
+    </EmbeddedLibrary>
+    <EmbeddedLibrary source="%ABBLIBRARY%\Components\Timer.rslib" name="Timer">
+      <PropertyValue name="StartTime" value="0" />
+      <PropertyValue name="Interval" value="0.05" />
+      <PropertyValue name="Repeat" value="True" />
+      <PropertyValue name="CurrentTime" value="0" />
+      <SignalValue name="Active" value="1" />
+      <SignalValue name="Output" value="0" />
+      <SignalValue name="Reset" value="0" />
+    </EmbeddedLibrary>
+    <SmartComponent name="SC_AutoPickPlace">
+      <Properties>
+        <DynamicProperty name="VC" valueType="ABB.Robotics.RobotStudio.Stations.VirtualController" value="../YuMi_Practice_VC">
+          <Attribute key="AutoApply" value="true" />
+        </DynamicProperty>
+        <DynamicProperty name="Gripper" valueType="ABB.Robotics.RobotStudio.Stations.Mechanism" value="../Smart_Gripper_Servo_Fingers">
+          <Attribute key="AutoApply" value="true" />
+        </DynamicProperty>
+        <DynamicProperty name="PickObject" valueType="ABB.Robotics.RobotStudio.Stations.IAttachableChild" value="../PickObject">
+          <Attribute key="AutoApply" value="true" />
+        </DynamicProperty>
+        <DynamicProperty name="AttachmentFlange" valueType="System.Int32" value="0">
+          <Attribute key="AutoApply" value="true" />
+        </DynamicProperty>
+      </Properties>
+      <Bindings>
+        <PropertyBinding source="VC" target="ReadClose.Controller" />
+        <PropertyBinding source="VC" target="ReadOpen.Controller" />
+        <PropertyBinding source="VC" target="WriteCloseDone.Controller" />
+        <PropertyBinding source="VC" target="WriteOpenDone.Controller" />
+        <PropertyBinding source="Gripper" target="CloseFingers.Mechanism" />
+        <PropertyBinding source="Gripper" target="OpenFingers.Mechanism" />
+        <PropertyBinding source="Gripper" target="AttachObject.Parent" />
+        <PropertyBinding source="AttachmentFlange" target="AttachObject.Flange" />
+        <PropertyBinding source="PickObject" target="AttachObject.Child" />
+        <PropertyBinding source="PickObject" target="DetachObject.Child" />
+        <PropertyBinding source="ReadClose.Value" target="CloseCommand.BooleanProperty" />
+        <PropertyBinding source="ReadOpen.Value" target="OpenCommand.BooleanProperty" />
+      </Bindings>
+      <Connections>
+        <IOConnection source="PollCommands.Output" target="ReadClose.Get" />
+        <IOConnection source="PollCommands.Output" target="ReadOpen.Get" />
+        <IOConnection source="CloseCommand.DigitalOutput" target="CloseEdge.Input" />
+        <IOConnection source="OpenCommand.DigitalOutput" target="OpenEdge.Input" />
+        <IOConnection source="CloseEdge.PulseHigh" target="CloseFingers.Execute" />
+        <IOConnection source="OpenEdge.PulseHigh" target="OpenFingers.Execute" />
+        <IOConnection source="CloseFingers.Executed" target="AttachObject.Execute" />
+        <IOConnection source="OpenFingers.Executed" target="DetachObject.Execute" />
+        <IOConnection source="AttachObject.Executed" target="WriteCloseDone.Set" />
+        <IOConnection source="DetachObject.Executed" target="WriteOpenDone.Set" />
+      </Connections>
+      <GraphicComponents>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\Timer.rslib" name="PollCommands">
+          <PropertyValue name="StartTime" value="0.05" />
+          <PropertyValue name="Interval" value="0.05" />
+          <PropertyValue name="Repeat" value="True" />
+          <PropertyValue name="CurrentTime" value="77.808" />
+          <SignalValue name="Active" value="1" />
+          <SignalValue name="Output" value="0" />
+          <SignalValue name="Reset" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\RapidVariable.rslib" name="ReadClose">
+          <PropertyValue name="DataType" value="bool" />
+          <PropertyValue name="Controller" value="../../YuMi_Practice_VC" />
+          <PropertyValue name="Task" value="T_ROB_L" />
+          <PropertyValue name="Module" value="Module1" />
+          <PropertyValue name="Variable" value="simCloseRequest" />
+          <PropertyValue name="Value" value="False" />
+          <SignalValue name="Set" value="0" />
+          <SignalValue name="Get" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\RapidVariable.rslib" name="ReadOpen">
+          <PropertyValue name="DataType" value="bool" />
+          <PropertyValue name="Controller" value="../../YuMi_Practice_VC" />
+          <PropertyValue name="Task" value="T_ROB_L" />
+          <PropertyValue name="Module" value="Module1" />
+          <PropertyValue name="Variable" value="simOpenRequest" />
+          <PropertyValue name="Value" value="False" />
+          <SignalValue name="Set" value="0" />
+          <SignalValue name="Get" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\Converter.rslib" name="CloseCommand">
+          <PropertyValue name="AnalogProperty" value="0" />
+          <PropertyValue name="DigitalProperty" value="0" />
+          <PropertyValue name="BooleanProperty" value="False" />
+          <PropertyValue name="GroupProperty" value="0" />
+          <SignalValue name="DigitalInput" value="0" />
+          <SignalValue name="DigitalOutput" value="0" />
+          <SignalValue name="AnalogInput" value="0" />
+          <SignalValue name="AnalogOutput" value="0" />
+          <SignalValue name="GroupInput" value="0" />
+          <SignalValue name="GroupOutput" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\Converter.rslib" name="OpenCommand">
+          <PropertyValue name="AnalogProperty" value="0" />
+          <PropertyValue name="DigitalProperty" value="0" />
+          <PropertyValue name="BooleanProperty" value="False" />
+          <PropertyValue name="GroupProperty" value="0" />
+          <SignalValue name="DigitalInput" value="0" />
+          <SignalValue name="DigitalOutput" value="0" />
+          <SignalValue name="AnalogInput" value="0" />
+          <SignalValue name="AnalogOutput" value="0" />
+          <SignalValue name="GroupInput" value="0" />
+          <SignalValue name="GroupOutput" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\LogicSplit.rslib" name="CloseEdge">
+          <SignalValue name="Input" value="0" />
+          <SignalValue name="OutputHigh" value="0" />
+          <SignalValue name="OutputLow" value="1" />
+          <SignalValue name="PulseHigh" value="0" />
+          <SignalValue name="PulseLow" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\LogicSplit.rslib" name="OpenEdge">
+          <SignalValue name="Input" value="0" />
+          <SignalValue name="OutputHigh" value="0" />
+          <SignalValue name="OutputLow" value="1" />
+          <SignalValue name="PulseHigh" value="0" />
+          <SignalValue name="PulseLow" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\JointMover.rslib" name="CloseFingers">
+          <PropertyValue name="Mechanism" value="../../Smart_Gripper_Servo_Fingers" />
+          <PropertyValue name="Relative" value="False" />
+          <PropertyValue name="Duration" value="0.5" />
+          <PropertyValue name="J1" value="0.01531791907514451" />
+          <SignalValue name="GetCurrent" value="0" />
+          <SignalValue name="Execute" value="0" />
+          <SignalValue name="Pause" value="0" />
+          <SignalValue name="Cancel" value="0" />
+          <SignalValue name="Executed" value="0" />
+          <SignalValue name="Executing" value="0" />
+          <SignalValue name="Paused" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\JointMover.rslib" name="OpenFingers">
+          <PropertyValue name="Mechanism" value="../../Smart_Gripper_Servo_Fingers" />
+          <PropertyValue name="Relative" value="False" />
+          <PropertyValue name="Duration" value="0.5" />
+          <PropertyValue name="J1" value="0.025" />
+          <SignalValue name="GetCurrent" value="0" />
+          <SignalValue name="Execute" value="0" />
+          <SignalValue name="Pause" value="0" />
+          <SignalValue name="Cancel" value="0" />
+          <SignalValue name="Executed" value="0" />
+          <SignalValue name="Executing" value="0" />
+          <SignalValue name="Paused" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\Attacher.rslib" name="AttachObject">
+          <PropertyValue name="Parent" value="../../Smart_Gripper_Servo_Fingers" />
+          <PropertyValue name="Flange" value="0" />
+          <PropertyValue name="Child" value="../../PickObject" />
+          <PropertyValue name="Mount" value="False" />
+          <PropertyValue name="Offset" value="[0 0 0]" />
+          <PropertyValue name="Orientation" value="[0 0 0]" />
+          <SignalValue name="Execute" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\Detacher.rslib" name="DetachObject">
+          <PropertyValue name="Child" value="../../PickObject" />
+          <PropertyValue name="KeepPosition" value="True" />
+          <SignalValue name="Execute" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\RapidVariable.rslib" name="WriteCloseDone">
+          <PropertyValue name="DataType" value="bool" />
+          <PropertyValue name="Controller" value="../../YuMi_Practice_VC" />
+          <PropertyValue name="Task" value="T_ROB_L" />
+          <PropertyValue name="Module" value="Module1" />
+          <PropertyValue name="Variable" value="simCloseDone" />
+          <PropertyValue name="Value" value="True" />
+          <SignalValue name="Set" value="0" />
+          <SignalValue name="Get" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+        <EmbeddedLibrary source="%ABBLIBRARY%\Components\RapidVariable.rslib" name="WriteOpenDone">
+          <PropertyValue name="DataType" value="bool" />
+          <PropertyValue name="Controller" value="../../YuMi_Practice_VC" />
+          <PropertyValue name="Task" value="T_ROB_L" />
+          <PropertyValue name="Module" value="Module1" />
+          <PropertyValue name="Variable" value="simOpenDone" />
+          <PropertyValue name="Value" value="True" />
+          <SignalValue name="Set" value="0" />
+          <SignalValue name="Get" value="0" />
+          <SignalValue name="Executed" value="0" />
+        </EmbeddedLibrary>
+      </GraphicComponents>
+    </SmartComponent>
+  </GraphicComponents>
+</Station>

@@ -1,0 +1,41 @@
+SIMULATION CHANGE, 2026-09-21
+
+Controller: YuMi_Practice_VC only. Task: T_ROB_L. Tool: Servo. Workobject: wobj0.
+
+The first motion in main is now:
+MoveAbsJ jCalibrationL \NoEOffs,v20,fine,Servo;
+WaitTime 1;
+
+jCalibrationL = [[0,-130,30,0,40,0],[135,9E9,9E9,9E9,9E9,9E9]]
+This is the left calibration posture listed in ABB Operating Manual IRB 14000,
+3HAC052986 Rev K, section 3.4. No calibration or controller settings are changed.
+
+Existing pick/place motions follow unchanged, using joint approaches and short
+linear moves at the object. Final position is jApproach, not calibration posture.
+
+Check Program: no errors, 22:01:21.
+First full cycle: started 22:12:17; normal program stop 22:16:21.
+Observed cup transfer, release and return. No 50504 or table collision logged.
+Second full cycle: started 22:21:14; normal program stop 22:25:32.
+Started after left joint 1 was deliberately jogged from 30.72 to 40 degrees.
+Explicit CupReset_KeepArmPose preserved that changed posture before Play.
+Observed pickup, transfer, release and retreat, with no 50504 or table collision.
+Project saved at 22:26:32 after stopping and restoring only the cup/gripper state.
+
+CupReset_KeepArmPose saved state checked in saved project XML:
+- gripper JointValues = 0.025 m only;
+- cup position/orientation and empty AttachmentParent;
+- SC_AutoPickPlace properties, timer and signals;
+- no arm joint values or arm objects;
+- no controller state/PERS/I/O or gripper mounting transform.
+Selected as simulation initial state, Single Cycle, only T_ROB_L enabled.
+
+Use Reset drop-down > CupReset_KeepArmPose for a cup-only reset.
+The main Reset button restores RobotStudio's whole pre-run snapshot.
+
+Collision set LeftArm_Gripper_vs_Table is active. Collision detection is Always,
+with pause/stop on collision and logging to Output. This set checks the table;
+it is not a universal collision-avoidance planner or proof for arbitrary postures.
+
+Before-change backup: LeftPickPlace_BeforeCalibration.mod.
+Applied source copy: LeftPickPlace_CalibrationFirst.mod.

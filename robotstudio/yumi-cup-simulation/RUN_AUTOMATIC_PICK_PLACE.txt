@@ -1,0 +1,39 @@
+RUN THE AUTOMATIC PICK-AND-PLACE SIMULATION
+
+Open the saved Project1 project in RobotStudio 2026.
+
+1. Open the Simulation tab.
+2. In Simulation Setup, use initial state CupReset_KeepArmPose, entry point main,
+   and Single Cycle. Select only YuMi_Practice_VC and task T_ROB_L;
+   leave T_ROB_R unselected. Keep SC_AutoPickPlace enabled for simulation.
+3. Open Reset's drop-down and choose CupReset_KeepArmPose. This restores the cup
+   to its pickup location and opens the gripper without changing either arm's joints.
+   The main Reset button restores the whole pre-run snapshot, including arm pose.
+4. Click Play on the Simulation tab once. Let the cycle finish.
+
+The left arm first moves from its current posture to the ABB left calibration
+posture, pauses for one second, then approaches the object, closes the gripper and attaches it,
+lifts it, moves 60 mm sideways in +Y, lowers it onto the table, opens and
+releases it, then returns to the approach pose. The tested complete cycle takes
+about four minutes at the current low speeds; duration depends on the starting pose.
+No manual attach/detach or repeated Start is needed.
+
+After the arm finishes, the simulation timer may keep running.
+To repeat, click Simulation Stop, then Reset drop-down > CupReset_KeepArmPose,
+then Simulation Play.
+Use Simulation Play for the complete cycle: it runs the station gripper logic
+with the robot motion. The RAPID Start button alone is not the run procedure.
+
+main is the automatic cycle. The older SimPickStop, SimLiftStop, SimPlaceStop,
+SimRetreatStop, CheckPickPath and CheckPlacePath routines are diagnostic only.
+
+SIMULATION ONLY: YuMi_Practice_VC, LEFT arm, T_ROB_L, Servo and wobj0.
+Gripping uses station logic; no physical robot, controller or gripper I/O.
+If the program reports a simulation grip timeout, stop and check Simulation
+Setup and SC_AutoPickPlace before restarting from CupReset_KeepArmPose.
+
+Moving to the calibration posture is an ordinary MoveAbsJ command, not actual
+robot calibration. It does not change calibration data or controller settings.
+The command starts from the current joint position; it is not an obstacle-avoiding
+planner. Table collision checking is active and stops a detected collision.
+Arbitrary starting postures and all possible collisions have not been validated.
