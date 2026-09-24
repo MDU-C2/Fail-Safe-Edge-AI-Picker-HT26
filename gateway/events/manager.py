@@ -1,12 +1,13 @@
 from dataclasses import dataclass, field
-from multiprocessing import connection
 
 from fastapi import WebSocket
+
+from gateway.security.identity import Identity
 
 
 @dataclass
 class EventConnection:
-    client_id: str
+    identity: Identity
     websocket: WebSocket
     subscriptions: set[str] = field(default_factory=set)
 
@@ -17,14 +18,14 @@ class EventManager:
 
     async def connect(
         self,
-        client_id: str,
+        identity: Identity,
         websocket: WebSocket,
     ) -> None:
         await websocket.accept()
 
         self._connections.append(
             EventConnection(
-                client_id=client_id,
+                identity=identity,
                 websocket=websocket,
             )
         )
@@ -53,13 +54,10 @@ class EventManager:
         self,
         websocket: WebSocket,
         events: list[str],
-    ) -> set:
-        connection = self.get_connection(websocket)
+    ) -> setconnection = self.get_connection(websocket)
 
         if connection is None:
-            raise RuntimeError(
-                "WebSocket is not registered"
-            )
+            raise RuntimeError("WebSocket is not registered")
 
         connection.subscriptions.update(events)
 
@@ -69,68 +67,14 @@ class EventManager:
         self,
         websocket: WebSocket,
         events: list[str],
-    ) -> set:
-        connection = self.get_connection(websocket)
+    ) -> setconnection = self.get_connection(websocket)
 
         if connection is None:
-            raise RuntimeError(
-                "WebSocket is not registered"
-            )
+            raise RuntimeError("WebSocket is not registered")
 
         connection.subscriptions.difference_update(events)
 
         return connection.subscriptions
-
-    async def send_to_client(
-        self,
-        client_id: str,
-        event: dict,
-    ) -> None:
-        connections = [
-            connection
-            for connection in self._connections
-            if connection.client_id == client_id
-        ]
-
-        for connection in connections:
-            try:
-                await connection.websocket.send_json(event)
-            except Exception:
-                self.disconnect(connection.websocket)
-
-    async def publish(
-        self,
-        event_type: str,
-        data: dict,
-    ) -> None:
-
-        event = {
-            "type": event_type,
-            "data": data,
-        }
-
-        disconnected: list[WebSocket] = []
-
-        #NOTE should that nested for be there
-        for connection in self._connections:
-            if not any(
-                self.matches_subscription(
-                    event_type,
-                    subscription,
-                )
-                for subscription in connection.subscriptions
-            ):
-                continue
-
-            try:
-                await connection.websocket.send_json(event)
-            except Exception:
-                disconnected.append(
-                    connection.websocket
-                )
-
-        for websocket in disconnected:
-            self.disconnect(websocket)
 
     @staticmethod
     def matches_subscription(
@@ -139,10 +83,59 @@ class EventManager:
     ) -> bool:
         return (
             event_type == subscription
-            or event_type.startswith(
-                f"{subscription}."
-            )
+            or event_type.startswith(f"{subscription}.")
         )
+
+    async def send_to_client(
+        self,
+        client_id: str,
+        event: dict,
+    ) -> None:
+        disconnected: list[WebSocket] = []
+
+        for connection in self._connections:
+            if connection.identity.client_id != client_id:
+                continue
+
+            try:
+                await connection.websocket.send_json(event)
+            except Exception:
+                disconnected.append(connection.websocket)
+
+        for websocket in disconnected:
+            self.disconnect(websocket)
+
+    async def publish(
+        self,
+        event_type: str,
+        data: dict,
+    ) -> None:
+        event = {
+            "type": event_type,
+            "data": data,
+        }
+
+        disconnected: list[WebSocket] = []
+
+        for connection in self._connections:
+            matches = any(
+                self.matches_subscription(
+                    event_type,
+                    subscription,
+                )
+                for subscription in connection.subscriptions
+            )
+
+            if not matches:
+                continue
+
+            try:
+                await connection.websocket.send_json(event)
+            except Exception:
+                disconnected.append(connection.websocket)
+
+        for websocket in disconnected:
+            self.disconnect(websocket)
 
 
 event_manager = EventManager()

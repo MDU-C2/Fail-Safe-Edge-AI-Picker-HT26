@@ -42,7 +42,7 @@ def get_robot_status(
     response_model=CommandResponse,
     summary="Send a command to the robot",
 )
-def send_robot_command(
+async def send_robot_command(
     command: RobotCommand,
     identity: Annotated[
         Identity,
@@ -57,4 +57,4 @@ def send_robot_command(
             detail="Client does not own the active control lease",
         )
 
-    return robot_service.execute(command)
+    return await robot_service.execute(command)

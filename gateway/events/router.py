@@ -7,6 +7,7 @@ from fastapi import (
 
 from gateway.config import get_settings
 from gateway.events.manager import event_manager
+from gateway.events.permissions import get_event_permission
 from gateway.security.authentication import (
     DEVELOPMENT_IDENTITIES,
 )
@@ -45,7 +46,7 @@ async def events(
         return
 
     await event_manager.connect(
-        client_id=identity.client_id,
+        identity=identity,
         websocket=websocket,
     )
 
@@ -54,9 +55,12 @@ async def events(
             message = await websocket.receive_json()
 
             action = message.get("action")
-            events = message.get("events", [])
+            requested_events = message.get(
+                "events",
+                [],
+            )
 
-            if not isinstance(events, list):
+            if not isinstance(requested_events, list):
                 await websocket.send_json(
                     {
                         "type": "error",
@@ -69,10 +73,62 @@ async def events(
                 )
                 continue
 
+            if not all(
+                isinstance(event, str)
+                for event in requested_events
+            ):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": {
+                            "message": (
+                                "Every event name "
+                                "must be a string"
+                            )
+                        },
+                    }
+                )
+                continue
+
             if action == "subscribe":
+                rejected_events = []
+
+                for event in requested_events:
+                    permission = get_event_permission(
+                        event
+                    )
+
+                    if permission is None:
+                        rejected_events.append(
+                            {
+                                "event": event,
+                                "reason": "unknown_event",
+                            }
+                        )
+                        continue
+
+                    if not identity.can(permission):
+                        rejected_events.append(
+                            {
+                                "event": event,
+                                "reason": "forbidden",
+                            }
+                        )
+
+                if rejected_events:
+                    await websocket.send_json(
+                        {
+                            "type": "subscription.rejected",
+                            "data": {
+                                "events": rejected_events,
+                            },
+                        }
+                    )
+                    continue
+
                 subscriptions = event_manager.subscribe(
                     websocket,
-                    events,
+                    requested_events,
                 )
 
                 await websocket.send_json(
@@ -89,7 +145,7 @@ async def events(
             elif action == "unsubscribe":
                 subscriptions = event_manager.unsubscribe(
                     websocket,
-                    events,
+                    requested_events,
                 )
 
                 await websocket.send_json(

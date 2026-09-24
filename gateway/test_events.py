@@ -19,9 +19,8 @@ async def main():
                 {
                     "action": "subscribe",
                     "events": [
-                        "control",
-                        "robot.status",
-                    ],
+                        "banana"
+                    ]
                 }
             )
         )
