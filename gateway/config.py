@@ -17,6 +17,18 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    camera_provider: Literal[
+        "mock",
+        "oak",
+    ] = "oak"
+
+    camera_fps: float = 4.0
+
+    camera_rgb_width: int = 640
+    camera_rgb_height: int = 480
+
+    camera_jpeg_quality: int = 90
+
 
 @lru_cache
 def get_settings() -> Settings:

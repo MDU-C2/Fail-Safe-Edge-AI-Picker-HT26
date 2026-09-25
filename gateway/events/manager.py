@@ -54,7 +54,8 @@ class EventManager:
         self,
         websocket: WebSocket,
         events: list[str],
-    ) -> setconnection = self.get_connection(websocket)
+    ) -> set[str]:
+        connection = self.get_connection(websocket)
 
         if connection is None:
             raise RuntimeError("WebSocket is not registered")
@@ -67,7 +68,8 @@ class EventManager:
         self,
         websocket: WebSocket,
         events: list[str],
-    ) -> setconnection = self.get_connection(websocket)
+    ) -> set[str]:
+        connection = self.get_connection(websocket)
 
         if connection is None:
             raise RuntimeError("WebSocket is not registered")
