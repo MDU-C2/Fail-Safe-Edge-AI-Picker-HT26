@@ -2,4 +2,5 @@
 <Program>
 	<Module>SharedVars.mod</Module>
 	<Module>LeftArmInstructions.mod</Module>
+	<Module>GoHomeLeft.mod</Module>
 </Program>

@@ -23,6 +23,7 @@ MODULE CommServer
 
   PROC main()
     move_request := FALSE;
+    go_home := FALSE;
     SocketClose server;
     SocketCreate server;
     SocketBind server, SERVER_IP, PORT;
@@ -39,7 +40,10 @@ MODULE CommServer
     SocketReceive client \Str:=msg \Time:=WAIT_MAX;
     TPWrite "Got: " + msg;
 
-    IF NOT ParseMsg(msg) THEN
+    IF msg = "HOME" THEN
+      go_home := TRUE;
+      RunMove;
+    ELSEIF NOT ParseMsg(msg) THEN
       TPWrite "Rejected: bad format";
       SocketSend client \Str:="ERR bad format";
     ELSEIF NOT InSafeZone() THEN
@@ -49,13 +53,8 @@ MODULE CommServer
       target_pos := [x, y, z];
       use_rot := nvals = 6;
       IF use_rot target_rot := OrientZYX(vals{6}, vals{5}, vals{4});
-      move_request := TRUE;
-      WaitUntil move_request = FALSE;
-      IF move_ok THEN
-        SocketSend client \Str:="DONE";
-      ELSE
-        SocketSend client \Str:="ERR move failed";
-      ENDIF
+      go_home := FALSE;
+      RunMove;
     ENDIF
     SocketClose client;
   ERROR
@@ -63,6 +62,16 @@ MODULE CommServer
       TPWrite "Client disconnected";
       SocketClose client;
       RETURN;
+    ENDIF
+  ENDPROC
+
+  PROC RunMove()
+    move_request := TRUE;
+    WaitUntil move_request = FALSE;
+    IF move_ok THEN
+      SocketSend client \Str:="DONE";
+    ELSE
+      SocketSend client \Str:="ERR move failed";
     ENDIF
   ENDPROC
 
