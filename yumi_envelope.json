@@ -1,0 +1,62 @@
+{
+  "robot": "IRB 14000 YuMi, left arm",
+  "orientation": "gripper pointing down (pRef at program start)",
+  "tool": "tGrip",
+  "frame": "wobj0 (robot base)",
+  "source_csv": "C:\\Users\\swa21001\\Documents\\GitHub\\Fail-Safe-Edge-AI-Picker-HT26\\reach_map.csv",
+  "grid_step": 50.0,
+  "ceiling_z": 423.0,
+  "min_x_filter": 150.0,
+  "reach_touches_sweep_edge": [
+    "+x",
+    "-y",
+    "+y",
+    "-z",
+    "+z"
+  ],
+  "max_reach": {
+    "min": [
+      150.0,
+      -150.0,
+      0.0
+    ],
+    "max": [
+      600.0,
+      600.0,
+      550.0
+    ],
+    "points": 1630
+  },
+  "models": {
+    "box": {
+      "min": [
+        300.0,
+        -150.0,
+        0.0
+      ],
+      "max": [
+        500.0,
+        400.0,
+        450.0
+      ],
+      "size_mm": [
+        200.0,
+        550.0,
+        450.0
+      ],
+      "volume_litres": 49.5
+    },
+    "sphere": {
+      "center": [
+        380.91739615308666,
+        206.22664079106949,
+        270.198042946325
+      ],
+      "r_inner": 134.5830186841573,
+      "r_outer": 424.0911419562341,
+      "r_fit": 363.11796109871256,
+      "precision": 0.782701548318206,
+      "coverage": 0.8993865030674847
+    }
+  }
+}
