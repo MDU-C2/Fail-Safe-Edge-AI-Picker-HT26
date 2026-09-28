@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "Robot & Camera Gateway"
     api_prefix: str = "/api/v1"
     security_mode: Literal["development", "strict"] = "development"
+    auth_clients_file: str = "auth_clients.json"
 
     control_lease_seconds: float = 5.0
 
