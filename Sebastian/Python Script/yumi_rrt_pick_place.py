@@ -5,12 +5,12 @@ One command does everything:
   1. plans all jobs with RRT*
   2. shows a preview animation (nothing is sent)
   3. asks if you want to run it on the YuMi
-  4. runs it, saves a log in runs/, and shows a replay of what the robot did
+  4. runs it, saves a log in runs/, prints the timing and shows a replay
 
-  python yumi_rrt_pick_place.py --job 260 115 390 295 --job 400 120 250 300
+  python yumi_rrt_pick_place.py --job 400 80 400 260 --job 400 170 400 340 --speed 250 --pick-speed 100 --carry-z 250
 
 Replay a saved run later (no robot):
-  python yumi_rrt_pick_place.py --replay runs/run_20260925_143000.json
+  python yumi_rrt_pick_place.py --replay runs/run_20260928_143000.json
 """
 import argparse
 import json
@@ -28,22 +28,25 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 DEFAULT_HOST = "192.168.125.1"   # sim: 127.0.0.1
 DEFAULT_PORT = 5001              # must match PORT in the RAPID module
 
-# ================= WORKSPACE (mm, wobj0) =================
-# Keep inside the RAPID safe zone (X 200-450, Y 50-350) and under the ceiling (423)
-BOUNDS_LO = (200, 50, 60)
-BOUNDS_HI = (450, 350, 400)
-HOME = (325, 200, 250)           # start position above the work area
+# ================= WORKSPACE (mm, wobj0, table = z 0) =================
+# Keep inside the RAPID safe zone (X 350-480, Y 50-350) and under the ceiling (400)
+BOUNDS_LO = (350, 50, 60)
+BOUNDS_HI = (480, 350, 380)
+HOME = (415, 200, 250)           # start position above the work area
 APPROACH = 100                   # must match APPROACH in RAPID
-GRASP_Z = 40                     # grip height (cup mid-height)
+GRASP_Z = 40                     # grip height = object height / 2
 CUP_R, CUP_H = 22, 80            # only used for drawing
+DEFAULT_SPEED = 100              # travel speed in mm/s (RAPID max 1000)
+DEFAULT_PICK_SPEED = 50          # down to / up from the object in mm/s (RAPID max 300)
+CARRY_Z = 250                    # height the cup is carried at between spots (max = BOUNDS_HI z)
 
 DEFAULT_JOBS = [
-    (260, 115, 390, 295),        # pick x, y  ->  place x, y
-    (400, 120, 250, 300),
+    (400, 80, 400, 260),         # pick x, y  ->  place x, y   (cup A along the plank)
+    (400, 170, 400, 340),        # cup B
 ]
 
 # ================= OBSTACLES (empty for now) =================
-# Add later, e.g.  OBSTACLES = [Box([300, 180, 0], [340, 220, 200]), Cylinder(250, 215, 22, 80)]
+# Add later, e.g.  OBSTACLES = [Box([380, 230, 0], [420, 260, 180]), Cylinder(400, 215, 22, 80)]
 CLEARANCE = 15
 OBSTACLES = []
 
@@ -225,7 +228,25 @@ def plan_path(a, b, iters, label, job):
     return {"type": "path", "label": label, "job": job, "raw": raw, "points": smooth, "planner": planner}
 
 
-def plan_jobs(home, jobs, iters):
+def plan_carry(a, b, carry_z, iters, label, job):
+    """Straight up to carry_z, RRT* across at that height, straight down to b."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    if carry_z <= max(a[2], b[2]) + 1:
+        return plan_path(a, b, iters, label, job)
+    up_a = np.array([a[0], a[1], carry_z])
+    up_b = np.array([b[0], b[1], carry_z])
+    if not (segment_free(a, up_a) and segment_free(up_b, b)):
+        print(f"  {label}: straight lift or lowering is blocked by an obstacle.")
+        return None
+    leg = plan_path(up_a, up_b, iters, label, job)
+    if leg is None:
+        return None
+    leg["raw"] = [a] + list(leg["raw"]) + [b]
+    leg["points"] = [a] + list(leg["points"]) + [b]
+    return leg
+
+
+def plan_jobs(home, jobs, iters, carry_z):
     print("\nPlanning:")
     steps = []
     current = np.asarray(home, float)
@@ -239,7 +260,7 @@ def plan_jobs(home, jobs, iters):
             return None
         steps += [leg, {"type": "pick", "job": n, "point": pick}]
 
-        leg = plan_path(pick + up, place + up, iters, f"Job {n}: carry to place", n)
+        leg = plan_carry(pick + up, place + up, carry_z, iters, f"Job {n}: carry to place", n)
         if leg is None:
             return None
         steps += [leg, {"type": "place", "job": n, "point": place}]
@@ -247,7 +268,7 @@ def plan_jobs(home, jobs, iters):
     return steps
 
 
-def validate(home, jobs):
+def validate(home, jobs, speed, pick_speed, carry_z):
     lo, hi = np.array(BOUNDS_LO, float), np.array(BOUNDS_HI, float)
     problems = []
     if not (np.all(home >= lo) and np.all(home <= hi)):
@@ -260,6 +281,12 @@ def validate(home, jobs):
                                 f"x {lo[0]:.0f}-{hi[0]:.0f}, y {lo[1]:.0f}-{hi[1]:.0f}.")
         if math.hypot(px - qx, py - qy) < 1:
             problems.append(f"Job {n}: pick and place are the same spot.")
+    if not 10 <= speed <= 1000:
+        problems.append(f"Speed {speed} mm/s is outside 10-1000.")
+    if not 5 <= pick_speed <= 300:
+        problems.append(f"Pick speed {pick_speed} mm/s is outside 5-300.")
+    if not BOUNDS_LO[2] <= carry_z <= BOUNDS_HI[2]:
+        problems.append(f"Carry height {carry_z} is outside {BOUNDS_LO[2]}-{BOUNDS_HI[2]}.")
     return problems
 
 
@@ -286,7 +313,7 @@ def send_cmd(host, port, cmd, p):
         return f"ERR connection: {e}"
 
 
-def run_on_robot(steps, home, host, port):
+def run_on_robot(steps, home, host, port, speed, pick_speed):
     events = []
     t0 = time.time()
 
@@ -297,12 +324,17 @@ def run_on_robot(steps, home, host, port):
         print(f"  {cmd:9s} {fmt(p):>22s}  ->  {resp}")
         return resp
 
-    print("\nRunning on YuMi:")
-    if send("WAYEND", home) != "DONE":
-        print("Could not move to the start position. Nothing else was sent.")
+    def abort(msg):
+        print(msg)
         for s in steps:
             s["status"] = "not run"
         return events, False
+
+    print("\nRunning on YuMi:")
+    if send("SPEED", (speed, pick_speed, 0)) != "DONE":
+        return abort("Robot didn't accept the speed (old RAPID module loaded?). Nothing else was sent.")
+    if send("WAYEND", home) != "DONE":
+        return abort("Could not move to the start position. Nothing else was sent.")
 
     ok = True
     for s in steps:
@@ -319,6 +351,19 @@ def run_on_robot(steps, home, host, port):
         else:
             s["status"] = "done"
     return events, ok
+
+
+def print_timing(events):
+    done = [e for e in events if e["resp"] == "DONE"]
+    if len(done) < 3:
+        return
+    start = done[1]["t"]          # after SPEED and the move to start
+    print("\nTiming (from start position):")
+    prev = start
+    for n, e in enumerate([e for e in done if e["cmd"] == "PLACE"], 1):
+        print(f"  Job {n}: {e['t'] - prev:.1f} s")
+        prev = e["t"]
+    print(f"  Total: {done[-1]['t'] - start:.1f} s")
 
 
 def to_jsonable(steps):
@@ -520,6 +565,12 @@ def main():
                     metavar=("PICK_X", "PICK_Y", "PLACE_X", "PLACE_Y"),
                     help="add one pick & place job (repeat for more)")
     ap.add_argument("--home", nargs=3, type=float, default=list(HOME), metavar=("X", "Y", "Z"))
+    ap.add_argument("--speed", type=float, default=DEFAULT_SPEED,
+                    help="travel speed between spots in mm/s (10-1000)")
+    ap.add_argument("--pick-speed", type=float, default=DEFAULT_PICK_SPEED,
+                    help="speed down to / up from the object in mm/s (5-300)")
+    ap.add_argument("--carry-z", type=float, default=CARRY_Z,
+                    help="height the cup is carried at between spots (mm)")
     ap.add_argument("--iters", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--raw", action="store_true", help="send the raw RRT* path instead of the shortcut")
@@ -534,7 +585,10 @@ def main():
     if args.replay:
         with open(args.replay) as f:
             log = json.load(f)
-        print(f"Replaying {args.replay}  (success: {log['success']})")
+        print(f"Replaying {args.replay}  (success: {log['success']}, "
+              f"speed: {log.get('speed', '?')} mm/s, pick speed: {log.get('pick_speed', '?')} mm/s, "
+              f"carry z: {log.get('carry_z', '?')} mm)")
+        print_timing(log["events"])
         animate(log["home"], log["jobs"], log["steps"],
                 title=f"Replay: {os.path.basename(args.replay)}", save=args.save)
         return
@@ -546,7 +600,7 @@ def main():
     jobs = [tuple(j) for j in args.job] if args.job else DEFAULT_JOBS
     home = np.array(args.home, float)
 
-    problems = validate(home, jobs)
+    problems = validate(home, jobs, args.speed, args.pick_speed, args.carry_z)
     if problems:
         print("Problems:")
         for p in problems:
@@ -554,7 +608,7 @@ def main():
         return
 
     # ---------- 1. plan ----------
-    steps = plan_jobs(home, jobs, args.iters)
+    steps = plan_jobs(home, jobs, args.iters, args.carry_z)
     if steps is None:
         return
     for s in steps:
@@ -562,8 +616,9 @@ def main():
             s["sent"] = s["raw"] if args.raw else s["points"]
     trees = [s["planner"] for s in steps if s["type"] == "path"]
 
-    n_cmds = 1 + sum(len(commands_for(s)) for s in steps)
+    n_cmds = 2 + sum(len(commands_for(s)) for s in steps)
     print(f"\nCommands ({n_cmds}):")
+    print(f"  SPEED,{args.speed:.1f},{args.pick_speed:.1f},0.0   <- travel / pick speed")
     print(f"  WAYEND,{fmt(home)}   <- move to start")
     for s in steps:
         for cmd, p in commands_for(s):
@@ -575,17 +630,21 @@ def main():
         animate(home, jobs, steps, trees, "Preview (nothing sent to the robot)")
 
     # ---------- 3. ask ----------
-    ans = input(f"\nRun this on the YuMi ({args.host}:{args.port})? (y/n): ")
+    ans = input(f"\nRun this on the YuMi ({args.host}:{args.port}) at {args.speed:.0f} mm/s "
+                f"(pick {args.pick_speed:.0f} mm/s, carry at z {args.carry_z:.0f})? (y/n): ")
     if ans.strip().lower() != "y":
         print("Not sent. Nothing moved.")
         return
 
-    # ---------- 4. run + save + replay ----------
-    events, ok = run_on_robot(steps, home, args.host, args.port)
+    # ---------- 4. run + save + timing + replay ----------
+    events, ok = run_on_robot(steps, home, args.host, args.port, args.speed, args.pick_speed)
     log = {
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "host": args.host,
         "port": args.port,
+        "speed": args.speed,
+        "pick_speed": args.pick_speed,
+        "carry_z": args.carry_z,
         "home": home.tolist(),
         "jobs": [list(j) for j in jobs],
         "sent_raw_path": args.raw,
@@ -595,9 +654,11 @@ def main():
     }
     path = save_log(log)
     print(f"\n{'All jobs done.' if ok else 'STOPPED early, see above.'}  Log saved to {path}")
+    print_timing(events)
 
     animate(log["home"], log["jobs"], log["steps"], trees,
-            f"Executed on YuMi ({'OK' if ok else 'STOPPED'})", args.save)
+            f"Executed on YuMi at {args.speed:.0f} / {args.pick_speed:.0f} mm/s, carry z {args.carry_z:.0f} "
+            f"({'OK' if ok else 'STOPPED'})", args.save)
 
 
 if __name__ == "__main__":
