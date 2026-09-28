@@ -583,8 +583,8 @@ class OakCameraProducer(CameraProducer):
         if message_group is None:
             return None
 
-        rgb_packet = message_group["rgb"]
-        depth_packet = message_group["depth"]
+        rgb_packet = message_group["rgb"] #type: ignore
+        depth_packet = message_group["depth"] #type: ignore
 
         rgb_bytes = bytes(
             rgb_packet.getData()
