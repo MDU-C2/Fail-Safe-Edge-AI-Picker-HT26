@@ -7,23 +7,27 @@ DEFAULT_PORT = 5000              # must match the RAPID Socket server port
 # Tilt used for every pose that has no own rotation: (rx, ry, rz) in degrees.
 CALIB_ROT = (90, 0, 90)
 
-# 25 calibration poses: (x, y, z) in mm, or (x, y, z, rx, ry, rz) with degrees.
-# Flange (tool0) in wobj0; positions must stay inside the RAPID safe zone.
+# Calibration area, mm, flange (tool0) in wobj0. Adjust to what the camera sees.
+X_RANGE = (350, 425)        # near the body -> far from the body
+Y_RANGE = (-50, 200)        # right -> left
+Z_LEVELS = (260, 300, 340)  # low, middle, high
+
+
+
+# 24 calibration poses, mm, flange (tool0) in wobj0.
+# Mirrored left/right around y = 0: pose n and pose 25-n share x and z.
 POSES = [
-    # Low layer, z = 260
-    (250, 100, 260), (325, 100, 260), (400, 100, 260),
-    (400, 200, 260), (325, 200, 260), (250, 200, 260),
-    (250, 300, 260), (325, 300, 260), (400, 300, 260),
-    # Middle layer, z = 300
-    (360, 250, 300), (290, 250, 300), (325, 200, 300), (360, 150, 300),
-    (290, 150, 300), (325, 100, 300), (325, 300, 300),
-    # High layer, z = 340 (x >= 290 near the body to avoid self-collision)
-    (400, 300, 340), (325, 300, 340), (250, 300, 340),
-    (290, 200, 340), (325, 200, 340), (400, 200, 340),
-    (400, 100, 340), (325, 100, 340), (360, 250, 340),
+    # Left side (+y)
+    (350, 60, 260), (350, 145, 300), (350, 230, 300),
+    (375, 230, 300), (375, 145, 300), (375, 60, 260),
+    (400, 60, 340), (400, 145, 260), (400, 230, 300),
+    (425, 230, 260), (425, 145, 300), (425, 60, 340),
+    # Right side (-y), mirror of the left side
+    (425, -60, 340), (425, -145, 300), (425, -230, 260),
+    (400, -230, 300), (400, -145, 260), (400, -60, 340),
+    (375, -60, 260), (375, -145, 300), (375, -230, 300),
+    (350, -230, 300), (350, -145, 300), (350, -60, 260),
 ]
-
-
 def send(host: str, port: int, payload: str) -> str:
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(60)

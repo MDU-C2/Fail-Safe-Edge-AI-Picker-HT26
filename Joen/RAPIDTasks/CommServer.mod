@@ -16,7 +16,7 @@ MODULE CommServer
   ! Safe zone limits in mm (wobj0, tool0 = flange). Tighten to tested points.
   CONST num X_MIN := 200;
   CONST num X_MAX := 450;
-  CONST num Y_MIN := 50;
+  CONST num Y_MIN := -350;
   CONST num Y_MAX := 350;
   CONST num Z_MIN := 250;
   CONST num Z_MAX := 350;
