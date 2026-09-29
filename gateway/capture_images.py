@@ -24,7 +24,12 @@ import cv2
 import numpy as np
 
 url = "http://127.0.0.1:8000/api/v1"
-headers = {"X-Dev-Client": "operator"}
+
+TOKEN = "BAD_TOKEN_OPERATOR"
+
+headers = {
+    "Authorization": f"Bearer {TOKEN}"
+}
 
 
 parser = argparse.ArgumentParser()

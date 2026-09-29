@@ -8,12 +8,12 @@ class Settings(BaseSettings):
     app_name: str = "Robot & Camera Gateway"
     api_prefix: str = "/api/v1"
     security_mode: Literal["development", "strict"] = "development"
-    auth_clients_file: str = "auth_clients.json"
+    auth_clients_file: str = "gateway/auth_clients.json"
 
     control_lease_seconds: float = 5.0
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file="gateway/.env",
         env_prefix="GATEWAY_",
         extra="ignore",
     )

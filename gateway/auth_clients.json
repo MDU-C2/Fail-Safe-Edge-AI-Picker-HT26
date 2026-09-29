@@ -1,0 +1,30 @@
+{
+    "operator": {
+        "token_hash": "872f20482f13e6a5c291b4c06186f4a07f949f0793b434c1ccb74dbda1a7fb21",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
+            "camera.control"
+        ],
+        "control_priority": 100
+    },
+    "autonomy": {
+        "token_hash": "5af6d1fc6d45bd126f6cc5a0353c7ffe1f7020ebbf6dcecc018971594b4be57d",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
+            "camera.control"
+        ],
+        "control_priority": 50
+    },
+    "diagnostics": {
+        "token_hash": "56e948dcd6f3c4b26ed4b1a3785204b24dd47038c928a80e95c4f2fe0cc2aea8",
+        "permissions": [
+            "robot.read",
+            "camera.read"
+        ],
+        "control_priority": 10
+    }
+}
