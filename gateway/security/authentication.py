@@ -1,8 +1,18 @@
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import (
+    Depends,
+    Header,
+    HTTPException,
+    status,
+)
+from fastapi.security import (
+    HTTPAuthorizationCredentials,
+    HTTPBearer,
+)
 
 from gateway.config import Settings, get_settings
+from gateway.security.client_registry import ClientRegistry
 from gateway.security.identity import Identity
 
 
@@ -18,6 +28,7 @@ DEVELOPMENT_IDENTITIES = {
         }),
         control_priority=100,
     ),
+
     "autonomy": Identity(
         client_id="autonomy",
         authenticated=False,
@@ -29,6 +40,7 @@ DEVELOPMENT_IDENTITIES = {
         }),
         control_priority=50,
     ),
+
     "diagnostics": Identity(
         client_id="diagnostics",
         authenticated=False,
@@ -41,37 +53,91 @@ DEVELOPMENT_IDENTITIES = {
 }
 
 
+bearer_scheme = HTTPBearer(
+    auto_error=False
+)
+
+
 def get_identity(
-    settings: Annotated[Settings, Depends(get_settings)],
-    x_dev_client: Annotated[str | None, Header()] = None,
+    settings: Annotated[
+        Settings,
+        Depends(get_settings),
+    ],
+
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+
+    x_dev_client: Annotated[
+        str | None,
+        Header(),
+    ] = None,
+
 ) -> Identity:
+
+    # ------------------------------------------------------------
+    # Development mode
+    # ------------------------------------------------------------
+
     if settings.security_mode == "development":
         client_id = x_dev_client or "operator"
 
-        identity = DEVELOPMENT_IDENTITIES.get(client_id)
+        identity = DEVELOPMENT_IDENTITIES.get(
+            client_id
+        )
 
         if identity is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Unknown development client: {client_id}",
+                detail="Unknown development client",
             )
 
         return identity
 
-    # Fail closed until production authentication is implemented.
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Strict security mode is not configured yet",
+    # ------------------------------------------------------------
+    # Strict mode
+    # ------------------------------------------------------------
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Bearer token",
+            headers={
+                "WWW-Authenticate": "Bearer",
+            },
+        )
+
+    registry = ClientRegistry(
+        settings.auth_clients_file
     )
 
+    identity = registry.authenticate(
+        credentials.credentials
+    )
 
-def require_permission(permission: str):
+    if identity is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Bearer token",
+            headers={
+                "WWW-Authenticate": "Bearer",
+            },
+        )
+
+    return identity
+
+
+def require_permission(
+    permission: str,
+):
     def dependency(
         identity: Annotated[
             Identity,
             Depends(get_identity),
         ],
     ) -> Identity:
+
         if not identity.can(permission):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

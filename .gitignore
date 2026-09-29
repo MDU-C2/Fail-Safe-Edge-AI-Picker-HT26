@@ -2,3 +2,4 @@
 *.pem
 /out
 gateway/.env
+/gateway/out
