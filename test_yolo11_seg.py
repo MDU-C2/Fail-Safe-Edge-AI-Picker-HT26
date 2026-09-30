@@ -37,7 +37,7 @@ out_dir = Path(args.output)
 out_dir.mkdir(parents=True, exist_ok=True)
 
 model = YOLO(args.model)
-images = sorted(p for p in Path(args.input).iterdir() if p.suffix.lower() in {".jpg", ".png"})
+images = sorted(p for p in Path(args.input).iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
 print(f"{len(images)} images, model {args.model}")
 
 rows = []
@@ -46,6 +46,8 @@ for i, img_path in enumerate(images, 1):
 
     depth_path = Path(args.depth) / img_path.name.replace("rgb_", "depth_").replace(".jpg", ".png")
     depth = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED) if depth_path.exists() else None
+    if depth is not None:
+        depth = depth.squeeze()  # some PNGs load as (H, W, 1)
 
     keep = []
     for j, box in enumerate(result.boxes):
