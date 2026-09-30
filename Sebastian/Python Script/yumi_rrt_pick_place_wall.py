@@ -1,5 +1,5 @@
 """
-RRT* pick & place for YuMi (left arm). No collision checking yet (OBSTACLES is empty).
+RRT* pick & place for YuMi (left arm), with optional virtual obstacle courses (--course).
 
 One command does everything:
   1. plans all jobs with RRT*
@@ -8,6 +8,9 @@ One command does everything:
   4. runs it, saves a log in runs/, prints the timing and shows a replay
 
   python yumi_rrt_pick_place.py --job 400 80 400 260 --job 400 170 400 340 --speed 250 --pick-speed 100 --carry-z 250
+
+Obstacle course (virtual, nothing on the table):
+  python yumi_rrt_pick_place.py --course slalom --iters 5000 --speed 150 --pick-speed 100
 
 Replay a saved run later (no robot):
   python yumi_rrt_pick_place.py --replay runs/run_20260928_143000.json
@@ -29,7 +32,7 @@ DEFAULT_HOST = "192.168.125.1"   # sim: 127.0.0.1
 DEFAULT_PORT = 5001              # must match PORT in the RAPID module
 
 # ================= WORKSPACE (mm, wobj0, table = z 0) =================
-# Keep inside the RAPID safe zone (X 350-480, Y 50-350) and under the ceiling (400)
+# Keep inside the RAPID safe zone (CommServer X_MIN..X_MAX, Y_MIN..Y_MAX) and under the ceiling (400)
 BOUNDS_LO = (350, 50, 60)
 BOUNDS_HI = (520, 420, 380)
 HOME = (415, 200, 250)           # start position above the work area
@@ -40,15 +43,8 @@ DEFAULT_SPEED = 100              # travel speed in mm/s (RAPID max 1000)
 DEFAULT_PICK_SPEED = 50          # down to / up from the object in mm/s (RAPID max 300)
 CARRY_Z = 250                    # height the cup is carried at between spots (max = BOUNDS_HI z)
 
-DEFAULT_JOBS = [
-    (400, 80, 400, 260),         # pick x, y  ->  place x, y   (cup A along the plank)
-    (400, 170, 400, 340),        # cup B
-]
-
-# ================= OBSTACLES (empty for now) =================
-# Add later, e.g.  OBSTACLES = [Box([380, 230, 0], [420, 260, 180]), Cylinder(400, 215, 22, 80)]
-CLEARANCE = 15
-OBSTACLES = []
+# ================= OBSTACLES =================
+CLEARANCE = 15                   # extra distance kept to every obstacle (mm)
 
 
 class Box:
@@ -66,6 +62,47 @@ class Cylinder:
     def hits(self, pts, c):
         d = np.hypot(pts[:, 0] - self.x, pts[:, 1] - self.y)
         return bool(np.any((d < self.r + c) & (pts[:, 2] < self.h + c)))
+
+
+# Virtual obstacle courses (nothing on the real table). Pick with --course NAME.
+# Tall obstacles (z up to 400) can't be flown over, so the arm must go around them.
+COURSES = {
+    "none": {
+        "obstacles": [],
+        "jobs": [(400, 80, 400, 260), (400, 170, 400, 340)],
+    },
+    "wall": {
+        "obstacles": [Box([420, 240, 0], [480, 260, 400], "wall")],
+        "jobs": [(450, 150, 450, 350)],
+    },
+    # Slalom: two walls from alternating sides, a low gate (beam above + block below)
+    # that forces the arm DOWN under the beam, and a pole in front of the place spot.
+    "slalom": {
+        "obstacles": [
+            Box([410, 120, 0], [520, 135, 400], "wall 1 (go left)"),
+            Box([350, 230, 0], [455, 245, 400], "wall 2 (go right)"),
+            Box([350, 305, 220], [520, 320, 400], "gate beam (go under)"),
+            Box([350, 305, 0], [520, 320, 120], "gate block (stay above)"),
+            Cylinder(400, 365, 15, 400, "pole"),
+        ],
+        "jobs": [(440, 70, 470, 405), (470, 405, 440, 70)],   # there and back again
+        "home": (380, 190, 250),
+    },
+    # Maze: three walls from alternating sides, a low gate and a pole. Longest path.
+    "maze": {
+        "obstacles": [
+            Box([410, 105, 0], [520, 118, 400], "wall 1 (go left)"),
+            Box([350, 175, 0], [455, 188, 400], "wall 2 (go right)"),
+            Box([410, 245, 0], [520, 258, 400], "wall 3 (go left)"),
+            Box([350, 300, 220], [520, 312, 400], "gate beam (go under)"),
+            Box([350, 300, 0], [520, 312, 120], "gate block (stay above)"),
+            Cylinder(470, 355, 12, 400, "pole"),
+        ],
+        "jobs": [(440, 70, 430, 405), (430, 405, 440, 70)],   # there and back again
+        "home": (380, 150, 250),
+    },
+}
+OBSTACLES = []                   # set from --course in main()
 
 
 def segment_free(a, b, res=5.0):
@@ -332,7 +369,7 @@ def run_on_robot(steps, home, host, port, speed, pick_speed):
 
     print("\nRunning on YuMi:")
     if send("SPEED", (speed, pick_speed, 0)) != "DONE":
-        return abort("Robot didn't accept the speed (old RAPID module loaded?). Nothing else was sent.")
+        return abort("Robot didn't accept the speed (not running, or old RAPID module?). Nothing else was sent.")
     if send("WAYEND", home) != "DONE":
         return abort("Could not move to the start position. Nothing else was sent.")
 
@@ -399,7 +436,18 @@ def interp(a, b, res=5.0):
 def build_frames(home, jobs, steps, hold=15):
     """(tcp, [cup centers], label) per frame. Stops at a failed or not-run step."""
     cup_offset = np.array([0, 0, CUP_H / 2 - GRASP_Z])
-    cups = [np.array([j[0], j[1], CUP_H / 2], float) for j in jobs]
+    # One cup per starting spot. A job that picks where an earlier job placed
+    # (e.g. a round trip) moves the same cup again instead of a new one.
+    cups, cup_of_job, placed = [], [], {}
+    for px, py, qx, qy in jobs:
+        key = (round(px), round(py))
+        if key in placed:
+            k = placed.pop(key)
+        else:
+            k = len(cups)
+            cups.append(np.array([px, py, CUP_H / 2], float))
+        cup_of_job.append(k)
+        placed[(round(qx), round(qy))] = k
     state = {"tcp": np.asarray(home, float), "carry": None}
     frames = []
 
@@ -434,7 +482,7 @@ def build_frames(home, jobs, steps, hold=15):
                 move(app, p, f"Job {n}: down to cup")
                 for _ in range(hold):
                     add(f"Job {n}: g_GripIn")
-                state["carry"] = n - 1
+                state["carry"] = cup_of_job[n - 1]
                 move(p, app, f"Job {n}: lift")
             else:
                 move(app, p, f"Job {n}: lower")
@@ -564,7 +612,9 @@ def main():
     ap.add_argument("--job", nargs=4, type=float, action="append",
                     metavar=("PICK_X", "PICK_Y", "PLACE_X", "PLACE_Y"),
                     help="add one pick & place job (repeat for more)")
-    ap.add_argument("--home", nargs=3, type=float, default=list(HOME), metavar=("X", "Y", "Z"))
+    ap.add_argument("--home", nargs=3, type=float, default=None, metavar=("X", "Y", "Z"))
+    ap.add_argument("--course", choices=list(COURSES), default="none",
+                    help="virtual obstacle course (none, wall, slalom, maze)")
     ap.add_argument("--speed", type=float, default=DEFAULT_SPEED,
                     help="travel speed between spots in mm/s (10-1000)")
     ap.add_argument("--pick-speed", type=float, default=DEFAULT_PICK_SPEED,
@@ -581,10 +631,13 @@ def main():
     ap.add_argument("--save", default=None, help="save the replay animation as GIF")
     args = ap.parse_args()
 
+    global OBSTACLES
+
     # ---------- replay an old run ----------
     if args.replay:
         with open(args.replay) as f:
             log = json.load(f)
+        OBSTACLES = COURSES.get(log.get("course", "none"), COURSES["none"])["obstacles"]
         print(f"Replaying {args.replay}  (success: {log['success']}, "
               f"speed: {log.get('speed', '?')} mm/s, pick speed: {log.get('pick_speed', '?')} mm/s, "
               f"carry z: {log.get('carry_z', '?')} mm)")
@@ -597,8 +650,14 @@ def main():
         random.seed(args.seed)
         np.random.seed(args.seed)
 
-    jobs = [tuple(j) for j in args.job] if args.job else DEFAULT_JOBS
-    home = np.array(args.home, float)
+    course = COURSES[args.course]
+    OBSTACLES = course["obstacles"]
+    jobs = [tuple(j) for j in args.job] if args.job else course["jobs"]
+    home = np.array(args.home if args.home else course.get("home", HOME), float)
+    if OBSTACLES:
+        print(f"Course '{args.course}': {len(OBSTACLES)} virtual obstacles")
+        for o in OBSTACLES:
+            print(f"  - {o.name}")
 
     problems = validate(home, jobs, args.speed, args.pick_speed, args.carry_z)
     if problems:
@@ -642,6 +701,7 @@ def main():
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "host": args.host,
         "port": args.port,
+        "course": args.course,
         "speed": args.speed,
         "pick_speed": args.pick_speed,
         "carry_z": args.carry_z,

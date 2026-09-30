@@ -124,7 +124,7 @@ class RRTStar:
         self.max_iter = max_iter
         self.gamma = gamma
         self.r_max = r_max
-
+        
         self.P = np.zeros((max_iter + 1, 3))
         self.P[0] = self.start
         self.n = 1
