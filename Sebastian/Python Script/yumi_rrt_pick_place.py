@@ -1,13 +1,16 @@
 """
 RRT* pick & place for YuMi (left arm). No collision checking yet (OBSTACLES is empty).
 
+Talks to the robot through the HTTP API: takes control (POST /control/acquire), then sends
+every RAPID command as {"command": ..., "parameters": {}} to POST /robot/command.
+
 One command does everything:
   1. plans all jobs with RRT*
   2. shows a preview animation (nothing is sent)
   3. asks if you want to run it on the YuMi
-  4. goes to the YuMi home position (HOME), then joint-moves to the start pose with the
-     gripper orientation from --rot (GOTO,x,y,z,rx,ry,rz), runs the jobs, saves a log in runs/,
-     prints the timing and shows a replay
+  4. takes control, joint-moves to the start pose with the gripper orientation from --rot
+     (GOTO,x,y,z,rx,ry,rz), runs the jobs, saves a log in runs/, prints the timing and
+     shows a replay
 
 Orientation: RAPID never forces one. A command with rx,ry,rz sets it, a command with
 only x,y,z keeps the last one. This script sets it once at the start pose.
@@ -22,22 +25,23 @@ import json
 import math
 import os
 import random
-import socket
 import time
 
 import numpy as np
 import matplotlib.pyplot as plt
+import requests
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
-DEFAULT_HOST = "192.168.125.1"   # sim: 127.0.0.1
-DEFAULT_PORT = 5001              # must match PORT in the RAPID module
+DEFAULT_URL = "http://127.0.0.1:8000/api/v1"
+DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+TIMEOUT = 120                    # s per command, longer than ARM_TIMEOUT (90 s) in RAPID
 
 # ================= WORKSPACE (mm, wobj0, table = z 0) =================
-# Keep inside the RAPID safe zone (X 350-480, Y 50-350) and under the ceiling (400)
+# Keep inside the RAPID safe zone (X 350-480, Y 50-420) and under the ceiling (400)
 BOUNDS_LO = (350, 50, 60)
-BOUNDS_HI = (520, 420, 380)
-HOME = (415, 200, 250)           # start pose, reached from the YuMi home position with GOTO
+BOUNDS_HI = (480, 420, 380)
+HOME = (415, 200, 250)           # start pose, reached with GOTO from wherever the arm is
 GRIP_ROT = (180, 0, 0)           # rx, ry, rz in degrees. 180 about X = gripper straight down
                                  # (RAPID: OrientZYX(rz, ry, rx) -> quaternion [0, 1, 0, 0])
 APPROACH = 100                   # must match APPROACH in RAPID
@@ -319,23 +323,40 @@ def fmt_cmd(cmd, p=None, rot=None):
     return s
 
 
-def send_cmd(host, port, cmd, p=None, rot=None):
+def acquire_control(url, token):
+    try:
+        r = requests.post(f"{url}/control/acquire",
+                          headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    except requests.RequestException as e:
+        print(f"  Could not reach the API: {e}")
+        return False
+    if not r.ok:
+        print(f"  Control refused: HTTP {r.status_code}: {r.text}")
+        return False
+    print(f"  Control: {r.json()}")
+    return True
+
+
+def send_cmd(url, token, cmd, p=None, rot=None):
     payload = fmt_cmd(cmd, p, rot)
     try:
-        with socket.create_connection((host, port), timeout=5) as sock:
-            sock.settimeout(120)
-            sock.sendall(payload.encode())
-            return sock.recv(1024).decode().strip()
-    except OSError as e:
+        r = requests.post(f"{url}/robot/command",
+                          headers={"Authorization": f"Bearer {token}"},
+                          json={"command": payload, "parameters": {}}, timeout=TIMEOUT)
+    except requests.RequestException as e:
         return f"ERR connection: {e}"
+    if not r.ok:
+        return f"ERR HTTP {r.status_code}: {r.text}"
+    reply = str(r.json())
+    return "DONE" if "DONE" in reply else reply
 
 
-def run_on_robot(steps, home, rot, host, port, speed, pick_speed):
+def run_on_robot(steps, home, rot, url, token, speed, pick_speed):
     events = []
     t0 = time.time()
 
     def send(cmd, p=None, r=None):
-        resp = send_cmd(host, port, cmd, p, r)
+        resp = send_cmd(url, token, cmd, p, r)
         events.append({"t": round(time.time() - t0, 2), "cmd": cmd,
                        "point": None if p is None else [float(v) for v in p],
                        "rot": None if r is None else [float(v) for v in r], "resp": resp})
@@ -349,13 +370,13 @@ def run_on_robot(steps, home, rot, host, port, speed, pick_speed):
         return events, False
 
     print("\nRunning on YuMi:")
+    if not acquire_control(url, token):
+        return abort("Could not take control of the robot. Nothing was sent.")
     if send("SPEED", (speed, pick_speed, 0)) != "DONE":
         return abort("Robot didn't accept the speed (old RAPID module loaded?). Nothing else was sent.")
-    if send("HOME") != "DONE":
-        return abort("Could not reach the YuMi home position. Nothing else was sent.")
     # Sets the gripper orientation. Every command after this keeps it.
     if send("GOTO", home, rot) != "DONE":
-        return abort("Could not move from home to the start pose. Nothing else was sent.")
+        return abort("Could not move to the start pose. Nothing else was sent.")
 
     ok = True
     for s in steps:
@@ -587,7 +608,7 @@ def main():
                     metavar=("PICK_X", "PICK_Y", "PLACE_X", "PLACE_Y"),
                     help="add one pick & place job (repeat for more)")
     ap.add_argument("--home", nargs=3, type=float, default=list(HOME), metavar=("X", "Y", "Z"),
-                    help="start pose, reached from the YuMi home position")
+                    help="start pose, reached with GOTO from wherever the arm is")
     ap.add_argument("--rot", nargs=3, type=float, default=list(GRIP_ROT), metavar=("RX", "RY", "RZ"),
                     help="gripper orientation in degrees, set at the start pose and kept for the run")
     ap.add_argument("--speed", type=float, default=DEFAULT_SPEED,
@@ -601,8 +622,8 @@ def main():
     ap.add_argument("--raw", action="store_true", help="send the raw RRT* path instead of the shortcut")
     ap.add_argument("--no-preview", action="store_true", help="skip the preview animation")
     ap.add_argument("--replay", default=None, help="replay a saved run (no robot)")
-    ap.add_argument("--host", default=DEFAULT_HOST)
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--url", default=DEFAULT_URL)
+    ap.add_argument("--token", default=DEFAULT_TOKEN)
     ap.add_argument("--save", default=None, help="save the replay animation as GIF")
     args = ap.parse_args()
 
@@ -641,11 +662,10 @@ def main():
             s["sent"] = s["raw"] if args.raw else s["points"]
     trees = [s["planner"] for s in steps if s["type"] == "path"]
 
-    n_cmds = 3 + sum(len(commands_for(s)) for s in steps)
+    n_cmds = 2 + sum(len(commands_for(s)) for s in steps)
     print(f"\nCommands ({n_cmds}):")
     print(f"  SPEED,{args.speed:.1f},{args.pick_speed:.1f},0.0   <- travel / pick speed")
-    print(f"  HOME   <- YuMi home position, same every run")
-    print(f"  {fmt_cmd('GOTO', home, args.rot)}   <- from home to start pose, sets orientation")
+    print(f"  {fmt_cmd('GOTO', home, args.rot)}   <- to start pose, sets orientation")
     for s in steps:
         for cmd, p in commands_for(s):
             print(f"  {cmd},{fmt(p)}")
@@ -656,18 +676,17 @@ def main():
         animate(home, jobs, steps, trees, "Preview (nothing sent to the robot)")
 
     # ---------- 3. ask ----------
-    ans = input(f"\nRun this on the YuMi ({args.host}:{args.port}) at {args.speed:.0f} mm/s "
+    ans = input(f"\nRun this on the YuMi ({args.url}) at {args.speed:.0f} mm/s "
                 f"(pick {args.pick_speed:.0f} mm/s, carry at z {args.carry_z:.0f})? (y/n): ")
     if ans.strip().lower() != "y":
         print("Not sent. Nothing moved.")
         return
 
     # ---------- 4. run + save + timing + replay ----------
-    events, ok = run_on_robot(steps, home, args.rot, args.host, args.port, args.speed, args.pick_speed)
+    events, ok = run_on_robot(steps, home, args.rot, args.url, args.token, args.speed, args.pick_speed)
     log = {
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "host": args.host,
-        "port": args.port,
+        "url": args.url,
         "speed": args.speed,
         "pick_speed": args.pick_speed,
         "carry_z": args.carry_z,

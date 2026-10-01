@@ -3,16 +3,15 @@ MODULE LeftArm
   ! TCP z = 159: touch-off showed the gripper is ~23 mm longer than 136 (table now = z 0)
   PERS tooldata tGrip := [TRUE, [[0, 0, 159], [1, 0, 0, 0]], [0.230, [8.2, 11.7, 52.0], [1, 0, 0, 0], 0.00021, 0.00024, 0.00009]];
 
+  ! Gripper pointing straight down (measured on the pendant: q1~0 q2~1 q3~0 q4~0)
+  CONST orient DOWN_ROT := [0, 1, 0, 0];
+  CONST num SAFE_Z := 200;              ! go up to this before turning the gripper
   CONST num MARGIN := 25;               ! used by TeachMaxHeight
 
   VAR speeddata vTravel := [100, 500, 5000, 1000];
   VAR speeddata vNear := [50, 500, 5000, 1000];
-
-  ! Orientation is never forced here. Every motion command can carry rx,ry,rz
-  ! (CommServer turns them into target_rot / use_rot). Without them the arm keeps
-  ! the last orientation it was given (cur_rot).
-  VAR robtarget pBase;                  ! robconf + arm angle (eax_a) used for new targets
-  VAR orient cur_rot;                   ! orientation used when a command has no rx,ry,rz
+  VAR robtarget pRef;
+  VAR jointtarget jRef;              ! start pose as joint values, used to return after HOME
   VAR robtarget pApp;
   VAR robtarget pPoint;
   VAR robtarget pTarget;
@@ -20,11 +19,13 @@ MODULE LeftArm
   VAR num y;
   VAR num z;
   VAR string reply;
+  VAR bool at_home := FALSE;
 
   PROC main()
     ! Clear requests left over from an earlier run (PERS keeps its values)
     arm_ready := FALSE;
     move_request := FALSE;
+    at_home := FALSE;
 
     ConfJ \Off;
     ConfL \Off;
@@ -33,9 +34,7 @@ MODULE LeftArm
     ENDIF
     g_GripOut;
 
-    ! No motion at start. Keep whatever orientation the arm has right now.
-    TakeCurrent;
-
+    PointDown;
     TPWrite "Ceiling (max height) Z = " \Num:=zMax;
     arm_ready := TRUE;
     TPWrite "Left arm ready";
@@ -49,10 +48,10 @@ MODULE LeftArm
       vTravel := [travel_speed, 500, 5000, 1000];
       vNear := [pick_speed, 500, 5000, 1000];
 
-      ! New orientation given? Use it for this and every following command.
-      ! CHECK only tests, so it must not change cur_rot.
-      IF use_rot AND arm_cmd <> "CHECK" AND arm_cmd <> "HOME" THEN
-        cur_rot := target_rot;
+      ! After HOME, go back to the known-good start pose before any other move
+      IF at_home AND arm_cmd <> "HOME" AND arm_cmd <> "CHECK" THEN
+        MoveAbsJ jRef \NoEOffs, vTravel, fine, tGrip;
+        at_home := FALSE;
       ENDIF
 
       TEST arm_cmd
@@ -72,19 +71,24 @@ MODULE LeftArm
         DoMove;
         reply := "DONE";
       CASE "WAYPOINT":
-        pPoint := MakeTarget(x, y, z);
+        pPoint := pRef;
+        pPoint.trans := [x, y, z];
         MoveL pPoint, vTravel, z10, tGrip \WObj:=wobj0;
         reply := "DONE";
       CASE "WAYEND":
-        pPoint := MakeTarget(x, y, z);
+        pPoint := pRef;
+        pPoint.trans := [x, y, z];
         MoveL pPoint, vTravel, fine, tGrip \WObj:=wobj0;
         reply := "DONE";
       CASE "GOTO":
-        ! Joint move: use this for big orientation changes (e.g. from HOME)
-        pTarget := MakeTarget(x, y, z);
+        ! Plain point (optionally with rotation), from the friend's protocol
+        pTarget := pRef;
+        pTarget.trans := [x, y, z];
+        IF use_rot THEN
+          pTarget.rot := target_rot;
+        ENDIF
         IF CanReach(pTarget) THEN
           MoveJ pTarget, vTravel, fine, tGrip \WObj:=wobj0;
-          TakeCurrent;
           reply := "DONE";
         ELSE
           TPWrite "Rejected: unreachable";
@@ -92,7 +96,7 @@ MODULE LeftArm
         ENDIF
       CASE "HOME":
         GoHomeLeft;
-        TakeCurrent;
+        at_home := TRUE;
         IF AtHome() THEN
           reply := "DONE";
         ELSE
@@ -107,21 +111,37 @@ MODULE LeftArm
     ENDWHILE
   ENDPROC
 
-  ! Remember the arm's current pose: its orientation becomes cur_rot,
-  ! its robconf and arm angle are used for the next targets.
-  PROC TakeCurrent()
-    pBase := CRobT(\Tool:=tGrip \WObj:=wobj0);
-    cur_rot := pBase.rot;
-  ENDPROC
+  ! ================= START POSE =================
 
-  ! Target at x, y, z with the current orientation
-  FUNC robtarget MakeTarget(num px, num py, num pz)
-    VAR robtarget p;
-    p := pBase;
-    p.trans := [px, py, pz];
-    p.rot := cur_rot;
-    RETURN p;
-  ENDFUNC
+  ! 1. Go straight up to SAFE_Z if lower (same orientation, no turning near the table)
+  ! 2. Check that pointing down is reachable here
+  ! 3. Turn the gripper to point straight down, slowly
+  PROC PointDown()
+    VAR robtarget pNow;
+    VAR robtarget pDown;
+
+    pNow := CRobT(\Tool:=tGrip \WObj:=wobj0);
+    pDown := pNow;
+
+    IF pNow.trans.z < SAFE_Z THEN
+      pDown.trans.z := SAFE_Z;
+      TPWrite "Moving up to safe height before turning...";
+      MoveL pDown, v50, fine, tGrip \WObj:=wobj0;
+    ENDIF
+
+    pDown.rot := DOWN_ROT;
+    IF NOT CanReach(pDown) THEN
+      TPWrite "Can't point the gripper down from here.";
+      TPWrite "Jog the arm closer to the work area and press Play again.";
+      Stop;
+    ENDIF
+
+    TPWrite "Turning gripper to point straight down...";
+    MoveJ pDown, v50, fine, tGrip \WObj:=wobj0;
+    pRef := CRobT(\Tool:=tGrip \WObj:=wobj0);
+    jRef := CJointT();
+    TPWrite "Start pose set.";
+  ENDPROC
 
   ! Optional: jog to camera height (Tool tGrip), PP to Routine -> TeachMaxHeight -> Start
   PROC TeachMaxHeight()
@@ -134,8 +154,10 @@ MODULE LeftArm
   ! ================= MOTION =================
 
   PROC SetTargets()
-    pApp := MakeTarget(x, y, z + APPROACH);
-    pPoint := MakeTarget(x, y, z);
+    pApp := pRef;
+    pApp.trans := [x, y, z + APPROACH];
+    pPoint := pRef;
+    pPoint.trans := [x, y, z];
   ENDPROC
 
   ! Travel at vTravel, down/up near the object at vNear
@@ -177,13 +199,11 @@ MODULE LeftArm
        AND Abs(jt.extax.eax_a - home_left.extax.eax_a) < 1;
   ENDFUNC
 
-  ! Reach check for x, y, z with the given orientation (or the current one). No motion.
+  ! Reach check for x, y, z with the start-pose orientation. No motion.
   FUNC bool CanReachXYZ()
     VAR robtarget pTest;
-    pTest := MakeTarget(x, y, z);
-    IF use_rot THEN
-      pTest.rot := target_rot;
-    ENDIF
+    pTest := pRef;
+    pTest.trans := [x, y, z];
     RETURN CanReach(pTest);
   ENDFUNC
 

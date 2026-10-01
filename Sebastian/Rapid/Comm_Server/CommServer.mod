@@ -7,10 +7,10 @@ MODULE CommServer
   ! Allowed box for TCP targets (wobj0, tGrip, table = z 0). Keep in sync with BOUNDS in Python.
   CONST num X_MIN := 350;
   CONST num X_MAX := 480;
-  CONST num Y_MIN := -250;
-  CONST num Y_MAX := 350;
+  CONST num Y_MIN := -230;
+  CONST num Y_MAX := 420;
   CONST num Z_MIN := 5;
-
+  
   CONST num MAX_SPEED := 1000;          ! travel speed limit
   CONST num MAX_NEAR := 300;            ! pick speed limit
   CONST num ARM_TIMEOUT := 90;          ! s to wait for the arm before giving up
