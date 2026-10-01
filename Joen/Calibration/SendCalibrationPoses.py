@@ -1,20 +1,15 @@
-import socket
 import argparse
 
-DEFAULT_HOST = "192.168.125.1"   # YuMi controller IP
-DEFAULT_PORT = 5000              # must match the RAPID Socket server port
+import requests
+
+DEFAULT_URL = "http://127.0.0.1:8000/api/v1"
+DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+TIMEOUT = 100                    # s, longer than ARM_TIMEOUT (90 s) in CommServer.mod
 
 # Tilt used for every pose that has no own rotation: (rx, ry, rz) in degrees.
 CALIB_ROT = (90, 0, 90)
 
-# Calibration area, mm, flange (tool0) in wobj0. Adjust to what the camera sees.
-X_RANGE = (350, 425)        # near the body -> far from the body
-Y_RANGE = (-50, 200)        # right -> left
-Z_LEVELS = (260, 300, 340)  # low, middle, high
-
-
-
-# 24 calibration poses, mm, flange (tool0) in wobj0.
+# 24 calibration poses, mm, gripper TCP (tGrip) in wobj0, table = z 0.
 # Mirrored left/right around y = 0: pose n and pose 25-n share x and z.
 POSES = [
     # Left side (+y)
@@ -28,24 +23,35 @@ POSES = [
     (375, -60, 260), (375, -145, 300), (375, -230, 300),
     (350, -230, 300), (350, -145, 300), (350, -60, 260),
 ]
-def send(host: str, port: int, payload: str) -> str:
-    with socket.create_connection((host, port), timeout=5) as sock:
-        sock.settimeout(60)
-        sock.sendall(payload.encode())
-        response = sock.recv(1024).decode().strip()
-    print(f"Sent: {payload}  →  Response: {response}")
-    return response
 
 
-def send_target(host: str, port: int, x: float, y: float, z: float, rot=None) -> str:
+def acquire(url: str, headers: dict) -> None:
+    response = requests.post(f"{url}/control/acquire", headers=headers, timeout=10)
+    response.raise_for_status()
+    print("Control:", response.json())
+
+
+def send(url: str, headers: dict, command: str) -> str:
+    response = requests.post(
+        f"{url}/robot/command",
+        headers=headers,
+        json={"command": command, "parameters": {}},
+        timeout=TIMEOUT,
+    )
+    reply = str(response.json()) if response.ok else f"HTTP {response.status_code}: {response.text}"
+    print(f"Sent: {command}  →  {reply}")
+    return reply
+
+
+def send_target(url: str, headers: dict, x: float, y: float, z: float, rot=None) -> str:
     values = (x, y, z) + (tuple(rot) if rot else ())
-    return send(host, port, ",".join(f"{v:g}" for v in values))
+    return send(url, headers, "GOTO," + ",".join(f"{v:g}" for v in values))
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Send XYZ (and rotation) to YuMi")
-    parser.add_argument("--host", default=DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser = argparse.ArgumentParser(description="Send calibration poses to YuMi through the API")
+    parser.add_argument("--url", default=DEFAULT_URL)
+    parser.add_argument("--token", default=DEFAULT_TOKEN)
     parser.add_argument("--x", type=float, help="X in mm")
     parser.add_argument("--y", type=float, help="Y in mm")
     parser.add_argument("--z", type=float, help="Z in mm")
@@ -54,29 +60,41 @@ if __name__ == "__main__":
     parser.add_argument("--rz", type=float, help="Rotation about Z in degrees")
     parser.add_argument("--poses", action="store_true", help="Go to calibration position, then run POSES")
     parser.add_argument("--home", action="store_true", help="Go to the YuMi calibration position")
+    parser.add_argument("--limits", action="store_true", help="Print the height limit (zMax)")
     args = parser.parse_args()
 
+    single = None not in (args.x, args.y, args.z)
+    if not (args.poses or args.home or args.limits or single):
+        parser.error("give --x --y --z (optionally --rx --ry --rz), --home, --limits or --poses")
+
+    headers = {"Authorization": f"Bearer {args.token}"}
+    acquire(args.url, headers)
+
     if args.poses:
-        if send(args.host, args.port, "HOME") != "DONE":
+        if "DONE" not in send(args.url, headers, "HOME"):
             parser.exit(1, "Could not reach calibration position, stopping\n")
         failed = []
         for i, pose in enumerate(POSES, 1):
             x, y, z = pose[:3]
             rot = pose[3:] or CALIB_ROT
             print(f"[{i}/{len(POSES)}] ", end="")
-            if send_target(args.host, args.port, x, y, z, rot) != "DONE":
-                failed.append((i, pose))
+            reply = send_target(args.url, headers, x, y, z, rot)
+            if "DONE" not in reply:
+                failed.append((i, pose, reply))
+            if "arm not ready" in reply or "arm timeout" in reply:
+                print("Arm is not responding, stopping")
+                break
         print(f"\n{len(POSES) - len(failed)}/{len(POSES)} poses reached")
-        for i, pose in failed:
-            print(f"  failed: pose {i} {pose}")
+        for i, pose, reply in failed:
+            print(f"  failed: pose {i} {pose}  ({reply})")
     elif args.home:
-        send(args.host, args.port, "HOME")
-    elif None not in (args.x, args.y, args.z):
+        send(args.url, headers, "HOME")
+    elif args.limits:
+        send(args.url, headers, "LIMITS")
+    else:
         rot = (args.rx, args.ry, args.rz)
         if None in rot:
             if any(r is not None for r in rot):
                 parser.error("give all of --rx --ry --rz, or none")
             rot = None
-        send_target(args.host, args.port, args.x, args.y, args.z, rot)
-    else:
-        parser.error("give --x --y --z (optionally --rx --ry --rz), --home, or --poses")
+        send_target(args.url, headers, args.x, args.y, args.z, rot)
