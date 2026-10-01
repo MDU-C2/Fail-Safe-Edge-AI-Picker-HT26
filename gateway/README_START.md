@@ -39,7 +39,7 @@ Open:
 Example mock command:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: application/json' -d '{"command":"hello","parameters":{}}'
+curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: application/json' -d 'WAYEND,515.0,200.0,250.0'
 ```
 
 The robot service is a mock and does not contact physical hardware. The next implementation phase is control ownership, priority, lease renewal/expiration, and event notification.
