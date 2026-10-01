@@ -113,7 +113,8 @@ MODULE CommServer
     ENDIF
     arm_cmd := c;
     target_pos := [x, y, z];
-    use_rot := c = "GOTO" AND nvals = 6;
+    ! Any command can carry rx,ry,rz (degrees). Without them the arm keeps its orientation.
+    use_rot := nvals = 6;
     IF use_rot THEN
       target_rot := OrientZYX(vals{6}, vals{5}, vals{4});
     ENDIF
@@ -135,7 +136,8 @@ MODULE CommServer
   ENDFUNC
 
   ! Accepts:
-  !   "CMD,x,y,z"            e.g. PICK,400,180,40   SPEED,250,100,0
+  !   "CMD,x,y,z"            e.g. PICK,400,180,40   SPEED,250,100,0   (keeps orientation)
+  !   "CMD,x,y,z,rx,ry,rz"   e.g. GOTO,415,200,250,180,0,0          (new orientation, degrees)
   !   "CMD"                  e.g. HOME   LIMITS
   !   "x,y,z"                plain point  -> GOTO
   !   "x,y,z,rx,ry,rz"       point + rotation in degrees -> GOTO

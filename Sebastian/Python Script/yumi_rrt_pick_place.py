@@ -5,7 +5,12 @@ One command does everything:
   1. plans all jobs with RRT*
   2. shows a preview animation (nothing is sent)
   3. asks if you want to run it on the YuMi
-  4. runs it, saves a log in runs/, prints the timing and shows a replay
+  4. goes to the YuMi home position (HOME), then joint-moves to the start pose with the
+     gripper orientation from --rot (GOTO,x,y,z,rx,ry,rz), runs the jobs, saves a log in runs/,
+     prints the timing and shows a replay
+
+Orientation: RAPID never forces one. A command with rx,ry,rz sets it, a command with
+only x,y,z keeps the last one. This script sets it once at the start pose.
 
   python yumi_rrt_pick_place.py --job 400 80 400 260 --job 400 170 400 340 --speed 250 --pick-speed 100 --carry-z 250
 
@@ -32,7 +37,9 @@ DEFAULT_PORT = 5001              # must match PORT in the RAPID module
 # Keep inside the RAPID safe zone (X 350-480, Y 50-350) and under the ceiling (400)
 BOUNDS_LO = (350, 50, 60)
 BOUNDS_HI = (520, 420, 380)
-HOME = (415, 200, 250)           # start position above the work area
+HOME = (415, 200, 250)           # start pose, reached from the YuMi home position with GOTO
+GRIP_ROT = (180, 0, 0)           # rx, ry, rz in degrees. 180 about X = gripper straight down
+                                 # (RAPID: OrientZYX(rz, ry, rx) -> quaternion [0, 1, 0, 0])
 APPROACH = 100                   # must match APPROACH in RAPID
 GRASP_Z = 40                     # grip height = object height / 2
 CUP_R, CUP_H = 22, 80            # only used for drawing
@@ -302,8 +309,18 @@ def commands_for(step):
     return [(step["type"].upper(), step["point"])]
 
 
-def send_cmd(host, port, cmd, p):
-    payload = f"{cmd},{fmt(p)}"
+def fmt_cmd(cmd, p=None, rot=None):
+    """CMD  /  CMD,x,y,z  /  CMD,x,y,z,rx,ry,rz"""
+    if p is None:
+        return cmd
+    s = f"{cmd},{fmt(p)}"
+    if rot is not None:
+        s += "," + ",".join(f"{v:.1f}" for v in rot)
+    return s
+
+
+def send_cmd(host, port, cmd, p=None, rot=None):
+    payload = fmt_cmd(cmd, p, rot)
     try:
         with socket.create_connection((host, port), timeout=5) as sock:
             sock.settimeout(120)
@@ -313,15 +330,16 @@ def send_cmd(host, port, cmd, p):
         return f"ERR connection: {e}"
 
 
-def run_on_robot(steps, home, host, port, speed, pick_speed):
+def run_on_robot(steps, home, rot, host, port, speed, pick_speed):
     events = []
     t0 = time.time()
 
-    def send(cmd, p):
-        resp = send_cmd(host, port, cmd, p)
+    def send(cmd, p=None, r=None):
+        resp = send_cmd(host, port, cmd, p, r)
         events.append({"t": round(time.time() - t0, 2), "cmd": cmd,
-                       "point": [float(v) for v in p], "resp": resp})
-        print(f"  {cmd:9s} {fmt(p):>22s}  ->  {resp}")
+                       "point": None if p is None else [float(v) for v in p],
+                       "rot": None if r is None else [float(v) for v in r], "resp": resp})
+        print(f"  {fmt_cmd(cmd, p, r):45s}  ->  {resp}")
         return resp
 
     def abort(msg):
@@ -333,8 +351,11 @@ def run_on_robot(steps, home, host, port, speed, pick_speed):
     print("\nRunning on YuMi:")
     if send("SPEED", (speed, pick_speed, 0)) != "DONE":
         return abort("Robot didn't accept the speed (old RAPID module loaded?). Nothing else was sent.")
-    if send("WAYEND", home) != "DONE":
-        return abort("Could not move to the start position. Nothing else was sent.")
+    if send("HOME") != "DONE":
+        return abort("Could not reach the YuMi home position. Nothing else was sent.")
+    # Sets the gripper orientation. Every command after this keeps it.
+    if send("GOTO", home, rot) != "DONE":
+        return abort("Could not move from home to the start pose. Nothing else was sent.")
 
     ok = True
     for s in steps:
@@ -357,8 +378,9 @@ def print_timing(events):
     done = [e for e in events if e["resp"] == "DONE"]
     if len(done) < 3:
         return
-    start = done[1]["t"]          # after SPEED and the move to start
-    print("\nTiming (from start position):")
+    # Clock starts when the start pose is reached (GOTO, older logs: START or the second DONE)
+    start = next((e["t"] for e in done if e["cmd"] in ("GOTO", "START")), done[1]["t"])
+    print("\nTiming (from start pose):")
     prev = start
     for n, e in enumerate([e for e in done if e["cmd"] == "PLACE"], 1):
         print(f"  Job {n}: {e['t'] - prev:.1f} s")
@@ -414,7 +436,7 @@ def build_frames(home, jobs, steps, hold=15):
             add(label)
 
     for _ in range(hold):
-        add("Start position")
+        add("Start pose")
 
     for s in steps:
         status = s.get("status", "planned")
@@ -564,7 +586,10 @@ def main():
     ap.add_argument("--job", nargs=4, type=float, action="append",
                     metavar=("PICK_X", "PICK_Y", "PLACE_X", "PLACE_Y"),
                     help="add one pick & place job (repeat for more)")
-    ap.add_argument("--home", nargs=3, type=float, default=list(HOME), metavar=("X", "Y", "Z"))
+    ap.add_argument("--home", nargs=3, type=float, default=list(HOME), metavar=("X", "Y", "Z"),
+                    help="start pose, reached from the YuMi home position")
+    ap.add_argument("--rot", nargs=3, type=float, default=list(GRIP_ROT), metavar=("RX", "RY", "RZ"),
+                    help="gripper orientation in degrees, set at the start pose and kept for the run")
     ap.add_argument("--speed", type=float, default=DEFAULT_SPEED,
                     help="travel speed between spots in mm/s (10-1000)")
     ap.add_argument("--pick-speed", type=float, default=DEFAULT_PICK_SPEED,
@@ -616,10 +641,11 @@ def main():
             s["sent"] = s["raw"] if args.raw else s["points"]
     trees = [s["planner"] for s in steps if s["type"] == "path"]
 
-    n_cmds = 2 + sum(len(commands_for(s)) for s in steps)
+    n_cmds = 3 + sum(len(commands_for(s)) for s in steps)
     print(f"\nCommands ({n_cmds}):")
     print(f"  SPEED,{args.speed:.1f},{args.pick_speed:.1f},0.0   <- travel / pick speed")
-    print(f"  WAYEND,{fmt(home)}   <- move to start")
+    print(f"  HOME   <- YuMi home position, same every run")
+    print(f"  {fmt_cmd('GOTO', home, args.rot)}   <- from home to start pose, sets orientation")
     for s in steps:
         for cmd, p in commands_for(s):
             print(f"  {cmd},{fmt(p)}")
@@ -637,7 +663,7 @@ def main():
         return
 
     # ---------- 4. run + save + timing + replay ----------
-    events, ok = run_on_robot(steps, home, args.host, args.port, args.speed, args.pick_speed)
+    events, ok = run_on_robot(steps, home, args.rot, args.host, args.port, args.speed, args.pick_speed)
     log = {
         "date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "host": args.host,
@@ -646,6 +672,7 @@ def main():
         "pick_speed": args.pick_speed,
         "carry_z": args.carry_z,
         "home": home.tolist(),
+        "rot": list(args.rot),
         "jobs": [list(j) for j in jobs],
         "sent_raw_path": args.raw,
         "success": ok,
