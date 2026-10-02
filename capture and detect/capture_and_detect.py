@@ -4,7 +4,7 @@ and save where every object is - in pixels AND in 3D camera coordinates (mm).
 
 Pipeline (repeats every time you press Enter):
     1. capture RGB + depth aligned to RGB   (same camera setup as capture_images.py)
-    2. YOLO11-seg -> one mask per object (CUP, CUP BASE, CUP HANDLE, TRAY)
+    2. YOLO11-seg -> one mask per CUP BASE and CUP HANDLE (other classes are ignored)
     3. per object: mask centre (u, v) + median depth inside the mask
        -> X, Y, Z in mm using the colour camera intrinsics
     4. save to Data/Detections/:
@@ -18,9 +18,15 @@ Pipeline (repeats every time you press Enter):
 Coordinates are in the CAMERA frame (X right, Y down, Z forward, mm).
 They still need a camera->robot calibration before YuMi can use them.
 
+The model is picked by the device the script runs on; both weights must sit in
+the same folder as this file:
+    Westermo Lynx  -> best_ncnn_model/   (set PICKER_DEVICE=lynx in the Lynx container)
+    Raspberry Pi   -> best.pt            (detected automatically)
+    anything else  -> best.pt            (e.g. the development laptop)
+
 Usage:
     py capture_and_detect.py
-    py capture_and_detect.py --conf 0.6 --classes "CUP HANDLE"
+    py capture_and_detect.py --conf 0.6
 """
 
 import argparse
@@ -36,14 +42,13 @@ import depthai as dai
 import numpy as np
 from ultralytics import YOLO
 
-HERE = Path(__file__).parent
+HERE = Path(__file__).resolve().parent
+KEEP_CLASSES = ["CUP BASE", "CUP HANDLE"]
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--model", default=str(HERE / "models" / "weights" / "best.pt"))
 parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
 parser.add_argument("--ip", default="169.254.1.223", help="Camera IP address")
 parser.add_argument("--conf", type=float, default=0.5)
-parser.add_argument("--classes", nargs="*", help='Only keep these classes, e.g. "CUP HANDLE"')
 parser.add_argument("--warmup", type=float, default=2.0, help="Seconds to discard while auto-exposure settles")
 parser.add_argument("--width", type=int, default=1920)
 parser.add_argument("--height", type=int, default=1080)
@@ -55,6 +60,30 @@ SIZE = (args.width, args.height)
 
 CSV_FIELDS = ["capture", "class", "confidence", "u_px", "v_px", "mask_area_px",
               "depth_mm", "x_mm", "y_mm", "z_mm"]
+
+
+def detect_device():
+    """Which hardware are we on? The Lynx container sets PICKER_DEVICE=lynx."""
+    if os.environ.get("PICKER_DEVICE", "").lower() == "lynx":
+        return "lynx"
+    # device-tree is hidden inside Docker, /proc/cpuinfo is not
+    for path in ("/proc/device-tree/model", "/proc/cpuinfo"):
+        try:
+            with open(path) as f:
+                if "raspberry pi" in f.read().lower():
+                    return "raspberry_pi"
+        except OSError:
+            pass
+    return "laptop"
+
+
+def model_path(device_name):
+    """NCNN on the Lynx, PyTorch weights everywhere else - always next to this file."""
+    path = HERE / ("best_ncnn_model" if device_name == "lynx" else "best.pt")
+    if not path.exists():
+        raise SystemExit(f"Model not found: {path}\n"
+                         f"Put best.pt and best_ncnn_model/ in the same folder as capture_and_detect.py.")
+    return path
 
 
 def connect(ip, timeout=60):
@@ -74,13 +103,11 @@ def connect(ip, timeout=60):
 
 def analyse(rgb, depth, fx, fy, cx0, cy0):
     """Run YOLO on one frame; return (list of objects, annotated image)."""
-    result = model.predict(rgb, conf=args.conf, retina_masks=True, verbose=False)[0]
+    result = model.predict(rgb, conf=args.conf, classes=keep_ids, retina_masks=True, verbose=False)[0]
 
     objects, keep = [], []
     for j, box in enumerate(result.boxes):
         name = model.names[int(box.cls)]
-        if args.classes and name not in args.classes:
-            continue
         if result.masks is None:
             continue
         mask = result.masks.data[j].cpu().numpy().astype(bool)
@@ -115,9 +142,12 @@ def analyse(rgb, depth, fx, fy, cx0, cy0):
     return objects, annotated
 
 
-print(f"Loading model {args.model} ...", flush=True)
-model = YOLO(args.model, task="segment")
-print("Classes:", list(model.names.values()), flush=True)
+device_name = detect_device()
+weights = model_path(device_name)
+print(f"Device: {device_name} -> loading {weights.name} ...", flush=True)
+model = YOLO(str(weights), task="segment")
+keep_ids = [i for i, n in model.names.items() if n in KEEP_CLASSES]
+print("Detecting:", [model.names[i] for i in keep_ids], flush=True)
 
 print(f"Connecting to OAK-D at {args.ip}...", flush=True)
 device = connect(args.ip)

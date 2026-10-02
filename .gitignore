@@ -1,4 +1,4 @@
 Data/Images/depth_vis/
 Data/Images/seg_results/
-*.pt
+
 __pycache__/

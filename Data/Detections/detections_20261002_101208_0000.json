@@ -1,0 +1,35 @@
+{
+  "capture": "20261002_101208_0000",
+  "frame": "camera",
+  "units": "mm",
+  "intrinsics": {
+    "fx": 1162.467529296875,
+    "fy": 1162.467529296875,
+    "cx": 933.0515747070312,
+    "cy": 537.0249633789062
+  },
+  "objects": [
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.663,
+      "u_px": 922.0,
+      "v_px": 664.7,
+      "mask_area_px": 1537,
+      "depth_mm": 809.0,
+      "x_mm": -7.7,
+      "y_mm": 88.8,
+      "z_mm": 809.0
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.559,
+      "u_px": 787.2,
+      "v_px": 709.4,
+      "mask_area_px": 1726,
+      "depth_mm": 815.0,
+      "x_mm": -102.3,
+      "y_mm": 120.8,
+      "z_mm": 815.0
+    }
+  ]
+}
