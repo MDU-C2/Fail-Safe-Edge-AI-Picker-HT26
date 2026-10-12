@@ -9,7 +9,10 @@ from fastapi import (
 )
 
 from gateway.camera.service import camera_service
-from gateway.models.camera import CameraStatus
+from gateway.models.camera import (
+    CameraIntrinsics,
+    CameraStatus,
+)
 from gateway.security.authentication import require_permission
 from gateway.security.identity import Identity
 
@@ -32,6 +35,28 @@ def get_camera_status(
     ],
 ) -> CameraStatus:
     return camera_service.get_status()
+
+
+@router.get(
+    "/intrinsics",
+    response_model=CameraIntrinsics,
+    summary="Get the RGB camera intrinsics",
+)
+def get_camera_intrinsics(
+    _: Annotated[
+        Identity,
+        Depends(require_permission("camera.read")),
+    ],
+) -> CameraIntrinsics:
+    intrinsics = camera_service.get_intrinsics()
+
+    if intrinsics is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Camera intrinsics are not currently available",
+        )
+
+    return intrinsics
 
 
 @router.get(
