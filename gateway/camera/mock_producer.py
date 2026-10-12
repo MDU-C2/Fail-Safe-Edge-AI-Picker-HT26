@@ -2,6 +2,7 @@ import asyncio
 
 from gateway.camera.producer import CameraProducer
 from gateway.camera.service import CameraService
+from gateway.models.camera import CameraIntrinsics
 
 
 class MockCameraProducer(CameraProducer):
@@ -19,6 +20,26 @@ class MockCameraProducer(CameraProducer):
             return
 
         self._running = True
+
+        #
+        # Placeholder values matching the 640x480 mock frames.
+        # They do not describe a real camera.
+        #
+        self._camera_service.set_intrinsics(
+            CameraIntrinsics(
+                width=640,
+                height=480,
+                fx=500.0,
+                fy=500.0,
+                cx=320.0,
+                cy=240.0,
+                matrix=[
+                    [500.0, 0.0, 320.0],
+                    [0.0, 500.0, 240.0],
+                    [0.0, 0.0, 1.0],
+                ],
+            )
+        )
 
         await self._camera_service.set_connected(True)
 

@@ -7,6 +7,7 @@ import depthai as dai
 
 from gateway.camera.producer import CameraProducer
 from gateway.camera.service import CameraService
+from gateway.models.camera import CameraIntrinsics
 
 
 class OakCameraProducer(CameraProducer):
@@ -114,6 +115,8 @@ class OakCameraProducer(CameraProducer):
 
         self._frame_queue = None
 
+        self._intrinsics: CameraIntrinsics | None = None
+
 
         # ================================================================
     # Camera pipeline
@@ -135,6 +138,13 @@ class OakCameraProducer(CameraProducer):
         #
 
         self._device = self._connect_device()
+
+        #
+        # Read the RGB intrinsics from the device calibration,
+        # converted to the published frame size.
+        #
+
+        self._intrinsics = self._read_intrinsics()
 
         #
         # Create pipeline for this device.
@@ -311,6 +321,10 @@ class OakCameraProducer(CameraProducer):
                 self._open_camera
             )
 
+            self._camera_service.set_intrinsics(
+                self._intrinsics
+            )
+
             await self._camera_service.set_connected(
                 True
             )
@@ -422,6 +436,37 @@ class OakCameraProducer(CameraProducer):
                 time.sleep(
                     self._reconnect_delay_seconds
                 )
+
+    # ================================================================
+    # Camera calibration
+    # ================================================================
+
+    def _read_intrinsics(self) -> CameraIntrinsics:
+        """
+        Read the CAM_A intrinsics from the device calibration.
+
+        The matrix is converted to the published RGB frame size.
+        Depth is aligned to CAM_A, so the same intrinsics apply to
+        the published depth frames.
+        """
+
+        calibration = self._device.readCalibration()
+
+        matrix = calibration.getCameraIntrinsics(
+            dai.CameraBoardSocket.CAM_A,
+            self._width,
+            self._height,
+        )
+
+        return CameraIntrinsics(
+            width=self._width,
+            height=self._height,
+            fx=matrix[0][0],
+            fy=matrix[1][1],
+            cx=matrix[0][2],
+            cy=matrix[1][2],
+            matrix=matrix,
+        )
 
     # ================================================================
     # Camera shutdown
