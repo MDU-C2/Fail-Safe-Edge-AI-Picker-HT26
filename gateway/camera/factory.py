@@ -25,7 +25,10 @@ def create_camera_producer(
 
         return OakCameraProducer(
             camera_service=camera_service,
+            ip=settings.camera_ip,
             fps=settings.camera_fps,
+            width=settings.camera_rgb_width,
+            height=settings.camera_rgb_height,
         )
 
     raise RuntimeError(

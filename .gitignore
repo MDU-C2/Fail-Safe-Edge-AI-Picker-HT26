@@ -3,4 +3,6 @@
 /out
 gateway/.env
 /gateway/out
-/tmp_1fe2ebe7-b418-414c-a303-f3f4e3f77e26
+/tmp_*/
+*.wmopkg
+*.wmopkg.*

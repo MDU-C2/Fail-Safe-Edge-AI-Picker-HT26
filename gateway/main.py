@@ -12,6 +12,7 @@ from gateway.control.router import (
 from gateway.events.router import router as events_router
 from gateway.models.status import HealthResponse
 from gateway.robot.router import router as robot_router
+from gateway.security.authentication import get_client_registry
 
 
 # ================================================================
@@ -19,6 +20,19 @@ from gateway.robot.router import router as robot_router
 # ================================================================
 
 settings = get_settings()
+
+
+# ================================================================
+# Client registry
+# ================================================================
+
+#
+# Load the registered clients now so that a missing or invalid
+# auth clients file stops the gateway at startup instead of
+# failing on the first request.
+#
+if settings.security_mode == "strict":
+    get_client_registry()
 
 
 # ================================================================

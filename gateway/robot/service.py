@@ -1,6 +1,7 @@
 import asyncio
 import socket
 
+from gateway.config import Settings, get_settings
 from gateway.events.manager import event_manager
 from gateway.models.commands import (
     CommandResponse,
@@ -125,10 +126,24 @@ class RobotService:
         )
 
 
-# Choose which implementation is currently used.
+def create_robot_service(
+    settings: Settings,
+) -> MockRobotService | RobotService:
+    if settings.robot_provider == "mock":
+        return MockRobotService()
 
-# Development:
-# robot_service = MockRobotService()
+    if settings.robot_provider == "tcp":
+        return RobotService(
+            host=settings.robot_host,
+            port=settings.robot_port,
+        )
 
-# Real robot:
-robot_service = RobotService()
+    raise RuntimeError(
+        "Unknown robot provider: "
+        f"{settings.robot_provider}"
+    )
+
+
+robot_service = create_robot_service(
+    get_settings()
+)
