@@ -3,7 +3,10 @@ from datetime import datetime, timezone
 from threading import Lock
 
 from gateway.events.manager import event_manager
-from gateway.models.camera import CameraStatus
+from gateway.models.camera import (
+    CameraIntrinsics,
+    CameraStatus,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,8 @@ class CameraService:
 
         self._sequence = 0
         self._latest: CameraFrameSet | None = None
+
+        self._intrinsics: CameraIntrinsics | None = None
 
         self._lock = Lock()
 
@@ -145,6 +150,19 @@ class CameraService:
             return None
 
         return frame_set.depth
+
+    def get_intrinsics(
+        self,
+    ) -> CameraIntrinsics | None:
+        with self._lock:
+            return self._intrinsics
+
+    def set_intrinsics(
+        self,
+        intrinsics: CameraIntrinsics | None,
+    ) -> None:
+        with self._lock:
+            self._intrinsics = intrinsics
 
     async def set_connected(
         self,

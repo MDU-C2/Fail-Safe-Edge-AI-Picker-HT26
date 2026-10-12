@@ -3,5 +3,3 @@ uvicorn[standard]
 pydantic-settings
 depthai
 requests
-numpy
-opencv-python

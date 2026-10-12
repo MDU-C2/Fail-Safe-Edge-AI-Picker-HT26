@@ -18,3 +18,16 @@ class CameraStatus(BaseModel):
     depth_width: int | None = None
     depth_height: int | None = None
     depth_format: str | None = None
+
+
+class CameraIntrinsics(BaseModel):
+    width: int
+    height: int
+
+    fx: float
+    fy: float
+
+    cx: float
+    cy: float
+
+    matrix: list[list[float]]
