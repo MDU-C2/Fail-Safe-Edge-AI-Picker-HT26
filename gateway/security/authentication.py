@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Annotated
 
 from fastapi import (
@@ -58,6 +59,13 @@ bearer_scheme = HTTPBearer(
 )
 
 
+@lru_cache
+def get_client_registry() -> ClientRegistry:
+    return ClientRegistry(
+        get_settings().auth_clients_file
+    )
+
+
 def get_identity(
     settings: Annotated[
         Settings,
@@ -108,9 +116,7 @@ def get_identity(
             },
         )
 
-    registry = ClientRegistry(
-        settings.auth_clients_file
-    )
+    registry = get_client_registry()
 
     identity = registry.authenticate(
         credentials.credentials
