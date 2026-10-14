@@ -3,8 +3,9 @@ MODULE LeftArm
   ! TCP z = 159: touch-off showed the gripper is ~23 mm longer than 136 (table now = z 0)
   PERS tooldata tGrip := [TRUE, [[0, 0, 159], [1, 0, 0, 0]], [0.230, [8.2, 11.7, 52.0], [1, 0, 0, 0], 0.00021, 0.00024, 0.00009]];
 
-  ! Gripper pointing straight down (measured on the pendant: q1~0 q2~1 q3~0 q4~0)
-  CONST orient DOWN_ROT := [0, 1, 0, 0];
+  ! Gripper pointing straight down, turned 180 about its own axis so the wrist is away from its limit
+  ! (was [0, 1, 0, 0]; must match GRIP_ROT = (180, 0, 180) in the Python script)
+  CONST orient DOWN_ROT := [0, 0, 1, 0];
   CONST num SAFE_Z := 200;              ! go up to this before turning the gripper
   CONST num MARGIN := 25;               ! used by TeachMaxHeight
 
@@ -48,10 +49,13 @@ MODULE LeftArm
       vTravel := [travel_speed, 500, 5000, 1000];
       vNear := [pick_speed, 500, 5000, 1000];
 
-      ! After HOME, go back to the known-good start pose before any other move
+      ! After HOME, go back to the known-good start pose before any other move,
+      ! except for GOTO with its own orientation (calibration): that goes straight there
       IF at_home AND arm_cmd <> "HOME" AND arm_cmd <> "CHECK" THEN
-        MoveAbsJ jRef \NoEOffs, vTravel, fine, tGrip;
-        at_home := FALSE;
+        IF arm_cmd <> "GOTO" OR use_rot = FALSE THEN
+          MoveAbsJ jRef \NoEOffs, vTravel, fine, tGrip;
+          at_home := FALSE;
+        ENDIF
       ENDIF
 
       TEST arm_cmd
@@ -90,6 +94,7 @@ MODULE LeftArm
         IF CanReach(pTarget) THEN
           MoveJ pTarget, vTravel, fine, tGrip \WObj:=wobj0;
           reply := "DONE";
+          at_home := FALSE;
         ELSE
           TPWrite "Rejected: unreachable";
           reply := "ERR unreachable";

@@ -31,7 +31,7 @@ DEFAULT_OUTPUT = (
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", default=DEFAULT_OUTPUT, help="Folder to save into")
 parser.add_argument("--ip", default="169.254.1.223", help="Camera IP address")
-parser.add_argument("--interval", type=float, default=5.0, help="Seconds between saves")
+parser.add_argument("--interval", type=float, default=10.0, help="Seconds between saves")
 parser.add_argument("--count", type=int, default=0, help="Stop after N captures (0 = unlimited)")
 parser.add_argument("--warmup", type=float, default=2.0, help="Seconds to discard while auto-exposure settles")
 parser.add_argument("--width", type=int, default=1920)
