@@ -74,8 +74,13 @@ with open(HERE.parent / "calibration.json") as f:
 
 
 def calibrate(x, y, z):
-    """Camera x, y, z (mm) -> robot x, y, z (mm):  robot = scale * R @ camera + t"""
-    robot = CAL["scale"] * np.array(CAL["R"]) @ np.array([x, y, z]) + np.array(CAL["t"])
+    """Camera x, y, z (mm) -> robot x, y, z (mm):  robot = scale * R @ camera + t + tag_offset
+
+    tag_offset = tag centre minus gripper TCP (robot axes, mm). The calibration maps the
+    tag onto the TCP, so the offset is added back to land on the true position.
+    """
+    robot = (CAL["scale"] * np.array(CAL["R"]) @ np.array([x, y, z])
+             + np.array(CAL["t"]))
     return robot[0], robot[1], robot[2]
 
 
