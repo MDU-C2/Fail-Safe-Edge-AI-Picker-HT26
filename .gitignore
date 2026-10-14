@@ -7,3 +7,4 @@ gateway/.env
 *.wmopkg
 *.wmopkg.*
 /gateway/docker/images/
+/gateway/calibration.json

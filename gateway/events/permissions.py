@@ -3,6 +3,7 @@ EVENT_PERMISSIONS = {
     "robot.status": "robot.read",
     "robot.error": "robot.read",
     "camera.status": "camera.read",
+    "calibration": "camera.read",
 }
 
 def get_event_permission(

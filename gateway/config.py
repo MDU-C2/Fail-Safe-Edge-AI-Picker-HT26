@@ -12,6 +12,8 @@ class Settings(BaseSettings):
 
     control_lease_seconds: float = 5.0
 
+    calibration_file: str = "gateway/calibration.json"
+
     model_config = SettingsConfigDict(
         env_file="gateway/.env",
         env_prefix="GATEWAY_",

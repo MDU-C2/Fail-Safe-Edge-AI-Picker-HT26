@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from gateway.calibration.router import router as calibration_router
 from gateway.camera.factory import create_camera_producer
 from gateway.camera.router import router as camera_router
 from gateway.config import get_settings
@@ -126,5 +127,10 @@ app.include_router(
 
 app.include_router(
     camera_router,
+    prefix=settings.api_prefix,
+)
+
+app.include_router(
+    calibration_router,
     prefix=settings.api_prefix,
 )
