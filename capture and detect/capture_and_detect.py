@@ -32,7 +32,7 @@ Set it once in the terminal (never put it in this file):
 
 Usage:
     py capture_and_detect.py
-    py capture_and_detect.py --gateway http://169.254.125.10:8000 --conf 0.6
+    py capture_and_detect.py --gateway http://169.254.125.202:8000 --conf 0.6
 """
 
 import argparse
@@ -53,7 +53,7 @@ KEEP_CLASSES = ["CUP BASE", "CUP HANDLE"]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
-parser.add_argument("--gateway", default="http://192.168.125.10:8000", help="Camera gateway address")
+parser.add_argument("--gateway", default="http://192.168.125.202:8000", help="Camera gateway address")
 parser.add_argument("--conf", type=float, default=0.5)
 args = parser.parse_args()
 

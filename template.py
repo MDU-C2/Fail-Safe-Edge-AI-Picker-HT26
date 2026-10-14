@@ -32,7 +32,7 @@ import numpy as np
 import requests
 
 
-URL = "http://192.168.125.10:8000/api/v1"   # gateway (or http://169.254.125.10:8000/api/v1)
+URL = "http://192.168.125.202:8000/api/v1"   # gateway (or http://169.254.125.202:8000/api/v1)
 TOKEN = "BAD_TOKEN_OPERATOR"
 
 RENEW_INTERVAL_SECONDS = 2.0

@@ -1,5 +1,5 @@
 {
-  "capture": "20261014_102712_0000",
+  "capture": "20261014_110535_0000",
   "units": "mm",
   "intrinsics": {
     "fx": 1162.467529296875,
@@ -10,16 +10,16 @@
   "objects": [
     {
       "class": "CUP BASE",
-      "confidence": 0.95,
-      "x_mm": 358.3,
-      "y_mm": -74.6,
-      "x_px": 1484.0,
-      "y_px": 422.3,
-      "z_mm": 756.0,
-      "robot_x_mm": 379.9,
-      "robot_y_mm": 420.4,
-      "robot_z_mm": 63.3,
-      "mask_area_px": 5902
+      "confidence": 0.951,
+      "x_mm": -30.8,
+      "y_mm": 151.2,
+      "x_px": 884.1,
+      "y_px": 777.4,
+      "z_mm": 731.0,
+      "robot_x_mm": 618.6,
+      "robot_y_mm": 13.4,
+      "robot_z_mm": 83.6,
+      "mask_area_px": 7388
     }
   ]
 }
