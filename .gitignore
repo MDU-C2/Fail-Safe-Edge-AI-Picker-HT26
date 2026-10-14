@@ -6,3 +6,4 @@ gateway/.env
 /tmp_*/
 *.wmopkg
 *.wmopkg.*
+/gateway/docker/images/

@@ -118,3 +118,82 @@ API docs are at http://127.0.0.1:8000/docs. In `strict` mode every other endpoin
   ```powershell
   netsh interface portproxy delete v4tov4 listenaddress=<host-ip> listenport=8000
   ```
+
+## Deploy to the Raspberry Pi
+
+In the lab the gateway runs in Docker on the Raspberry Pi 5 on the switch. The Pi has no internet access, so the image is built on a PC, copied over and started there.
+
+| Device | Address |
+|---|---|
+| Raspberry Pi (gateway) | `169.254.125.202` (fixed) and `192.168.125.202` (assigned automatically, can change) |
+| OAK camera | `169.254.1.223` |
+| YuMi robot | `192.168.125.1`, port `5001` |
+
+Clients reach the gateway at `http://169.254.125.202:8000` or `http://192.168.125.202:8000`, depending on which network they are on.
+
+Log in to the Pi as `kasun`; ask the team for the password.
+
+### 1. Build the image (on your PC)
+
+Run in WSL or on Linux, from the repository root. The image contains `gateway/.env` and `gateway/auth_clients.json` as they are now, so check `gateway/.env` first. On the Pi it should use `GATEWAY_SECURITY_MODE=strict`, `GATEWAY_CAMERA_PROVIDER=oak` and `GATEWAY_ROBOT_PROVIDER=tcp`.
+
+```bash
+docker build --platform linux/arm64 -f gateway/docker/DockerFile -t robot-gateway:pi .
+mkdir -p gateway/docker/images
+docker save robot-gateway:pi | gzip > gateway/docker/images/robot-gateway-pi-arm64.tar.gz
+```
+
+The Pi uses an arm64 processor. On an arm64 PC this builds directly; on a normal x86 PC, enable arm64 emulation once first:
+
+```bash
+docker run --privileged --rm tonistiigi/binfmt --install arm64
+```
+
+`gateway/docker/images/` is ignored by git, so the archive is never committed.
+
+### 2. Copy it to the Pi
+
+From PowerShell or WSL, at the repository root:
+
+```bash
+scp gateway/docker/images/robot-gateway-pi-arm64.tar.gz kasun@192.168.125.202:~/
+```
+
+### 3. Load and start it (on the Pi)
+
+```bash
+ssh kasun@192.168.125.202
+
+sudo docker load -i ~/robot-gateway-pi-arm64.tar.gz
+sudo docker rm -f robot-gateway
+sudo docker run -d --name robot-gateway --restart unless-stopped --network host robot-gateway:pi
+rm ~/robot-gateway-pi-arm64.tar.gz
+```
+
+`--network host` lets the container use the Pi's own network addresses. That is needed to reach the camera, and it makes the gateway reachable on both Pi addresses without port forwarding. `--restart unless-stopped` starts it again after a crash or a reboot.
+
+### 4. Check that it is running
+
+On the Pi, follow the log until it shows `Application startup complete` (connecting to the camera can take up to a minute):
+
+```bash
+sudo docker logs -f robot-gateway
+```
+
+From any machine on the switch:
+
+```bash
+curl http://169.254.125.202:8000/api/v1/health
+```
+
+### Things to know
+
+- Only one program can use the camera at a time. Stop any other gateway, for example one running on a laptop, before starting the one on the Pi.
+- Stop, start, restart and logs work as in the Docker section above, with `sudo` in front.
+- The Pi's SD card is small. Each image takes about 720 MB once loaded; check free space with `df -h /`. `sudo docker image prune -f` removes old untagged images left behind by earlier deployments.
+- The Pi's `169.254.125.202` address is already set up and survives reboots. If the Pi is ever reinstalled, add it again with:
+
+  ```bash
+  sudo nmcli con mod netplan-eth0 +ipv4.addresses 169.254.125.202/16
+  sudo ip addr add 169.254.125.202/16 dev eth0
+  ```
