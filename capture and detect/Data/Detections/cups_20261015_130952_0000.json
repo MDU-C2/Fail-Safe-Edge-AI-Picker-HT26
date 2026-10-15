@@ -1,0 +1,14 @@
+{
+  "capture": "20261015_130952_0000",
+  "units": "mm",
+  "cups": [
+    {
+      "id": 1,
+      "confidence": 0.931,
+      "x": 580.9,
+      "y": -69.3,
+      "z": 75.2,
+      "status": "at meeting point - waiting for right arm"
+    }
+  ]
+}

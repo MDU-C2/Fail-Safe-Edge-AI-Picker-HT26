@@ -1,0 +1,65 @@
+{
+  "capture": "20261015_130630_0000",
+  "units": "mm",
+  "intrinsics": {
+    "fx": 1162.467529296875,
+    "fy": 1162.467529296875,
+    "cx": 933.0515747070312,
+    "cy": 537.0249633789062
+  },
+  "objects": [
+    {
+      "class": "CUP BASE",
+      "confidence": 0.939,
+      "x_mm": -100.3,
+      "y_mm": -75.5,
+      "x_px": 777.1,
+      "y_px": 419.6,
+      "z_mm": 748.0,
+      "robot_x_mm": 381.3,
+      "robot_y_mm": -60.5,
+      "robot_z_mm": 65.3,
+      "mask_area_px": 7658,
+      "in_cup": true
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.929,
+      "x_mm": -91.3,
+      "y_mm": -44.6,
+      "x_px": 807.5,
+      "y_px": 475.7,
+      "z_mm": 845.0,
+      "robot_x_mm": 413.5,
+      "robot_y_mm": -49.5,
+      "robot_z_mm": -36.3,
+      "mask_area_px": 6244
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.623,
+      "x_mm": -47.1,
+      "y_mm": -91.0,
+      "x_px": 866.1,
+      "y_px": 407.8,
+      "z_mm": 818.0,
+      "robot_x_mm": 364.7,
+      "robot_y_mm": -3.8,
+      "robot_z_mm": -7.3,
+      "mask_area_px": 3321
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.62,
+      "x_mm": 85.4,
+      "y_mm": -74.8,
+      "x_px": 1150.8,
+      "y_px": 346.2,
+      "z_mm": 456.0,
+      "robot_x_mm": 381.8,
+      "robot_y_mm": 130.2,
+      "robot_z_mm": 374.0,
+      "mask_area_px": 6352
+    }
+  ]
+}

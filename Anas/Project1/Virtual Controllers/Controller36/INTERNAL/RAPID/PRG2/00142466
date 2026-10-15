@@ -1,0 +1,51 @@
+%%%
+    VERSION:1
+    LANGUAGE:ENGLISH
+%%%
+
+MODULE CAL_HALL(SYSMODULE,VIEWONLY)
+
+    VAR bool calhallLoaded := FALSE;
+
+    ! $Revision: 1.6 $
+
+    !
+    ! CalHall
+    !
+    PROC CalHall()
+
+        VAR num TPReadDummy;
+
+        !    Load \Dynamic, "RELEASE:" \File:="options/cal_hall/cal_hall_proc.sys";
+        IF calhallLoaded = FALSE THEN	
+            Load \Dynamic, "RELEASE:/options/cal_hall/cal_hall_proc.sys";
+            calhallLoaded := TRUE;
+        ENDIF  
+
+        %"CalHallProc"%;
+
+        UnLoad "RELEASE:/options/cal_hall/cal_hall_proc.sys";
+        calhallLoaded := FALSE;
+        TPShow TP_LATEST;
+        EXIT;
+        ERROR
+        TEST ERRNO
+            CASE ERR_FILNOTFND:
+                RAISE;
+            case ERR_LOADED:
+                SkipWarn;
+                TRYNEXT;
+            default:
+                TPShow TP_LATEST;
+        ENDTEST
+
+        UNDO
+            IF calhallLoaded = TRUE THEN	
+                UnLoad "RELEASE:/options/cal_hall/cal_hall_proc.sys";
+                calhallLoaded := FALSE;
+            ENDIF  
+            TPShow TP_LATEST;
+    ENDPROC  
+ ENDMODULE
+
+

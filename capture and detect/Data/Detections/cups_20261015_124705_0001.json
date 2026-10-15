@@ -1,0 +1,22 @@
+{
+  "capture": "20261015_124705_0001",
+  "units": "mm",
+  "cups": [
+    {
+      "id": 1,
+      "confidence": 0.824,
+      "x": 656.9,
+      "y": 270.5,
+      "z": 83.7,
+      "status": "waiting"
+    },
+    {
+      "id": 2,
+      "confidence": 0.657,
+      "x": 245.5,
+      "y": 719.7,
+      "z": -59.4,
+      "status": "waiting"
+    }
+  ]
+}

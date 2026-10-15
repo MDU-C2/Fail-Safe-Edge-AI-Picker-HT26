@@ -1,0 +1,92 @@
+{
+  "capture": "20261015_121658_0000",
+  "units": "mm",
+  "intrinsics": {
+    "fx": 1162.467529296875,
+    "fy": 1162.467529296875,
+    "cx": 933.0515747070312,
+    "cy": 537.0249633789062
+  },
+  "objects": [
+    {
+      "class": "CUP BASE",
+      "confidence": 0.955,
+      "x_mm": -524.9,
+      "y_mm": 196.3,
+      "x_px": 217.7,
+      "y_px": 804.6,
+      "z_mm": 853.0,
+      "robot_x_mm": 668.3,
+      "robot_y_mm": -502.6,
+      "robot_z_mm": -51.2,
+      "mask_area_px": 7788,
+      "in_cup": true
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.927,
+      "x_mm": -26.8,
+      "y_mm": 12.6,
+      "x_px": 895.4,
+      "y_px": 554.7,
+      "z_mm": 828.0,
+      "robot_x_mm": 473.1,
+      "robot_y_mm": 18.1,
+      "robot_z_mm": -17.7,
+      "mask_area_px": 5952
+    },
+    {
+      "class": "CUP BASE",
+      "confidence": 0.875,
+      "x_mm": -51.7,
+      "y_mm": -0.8,
+      "x_px": 852.1,
+      "y_px": 535.7,
+      "z_mm": 742.0,
+      "robot_x_mm": 459.4,
+      "robot_y_mm": -9.1,
+      "robot_z_mm": 72.1,
+      "mask_area_px": 8142,
+      "in_cup": true
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.832,
+      "x_mm": -483.4,
+      "y_mm": 181.6,
+      "x_px": 275.1,
+      "y_px": 784.3,
+      "z_mm": 854.0,
+      "robot_x_mm": 652.7,
+      "robot_y_mm": -459.1,
+      "robot_z_mm": -51.7,
+      "mask_area_px": 3482
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.597,
+      "x_mm": -540.9,
+      "y_mm": 225.8,
+      "x_px": 195.1,
+      "y_px": 845.1,
+      "z_mm": 852.0,
+      "robot_x_mm": 699.3,
+      "robot_y_mm": -519.2,
+      "robot_z_mm": -50.5,
+      "mask_area_px": 11030
+    },
+    {
+      "class": "CUP",
+      "confidence": 0.562,
+      "x_mm": 238.2,
+      "y_mm": -111.0,
+      "x_px": 1652.3,
+      "y_px": 201.9,
+      "z_mm": 385.0,
+      "robot_x_mm": 343.3,
+      "robot_y_mm": 289.2,
+      "robot_z_mm": 450.6,
+      "mask_area_px": 36583
+    }
+  ]
+}

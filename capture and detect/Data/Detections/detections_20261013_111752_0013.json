@@ -1,0 +1,25 @@
+{
+  "capture": "20261013_111752_0013",
+  "units": "mm",
+  "intrinsics": {
+    "fx": 1162.467529296875,
+    "fy": 1162.467529296875,
+    "cx": 933.0515747070312,
+    "cy": 537.0249633789062
+  },
+  "objects": [
+    {
+      "class": "CUP BASE",
+      "confidence": 0.918,
+      "x_mm": null,
+      "y_mm": null,
+      "x_px": 1191.1,
+      "y_px": 643.9,
+      "z_mm": null,
+      "robot_x_mm": null,
+      "robot_y_mm": null,
+      "robot_z_mm": null,
+      "mask_area_px": 5960
+    }
+  ]
+}

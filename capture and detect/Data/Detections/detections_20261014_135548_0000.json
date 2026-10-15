@@ -1,0 +1,103 @@
+{
+  "capture": "20261014_135548_0000",
+  "units": "mm",
+  "intrinsics": {
+    "fx": 1162.467529296875,
+    "fy": 1162.467529296875,
+    "cx": 933.0515747070312,
+    "cy": 537.0249633789062
+  },
+  "objects": [
+    {
+      "class": "CUP BASE",
+      "confidence": 0.963,
+      "x_mm": -111.9,
+      "y_mm": -160.2,
+      "x_px": 749.9,
+      "y_px": 274.8,
+      "z_mm": 710.0,
+      "robot_x_mm": 292.8,
+      "robot_y_mm": -73.5,
+      "robot_z_mm": 105.2,
+      "mask_area_px": 7108
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.786,
+      "x_mm": 50.9,
+      "y_mm": 42.4,
+      "x_px": 1056.7,
+      "y_px": 640.0,
+      "z_mm": 479.0,
+      "robot_x_mm": 504.8,
+      "robot_y_mm": 95.0,
+      "robot_z_mm": 349.1,
+      "mask_area_px": 7025
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.758,
+      "x_mm": -114.5,
+      "y_mm": -98.0,
+      "x_px": 759.1,
+      "y_px": 388.1,
+      "z_mm": 765.0,
+      "robot_x_mm": 357.8,
+      "robot_y_mm": -75.2,
+      "robot_z_mm": 47.4,
+      "mask_area_px": 2983
+    },
+    {
+      "class": "CUP BASE",
+      "confidence": 0.676,
+      "x_mm": 114.8,
+      "y_mm": -89.6,
+      "x_px": 1202.1,
+      "y_px": 327.0,
+      "z_mm": 496.0,
+      "robot_x_mm": 366.0,
+      "robot_y_mm": 161.5,
+      "robot_z_mm": 332.5,
+      "mask_area_px": 5918
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.634,
+      "x_mm": 55.0,
+      "y_mm": 55.2,
+      "x_px": 1066.3,
+      "y_px": 670.8,
+      "z_mm": 480.0,
+      "robot_x_mm": 518.2,
+      "robot_y_mm": 99.4,
+      "robot_z_mm": 348.1,
+      "mask_area_px": 10263
+    },
+    {
+      "class": "CUP BASE",
+      "confidence": 0.631,
+      "x_mm": 194.9,
+      "y_mm": -78.2,
+      "x_px": 1399.3,
+      "y_px": 350.1,
+      "z_mm": 486.0,
+      "robot_x_mm": 377.6,
+      "robot_y_mm": 245.4,
+      "robot_z_mm": 344.0,
+      "mask_area_px": 4399
+    },
+    {
+      "class": "CUP HANDLE",
+      "confidence": 0.556,
+      "x_mm": 57.8,
+      "y_mm": 64.3,
+      "x_px": 1072.7,
+      "y_px": 692.5,
+      "z_mm": 481.0,
+      "robot_x_mm": 527.8,
+      "robot_y_mm": 102.3,
+      "robot_z_mm": 347.0,
+      "mask_area_px": 8285
+    }
+  ]
+}
