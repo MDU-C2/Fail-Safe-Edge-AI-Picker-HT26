@@ -1,10 +1,14 @@
 """
-Send targets straight to the RAPID socket server in
-gateway/rapid/LegacyCommServer.mod, bypassing the gateway.
+Send targets straight to a RAPID socket server, bypassing the gateway.
 
-Defaults to localhost:5000, the RobotStudio virtual controller with
-the program loaded by gateway/rapid/upload_rapid.py. Pointing --host
-at the real controller (192.168.125.1) moves the real robot.
+The program in gateway/rapid no longer has a socket server (the
+gateway drives it over RWS); the legacy one is kept as a test fixture
+in gateway/tests/rapid/LegacyCommServer.mod, and the team program in
+rapid/ still has one.
+
+Defaults to localhost:5000, the RobotStudio virtual controller.
+Pointing --host at the real controller (192.168.125.1) moves the
+real robot.
 
 Usage (from the repository root):
     python gateway/scripts/legacy_socket_client.py --home

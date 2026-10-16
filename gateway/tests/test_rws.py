@@ -1,4 +1,4 @@
-"""Arm pose and RAPID endpoints without a robot controller.
+"""Arm pose, RAPID and RWS move endpoints without a robot controller.
 
 The mock gateways point RWS at a closed port, so these check what
 the gateway itself enforces (permissions, lease, validation) and
@@ -8,6 +8,7 @@ controller is in test_robotstudio.py.
 
 import pytest
 
+from gateway.rws.motion import orient_zyx
 from gateway.tests.support import Gateway, expect
 
 
@@ -103,3 +104,67 @@ def test_control_with_lease_reaches_controller(
 
     with operator.control():
         expect(operator.post("/robot/rapid/stop"), 503)
+
+
+# ================================================================
+# Moves over RWS
+# ================================================================
+
+@pytest.mark.parametrize(
+    "path, body",
+    [
+        ("/robot/rws/move", {"x": 300, "y": 150, "z": 280}),
+        ("/robot/rws/home", None),
+    ],
+)
+def test_rws_moves_need_permission_and_lease(
+    gateway: Gateway,
+    path: str,
+    body: dict | None,
+) -> None:
+    expect(gateway.client("diagnostics").post(path, json=body), 403)
+    expect(gateway.client("operator").post(path, json=body), 409)
+
+    operator = gateway.client("operator")
+
+    with operator.control():
+        detail = expect(operator.post(path, json=body), 503)["detail"]
+
+    assert detail.startswith("Robot controller unreachable")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"x": 300, "y": 150},
+        {"x": 300, "y": 150, "z": "high"},
+        {"x": 300, "y": 150, "z": 280, "rx": 90},
+        {"x": 300, "y": 150, "z": 280, "rx": 90, "ry": 0},
+    ],
+)
+def test_rws_move_is_validated(
+    gateway: Gateway,
+    body: dict,
+) -> None:
+    operator = gateway.client("operator")
+
+    with operator.control():
+        expect(operator.post("/robot/rws/move", json=body), 422)
+
+
+@pytest.mark.parametrize(
+    "angles, expected",
+    [
+        ((0, 0, 0), (1.0, 0.0, 0.0, 0.0)),
+        ((90, 0, 90), (0.5, 0.5, 0.5, 0.5)),
+        #
+        # Read from OrientZYX(60, 20, 30) on the virtual controller.
+        #
+        ((60, 20, 30), (0.846279, 0.136873, 0.272703, 0.436703)),
+    ],
+)
+def test_orient_zyx_matches_rapid(
+    angles: tuple[float, float, float],
+    expected: tuple[float, float, float, float],
+) -> None:
+    assert orient_zyx(*angles) == pytest.approx(expected, abs=1e-6)

@@ -1,5 +1,8 @@
 MODULE CommServer
 
+  ! TEST FIXTURE ONLY. The legacy TCP socket server, removed from the
+  ! robot program in gateway/rapid; the test suite loads it into T_ROB_R
+  ! next to LegacyShared to exercise the gateway's tcp robot provider.
   ! Non-motion task. Change SERVER_IP to "127.0.0.1" for simulation.
   CONST string SERVER_IP := "192.168.125.1";
   CONST num PORT := 5000;

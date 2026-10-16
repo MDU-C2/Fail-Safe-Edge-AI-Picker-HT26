@@ -1,13 +1,17 @@
 """
-Upload the CommServer RAPID program to a YuMi controller over Robot
-Web Services (RWS 1.0, RobotWare 6 / IRC5) and start it.
+Upload the RAPID program to a YuMi controller over Robot Web Services
+(RWS 1.0, RobotWare 6 / IRC5) and start it.
+
+The gateway commands the program over RWS by writing the PERS
+variables in LegacyShared (POST /robot/rws/move and /robot/rws/home);
+there is no socket server on the controller.
 
 What it does:
     1. Stops RAPID and takes mastership.
     2. Unloads every program module in the two arm tasks.
     3. Uploads the .mod files below to $HOME and loads them:
-           T_ROB_L  LegacyShared + LegacyMotion     (moves the left arm)
-           T_ROB_R  LegacyShared + LegacyCommServer (socket server)
+           T_ROB_L  LegacyShared + LegacyMotion  (moves the left arm)
+           T_ROB_R  LegacyShared + RightArmIdle  (placeholder main)
     4. Resets the program pointer, releases mastership and starts.
 
 Defaults target the RobotStudio virtual controller on this PC. Pointing
@@ -21,7 +25,6 @@ Needs: requests
 """
 
 import argparse
-import re
 from pathlib import Path
 
 import requests
@@ -37,7 +40,7 @@ PROGRAM = {
     ],
     "T_ROB_R": [
         "LegacyShared.mod",
-        "LegacyCommServer.mod",
+        "RightArmIdle.mod",
     ],
 }
 
@@ -135,40 +138,17 @@ class Controller:
         ]
 
 
-def read_module(
-    name: str,
-    server_ip: str,
-) -> str:
-    text = (RAPID_DIR / name).read_text(encoding="utf-8")
-
-    if name == "LegacyCommServer.mod":
-        #
-        # The server binds to the controller's own address:
-        # 192.168.125.1 on the real YuMi, 127.0.0.1 in simulation.
-        #
-        text = re.sub(
-            r'CONST string SERVER_IP := "[^"]*";',
-            f'CONST string SERVER_IP := "{server_ip}";',
-            text,
-        )
-
-    return text
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Upload and start the CommServer RAPID program over RWS",
+        description="Upload and start the RAPID program over RWS",
     )
 
     parser.add_argument("--host", default="127.0.0.1", help="Controller address (default: local virtual controller)")
     parser.add_argument("--user", default="Default User")
     parser.add_argument("--password", default="robotics")
-    parser.add_argument("--server-ip", default=None, help="Address CommServer binds to (default: same as --host)")
     parser.add_argument("--no-start", action="store_true", help="Load the program but do not start it")
 
     args = parser.parse_args()
-
-    server_ip = args.server_ip or args.host
 
     controller = Controller(args.host, args.user, args.password)
 
@@ -188,7 +168,7 @@ def main() -> None:
                 print(f"{task}: unloaded {module}")
 
             for name in modules:
-                path = controller.upload(name, read_module(name, server_ip))
+                path = controller.upload(name, (RAPID_DIR / name).read_text(encoding="utf-8"))
 
                 controller.post(f"/rw/rapid/tasks/{task}?action=loadmod", {"modulepath": path, "replace": "true"})
 
@@ -220,7 +200,6 @@ def main() -> None:
     state = controller.get_json("/rw/rapid/execution")["_embedded"]["_state"][0]
 
     print(f"Started, execution state: {state['ctrlexecstate']}")
-    print(f"CommServer listens on {server_ip}:5000")
 
 
 if __name__ == "__main__":

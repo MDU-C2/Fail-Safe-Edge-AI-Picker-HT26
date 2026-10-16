@@ -1,4 +1,11 @@
-from pydantic import BaseModel, Field
+from typing import Self
+
+from pydantic import (
+    BaseModel,
+    Field,
+    FiniteFloat,
+    model_validator,
+)
 
 
 class ArmPose(BaseModel):
@@ -82,3 +89,32 @@ class RapidModuleUpload(BaseModel):
 
 class RapidStartRequest(BaseModel):
     reset_program_pointer: bool = False
+
+
+class RwsMoveRequest(BaseModel):
+    """Target of the left arm's tool0 in wobj0.
+
+    Position in mm. The rotation, in degrees, is optional and
+    means the same as RAPID's OrientZYX(rz, ry, rx); without it
+    the arm keeps its current orientation.
+    """
+
+    x: FiniteFloat
+    y: FiniteFloat
+    z: FiniteFloat
+
+    rx: FiniteFloat | None = None
+    ry: FiniteFloat | None = None
+    rz: FiniteFloat | None = None
+
+    @model_validator(mode="after")
+    def check_rotation(self) -> Self:
+        given = [
+            value is not None
+            for value in (self.rx, self.ry, self.rz)
+        ]
+
+        if any(given) and not all(given):
+            raise ValueError("Give all of rx, ry and rz, or none of them")
+
+        return self

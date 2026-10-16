@@ -38,7 +38,14 @@ Open:
 - Arm poses: http://127.0.0.1:8000/api/v1/robot/arms
 - RAPID status: http://127.0.0.1:8000/api/v1/robot/rapid
 
-The arm and RAPID endpoints talk to the controller over Robot Web Services at `GATEWAY_RWS_HOST` (default the real YuMi, `192.168.125.1`). To use the RobotStudio virtual controller instead, start the gateway with `GATEWAY_RWS_HOST=127.0.0.1` (and `GATEWAY_ROBOT_HOST=127.0.0.1 GATEWAY_ROBOT_PORT=5000` for robot commands).
+The arm, RAPID and RWS move endpoints talk to the controller over Robot Web Services at `GATEWAY_ROBOT_HOST:GATEWAY_RWS_PORT` (default the real YuMi, `192.168.125.1:80`); the legacy `/robot/command` uses the same host with `GATEWAY_ROBOT_PORT`. To use the RobotStudio virtual controller instead, start the gateway with `GATEWAY_ROBOT_HOST=127.0.0.1` (and `GATEWAY_ROBOT_PORT=5000` for the legacy socket server).
+
+There are two ways to move the robot:
+
+- `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees) and `POST /api/v1/robot/rws/home` write the target into the RAPID program from `gateway/rapid` over RWS and wait for the move. Load that program with `python gateway/rapid/upload_rapid.py` (defaults to the virtual controller). No socket server is involved.
+- `POST /api/v1/robot/command` (deprecated but still working; legacy, `GATEWAY_ROBOT_PROVIDER=tcp`) sends the command text to a RAPID socket server on `GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT`.
+
+Both need `robot.control` and the control lease. `python gateway/scripts/basic_client.py` shows the RWS route from a client: it loads and starts the program through the gateway and runs a short demo path.
 
 Example mock command:
 

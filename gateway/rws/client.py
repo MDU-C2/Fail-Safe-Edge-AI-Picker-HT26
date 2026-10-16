@@ -1,3 +1,4 @@
+import html
 import re
 import threading
 from contextlib import contextmanager
@@ -29,6 +30,11 @@ START_ARGUMENTS = {
 #
 SOURCE_LOCATION = re.compile(
     r"[A-Za-z]:\\\S*?\.cpp\[\d+\]:?\s*(ERROR:\s*)?"
+)
+
+XHTML_MESSAGE = re.compile(
+    r'<span class="msg">(.*?)</span>',
+    re.DOTALL,
 )
 
 
@@ -243,6 +249,38 @@ class RwsClient:
         ]
 
     # ============================================================
+    # RAPID data
+    # ============================================================
+
+    def read_symbol(
+        self,
+        task: str,
+        name: str,
+    ) -> str:
+        """Return a RAPID variable as RAPID text, e.g. "TRUE",
+        "[1,2,3]" or "\\"text\\"" (strings keep their quotes)."""
+
+        return self.get_state(
+            f"/rw/rapid/symbol/data/RAPID/{task}/{name}"
+        )[0]["value"]
+
+    def write_symbol(
+        self,
+        task: str,
+        name: str,
+        value: str,
+    ) -> None:
+        #
+        # Works while RAPID runs and needs no mastership; the
+        # controller refuses mastership while RAPID runs anyway.
+        #
+        self.post(
+            f"/rw/rapid/symbol/data/RAPID/{task}/{name}",
+            params={"action": "set"},
+            data={"value": value},
+        )
+
+    # ============================================================
     # RAPID program control
     # ============================================================
 
@@ -319,14 +357,21 @@ def _error_message(
     response: requests.Response,
 ) -> str:
     #
-    # RWS puts the reason in _embedded.status.msg. Fall back to
-    # the raw text for anything else answering on the port.
+    # RWS puts the reason in _embedded.status.msg. Some errors
+    # (e.g. a badly formed RAPID value) come back as XHTML even
+    # with json=1, with the reason in <span class="msg">. Fall
+    # back to the raw text for anything else answering on the port.
     #
     try:
         message = response.json()["_embedded"]["status"]["msg"]
 
     except (ValueError, KeyError, TypeError):
-        return response.text[:300] or response.reason
+        match = XHTML_MESSAGE.search(response.text)
+
+        if match is None:
+            return response.text[:300] or response.reason
+
+        message = html.unescape(match.group(1))
 
     return SOURCE_LOCATION.sub("", message).strip()
 
@@ -335,7 +380,7 @@ def create_rws_client(
     settings: Settings,
 ) -> RwsClient:
     return RwsClient(
-        host=settings.rws_host,
+        host=settings.robot_host,
         port=settings.rws_port,
         user=settings.rws_user,
         password=settings.rws_password,

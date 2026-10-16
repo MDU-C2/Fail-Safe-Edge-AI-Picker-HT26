@@ -1,9 +1,11 @@
+import logging
 from typing import Annotated
 
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
+    Response,
     status,
 )
 
@@ -21,6 +23,44 @@ router = APIRouter(
     prefix="/robot",
     tags=["robot"],
 )
+
+logger = logging.getLogger("uvicorn.error")
+
+
+# ================================================================
+# Deprecation of POST /robot/command
+# ================================================================
+
+#
+# RFC 9745 Deprecation header (deprecated since 2026-10-16, as a
+# Unix timestamp) and RFC 8594 successor links. The links are
+# relative to the API prefix, like the route itself.
+#
+DEPRECATION_HEADERS = {
+    "Deprecation": "@1792108800",
+    "Link": (
+        '<rws/move>; rel="successor-version", '
+        '<rws/home>; rel="successor-version"'
+    ),
+}
+
+_deprecation_logged = False
+
+
+def warn_deprecated_command() -> None:
+    """Log the deprecation once per gateway process."""
+
+    global _deprecation_logged
+
+    if _deprecation_logged:
+        return
+
+    _deprecation_logged = True
+
+    logger.warning(
+        "POST /robot/command is deprecated; "
+        "use POST /robot/rws/move and /robot/rws/home"
+    )
 
 
 @router.get(
@@ -40,15 +80,29 @@ def get_robot_status(
 @router.post(
     "/command",
     response_model=CommandResponse,
-    summary="Send a command to the robot",
+    summary="Send a command to the robot (deprecated)",
+    description=(
+        "Deprecated: use POST /robot/rws/move and POST "
+        "/robot/rws/home, which drive the RAPID program over Robot "
+        "Web Services instead of a RAPID socket server. This route "
+        "still works unchanged (it sends the command text to the "
+        "socket server at GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT) and "
+        "marks its responses with Deprecation and Link headers."
+    ),
+    deprecated=True,
 )
 async def send_robot_command(
     command: RobotCommand,
+    response: Response,
     identity: Annotated[
         Identity,
         Depends(require_permission("robot.control")),
     ],
 ) -> CommandResponse:
+    response.headers.update(DEPRECATION_HEADERS)
+
+    warn_deprecated_command()
+
     manager = get_control_manager()
 
     if not manager.owns_control(identity.client_id):

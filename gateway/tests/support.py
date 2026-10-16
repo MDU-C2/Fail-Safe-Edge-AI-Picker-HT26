@@ -32,7 +32,7 @@ STARTUP_TIMEOUT_SECONDS = 90.0
 
 #
 # RobotStudio virtual controller: RWS, and the RAPID socket server
-# in gateway/rapid/LegacyCommServer.mod.
+# fixture in gateway/tests/rapid/LegacyCommServer.mod.
 #
 ROBOTSTUDIO_RWS_PORT = 80
 ROBOTSTUDIO_SOCKET_PORT = 5000

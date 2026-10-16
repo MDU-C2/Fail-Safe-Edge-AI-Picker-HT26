@@ -19,6 +19,10 @@ Arrays handed to run_model():
 Depth is aligned to the RGB image, so depth[v, u] is the distance of
 whatever is at rgb[v, u].
 
+Robot commands go to POST /robot/command, which is deprecated (it
+still works). New clients should use POST /robot/rws/move and
+/robot/rws/home instead; basic_client.py is this template on that API.
+
 Usage:
     python gateway/scripts/client_template.py
 

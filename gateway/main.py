@@ -14,6 +14,7 @@ from gateway.events.router import router as events_router
 from gateway.models.status import HealthResponse
 from gateway.robot.router import router as robot_router
 from gateway.rws.arms_router import router as arms_router
+from gateway.rws.motion_router import router as motion_router
 from gateway.rws.rapid_router import router as rapid_router
 from gateway.security.authentication import get_client_registry
 
@@ -144,5 +145,10 @@ app.include_router(
 
 app.include_router(
     rapid_router,
+    prefix=settings.api_prefix,
+)
+
+app.include_router(
+    motion_router,
     prefix=settings.api_prefix,
 )

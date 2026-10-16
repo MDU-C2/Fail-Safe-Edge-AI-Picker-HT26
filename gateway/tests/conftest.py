@@ -75,7 +75,6 @@ def mock_settings() -> dict[str, str]:
         #
         # Nothing listens here, so RWS calls fail with 503.
         #
-        "GATEWAY_RWS_HOST": "127.0.0.1",
         "GATEWAY_RWS_PORT": str(free_port()),
     }
 
@@ -172,7 +171,6 @@ def robotstudio_gateway(
             "GATEWAY_ROBOT_PROVIDER": "tcp",
             "GATEWAY_ROBOT_HOST": "127.0.0.1",
             "GATEWAY_ROBOT_PORT": str(ROBOTSTUDIO_SOCKET_PORT),
-            "GATEWAY_RWS_HOST": "127.0.0.1",
             "GATEWAY_RWS_PORT": str(ROBOTSTUDIO_RWS_PORT),
         },
     )

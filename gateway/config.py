@@ -37,18 +37,32 @@ class Settings(BaseSettings):
         "tcp",
     ] = "tcp"
 
+    #
+    # Address of the robot controller, used for both the legacy
+    # RAPID socket server (robot_port, tcp provider) and Robot
+    # Web Services (rws_port).
+    #
     robot_host: str = "192.168.125.1"
     robot_port: int = 5001
 
     #
     # Robot Web Services (RWS 1.0, RobotWare 6) on the robot
-    # controller, used for arm poses and RAPID program control.
+    # controller, used for arm poses, RAPID program control and
+    # /robot/rws moves.
     #
-    rws_host: str = "192.168.125.1"
     rws_port: int = 80
     rws_user: str = "Default User"
     rws_password: str = "robotics"
     rws_timeout: float = 10.0
+
+    #
+    # RAPID task holding the command variables of
+    # gateway/rapid/LegacyShared.mod, written by POST
+    # /robot/rws/move and /robot/rws/home, and how long to wait
+    # for a move to finish.
+    #
+    rws_motion_task: str = "T_ROB_L"
+    rws_move_timeout: float = 60.0
 
 
 @lru_cache
