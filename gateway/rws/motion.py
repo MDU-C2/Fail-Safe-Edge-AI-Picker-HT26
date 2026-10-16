@@ -125,6 +125,11 @@ class RwsMotion:
 
         return self._run(values)
 
+    def is_moving(self) -> bool:
+        """A move sent through the gateway has not finished yet."""
+
+        return self._busy.locked()
+
     def home(self) -> CommandResponse:
         return self._run(
             {

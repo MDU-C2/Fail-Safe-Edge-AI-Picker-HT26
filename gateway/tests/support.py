@@ -283,7 +283,7 @@ class Gateway:
                 )
 
             try:
-                if requests.get(f"{self.api_url}/health", timeout=1).ok:
+                if requests.get(f"{self.api_url}/health", timeout=5).ok:
                     return
 
             except requests.RequestException:

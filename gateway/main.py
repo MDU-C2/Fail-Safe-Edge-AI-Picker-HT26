@@ -11,7 +11,10 @@ from gateway.control.router import (
     router as control_router,
 )
 from gateway.events.router import router as events_router
-from gateway.models.status import HealthResponse
+from gateway.health import (
+    VERSION,
+    router as health_router,
+)
 from gateway.robot.router import router as robot_router
 from gateway.rws.arms_router import router as arms_router
 from gateway.rws.motion_router import router as motion_router
@@ -79,7 +82,7 @@ async def lifespan(
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.3.0",
+    version=VERSION,
     lifespan=lifespan,
 )
 
@@ -94,24 +97,13 @@ configure_control_manager(
 
 
 # ================================================================
-# System endpoints
-# ================================================================
-
-@app.get(
-    f"{settings.api_prefix}/health",
-    response_model=HealthResponse,
-    tags=["system"],
-)
-def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        security_mode=settings.security_mode,
-    )
-
-
-# ================================================================
 # API routers
 # ================================================================
+
+app.include_router(
+    health_router,
+    prefix=settings.api_prefix,
+)
 
 app.include_router(
     control_router,

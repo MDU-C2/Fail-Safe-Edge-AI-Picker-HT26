@@ -8,6 +8,7 @@ from fastapi import (
     status,
 )
 
+from gateway.control.router import require_control
 from gateway.events.manager import event_manager
 from gateway.models.commands import CommandResponse
 from gateway.models.rws import RwsMoveRequest
@@ -18,8 +19,6 @@ from gateway.rws.motion import (
     MotionTimeout,
     rws_motion,
 )
-from gateway.rws.rapid_router import require_lease
-from gateway.security.authentication import require_permission
 from gateway.security.identity import Identity
 
 router = APIRouter(
@@ -94,13 +93,11 @@ async def run(
 )
 async def move(
     request: RwsMoveRequest,
-    identity: Annotated[
+    _: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
-    require_lease(identity)
-
     rotation = (
         None
         if request.rx is None
@@ -120,11 +117,9 @@ async def move(
     summary="Move the left arm to its home position over Robot Web Services",
 )
 async def home(
-    identity: Annotated[
+    _: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
-    require_lease(identity)
-
     return await run(rws_motion.home)

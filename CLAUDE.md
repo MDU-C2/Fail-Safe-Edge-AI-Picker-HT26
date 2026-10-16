@@ -29,7 +29,7 @@ uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --reload
 docker build -f gateway/docker/DockerFile -t gateway .
 ```
 
-Without the hardware on the network, set `GATEWAY_CAMERA_PROVIDER=mock` and `GATEWAY_ROBOT_PROVIDER=mock` in `gateway/.env` (as `.env.example` does). The code defaults are the real devices (`oak`, `tcp`) and `strict` security; with `oak`, startup blocks retrying the camera connection for up to 60 s before the app fails to start.
+Without the hardware on the network, set `GATEWAY_CAMERA_PROVIDER=mock` and `GATEWAY_ROBOT_PROVIDER=mock` in `gateway/.env` (as `.env.example` does). The code defaults are the real devices (`oak`, `tcp`) and `strict` security; with `oak`, startup blocks retrying the camera connection for up to 60 s before the app fails to start. Once it has started, a lost camera is reconnected in the background (see Camera).
 
 ### Tests
 
@@ -92,7 +92,11 @@ Every protected route depends on `require_permission("<perm>")` from [gateway/se
 
 Permissions in use: `robot.read`, `robot.control`, `camera.read`, `camera.control` (`*` is a wildcard).
 
-Robot commands add a second gate on top of the permission: the caller must hold the control lease (`ControlManager.owns_control`), otherwise 409.
+Routes that move the robot or change its program or calibration use `require_control("robot.control")` from [gateway/control/router.py](gateway/control/router.py) instead: the permission (403) **and** the control lease (409). Use it for any new such route rather than checking the lease by hand.
+
+### Health
+
+`GET /health` ([gateway/health.py](gateway/health.py), no authentication, always 200 while the gateway runs) reports `status` `ok` or `degraded`, version, uptime, security mode, robot provider, whether a control lease is active, the camera (connected, newest frame age, error) and the robot controller over RWS (reachable, motor state, operation mode, RAPID execution state, whether a gateway move is in progress, error). The RWS probe uses a 0.5 s connect timeout so the endpoint stays fast when the controller is off the network; the test harness polls it to detect startup. It shows no client ids or tokens.
 
 ### Control lease
 
@@ -108,7 +112,7 @@ Wire format of `/camera/rgb` and `/camera/depth` is raw bytes with metadata in `
 - RGB: `BGR888p` – **planar** (all B, then all G, then all R), `3 * W * H` bytes.
 - Depth: `RAW16` – uint16 millimetres, 0 = invalid, aligned to the RGB camera so `depth[v, u]` matches `rgb[v, u]`.
 
-The OAK producer takes its IP, FPS and RGB size from settings (`GATEWAY_CAMERA_IP`, `GATEWAY_CAMERA_FPS`, `GATEWAY_CAMERA_RGB_WIDTH/HEIGHT`). `GET /camera/intrinsics` returns the CAM_A intrinsics read from the device calibration, converted to that same size.
+The OAK producer takes its IP, FPS and RGB size from settings (`GATEWAY_CAMERA_IP`, `GATEWAY_CAMERA_FPS`, `GATEWAY_CAMERA_RGB_WIDTH/HEIGHT`). `/camera/rgb` and `/camera/depth` answer 503 instead of serving a frame when the camera is disconnected or the newest frame is older than `GATEWAY_CAMERA_MAX_FRAME_AGE_SECONDS` (default 5), so clients never act on a stale scene. When capture fails, or no frame arrives for 10 s, the OAK producer closes the device and reconnects in the background: 5 attempts 5 s apart, then one every 60 s until it is back (constructor arguments of `OakCameraProducer`); meanwhile `/camera/status` and `/health` report it disconnected with the reason in `error`. `test_oak_reconnect.py` tests this with a fake device. `GET /camera/intrinsics` returns the CAM_A intrinsics read from the device calibration, converted to that same size.
 
 ### Calibration
 
@@ -121,6 +125,7 @@ The OAK producer takes its IP, FPS and RGB size from settings (`GATEWAY_CAMERA_I
 - Subscribable names are exactly the keys of `EVENT_PERMISSIONS` in [gateway/events/permissions.py](gateway/events/permissions.py); a new event family must be added there or subscriptions to it are rejected as `unknown_event`. One bad name rejects the whole request.
 - Delivery matches by dotted prefix, so subscribing to `control` receives `control.acquired` and `control.renewed`.
 - `control.revoked` is sent straight to the preempted client regardless of its subscriptions.
+- Bad messages (invalid JSON, not an object, bad `events`, unknown action) get a `{"type": "error"}` reply and the connection stays open; it is unregistered from `event_manager` whenever the handler ends.
 - The WebSocket only works in `development` mode; in `strict` mode the connection is closed with 1008 because token auth is not implemented for it.
 
 ### Robot

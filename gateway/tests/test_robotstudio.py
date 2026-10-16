@@ -99,6 +99,22 @@ def operator(
 # Read endpoints
 # ================================================================
 
+def test_health_reports_the_controller(
+    robotstudio_gateway: Gateway,
+) -> None:
+    health = expect(robotstudio_gateway.client(None).get("/health"), 200)
+
+    controller = health["robot_controller"]
+
+    assert controller["ok"] is True and controller["reachable"] is True
+    assert controller["controller_state"] in ("motoron", "motoroff")
+    assert controller["operation_mode"] == "AUTO"
+    assert controller["rapid_execution_state"] in ("running", "stopped")
+    assert controller["move_in_progress"] is False
+
+    assert health["status"] == "ok"
+
+
 def test_both_arm_poses(
     robotstudio_gateway: Gateway,
 ) -> None:

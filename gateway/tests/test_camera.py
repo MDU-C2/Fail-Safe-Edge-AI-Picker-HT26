@@ -6,7 +6,9 @@ checks against the real camera are in test_oak.py.
 """
 
 import time
+from pathlib import Path
 
+from gateway.tests.conftest import mock_settings
 from gateway.tests.support import Gateway, expect
 
 
@@ -127,3 +129,37 @@ def test_camera_needs_token(
 
     for path in ("/camera/status", "/camera/rgb", "/camera/depth", "/camera/intrinsics"):
         expect(anonymous.get(path), 401)
+
+
+def test_stale_frames_are_refused(
+    tmp_path: Path,
+) -> None:
+    #
+    # The mock publishes once a second, so with a 10 ms limit the
+    # latest frame is almost always too old.
+    #
+    gateway = Gateway(
+        tmp_path,
+        "development",
+        {
+            **mock_settings(),
+            "GATEWAY_CAMERA_MAX_FRAME_AGE_SECONDS": "0.01",
+        },
+    )
+
+    gateway.start()
+
+    try:
+        client = gateway.client("diagnostics")
+
+        expect(client.get("/camera/status"), 200)
+
+        time.sleep(0.2)
+
+        for path in ("/camera/rgb", "/camera/depth"):
+            detail = expect(client.get(path), 503)["detail"]
+
+            assert "the camera has stalled" in detail
+
+    finally:
+        gateway.stop()

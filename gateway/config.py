@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     camera_rgb_width: int = 1920
     camera_rgb_height: int = 1080
 
+    #
+    # /camera/rgb and /camera/depth answer 503 instead of serving
+    # a frame older than this, so a client never acts on an old
+    # scene after the camera has stalled or disconnected.
+    #
+    camera_max_frame_age_seconds: float = 5.0
+
     robot_provider: Literal[
         "mock",
         "tcp",

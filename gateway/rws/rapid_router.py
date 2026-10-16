@@ -11,7 +11,7 @@ from fastapi import (
     status,
 )
 
-from gateway.control.router import get_control_manager
+from gateway.control.router import require_control
 from gateway.events.manager import event_manager
 from gateway.models.rws import (
     RapidModuleUpload,
@@ -49,18 +49,6 @@ router = APIRouter(
 # ================================================================
 # Helpers
 # ================================================================
-
-def require_lease(
-    identity: Identity,
-) -> None:
-    manager = get_control_manager()
-
-    if not manager.owns_control(identity.client_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Client does not own the active control lease",
-        )
-
 
 def require_stopped_task(
     task: str,
@@ -190,11 +178,9 @@ async def put_rapid_module(
     ],
     identity: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
-    require_lease(identity)
-
     check_source(
         module,
         upload.source,
@@ -235,11 +221,9 @@ async def delete_rapid_module(
     module: ModuleName,
     identity: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
-    require_lease(identity)
-
     await run(
         require_stopped_task,
         task,
@@ -289,15 +273,13 @@ async def delete_rapid_module(
 async def start_rapid(
     identity: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
     request: Annotated[
         RapidStartRequest,
         Body(),
     ] = RapidStartRequest(),
 ) -> RapidStatus:
-    require_lease(identity)
-
     await run(
         rws_client.start,
         request.reset_program_pointer,
@@ -322,11 +304,9 @@ async def start_rapid(
 async def stop_rapid(
     identity: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
-    require_lease(identity)
-
     await run(rws_client.stop)
 
     await event_manager.publish(

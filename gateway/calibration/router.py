@@ -10,7 +10,7 @@ from fastapi import (
 )
 
 from gateway.calibration.service import calibration_service
-from gateway.control.router import get_control_manager
+from gateway.control.router import require_control
 from gateway.events.manager import event_manager
 from gateway.models.calibration import CalibrationResponse
 from gateway.security.authentication import require_permission
@@ -58,17 +58,9 @@ async def post_calibration(
     ],
     identity: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> CalibrationResponse:
-    manager = get_control_manager()
-
-    if not manager.owns_control(identity.client_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Client does not own the active control lease",
-        )
-
     if len(json.dumps(calibration)) > MAX_CALIBRATION_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,

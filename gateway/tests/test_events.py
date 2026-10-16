@@ -107,21 +107,28 @@ def test_unknown_event_rejects_whole_request(
 @pytest.mark.parametrize(
     "message",
     [
-        {"action": "subscribe", "events": "control"},
-        {"action": "subscribe", "events": [1]},
-        {"action": "dance", "events": []},
+        json.dumps({"action": "subscribe", "events": "control"}),
+        json.dumps({"action": "subscribe", "events": [1]}),
+        json.dumps({"action": "dance", "events": []}),
+        json.dumps(["subscribe", "control"]),
+        "subscribe control",
     ],
 )
 def test_malformed_requests(
     development_gateway: Gateway,
-    message: dict,
+    message: str,
 ) -> None:
     with open_events(development_gateway, "diagnostics") as websocket:
-        websocket.send(json.dumps(message))
+        websocket.send(message)
 
         reply = json.loads(websocket.recv(timeout=RECEIVE_TIMEOUT_SECONDS))
 
         assert reply["type"] == "error"
+
+        #
+        # The connection is still usable afterwards.
+        #
+        assert request(websocket, "subscribe", ["control"])["type"] == "subscription.updated"
 
 
 def test_preempted_client_is_told_without_subscribing(

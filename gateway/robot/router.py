@@ -4,12 +4,10 @@ from typing import Annotated
 from fastapi import (
     APIRouter,
     Depends,
-    HTTPException,
     Response,
-    status,
 )
 
-from gateway.control.router import get_control_manager
+from gateway.control.router import require_control
 from gateway.models.commands import (
     CommandResponse,
     RobotCommand,
@@ -94,21 +92,13 @@ def get_robot_status(
 async def send_robot_command(
     command: RobotCommand,
     response: Response,
-    identity: Annotated[
+    _: Annotated[
         Identity,
-        Depends(require_permission("robot.control")),
+        Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
     response.headers.update(DEPRECATION_HEADERS)
 
     warn_deprecated_command()
-
-    manager = get_control_manager()
-
-    if not manager.owns_control(identity.client_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Client does not own the active control lease",
-        )
 
     return await robot_service.execute(command)

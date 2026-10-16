@@ -38,6 +38,12 @@ XHTML_MESSAGE = re.compile(
 )
 
 
+#
+# Seconds, or (connect, read) seconds as requests takes them.
+#
+Timeout = float | tuple[float, float]
+
+
 class RwsError(Exception):
     """A failed Robot Web Services call.
 
@@ -92,6 +98,7 @@ class RwsClient:
         method: str,
         path: str,
         params: dict[str, str] | None = None,
+        timeout: Timeout | None = None,
         **kwargs: Any,
     ) -> requests.Response:
         #
@@ -109,14 +116,15 @@ class RwsClient:
                     method,
                     f"{self._base}{path}",
                     params=params,
-                    timeout=self._timeout,
+                    timeout=timeout or self._timeout,
                     **kwargs,
                 )
 
             except requests.RequestException as error:
                 raise RwsError(
                     None,
-                    f"Robot controller unreachable: {error}",
+                    f"Robot controller unreachable at "
+                    f"{self._base}: {_connection_problem(error)}",
                 ) from error
 
         if response.status_code >= 400:
@@ -131,11 +139,13 @@ class RwsClient:
         self,
         path: str,
         params: dict[str, str] | None = None,
+        timeout: Timeout | None = None,
     ) -> list[dict[str, Any]]:
         response = self._request(
             "GET",
             path,
             params=params,
+            timeout=timeout,
         )
 
         return response.json()["_embedded"]["_state"]
@@ -223,14 +233,23 @@ class RwsClient:
     # Controller and RAPID state
     # ============================================================
 
-    def controller_state(self) -> str:
-        return self.get_state("/rw/panel/ctrlstate")[0]["ctrlstate"]
+    def controller_state(
+        self,
+        timeout: Timeout | None = None,
+    ) -> str:
+        return self.get_state("/rw/panel/ctrlstate", timeout=timeout)[0]["ctrlstate"]
 
-    def operation_mode(self) -> str:
-        return self.get_state("/rw/panel/opmode")[0]["opmode"]
+    def operation_mode(
+        self,
+        timeout: Timeout | None = None,
+    ) -> str:
+        return self.get_state("/rw/panel/opmode", timeout=timeout)[0]["opmode"]
 
-    def execution_state(self) -> str:
-        return self.get_state("/rw/rapid/execution")[0]["ctrlexecstate"]
+    def execution_state(
+        self,
+        timeout: Timeout | None = None,
+    ) -> str:
+        return self.get_state("/rw/rapid/execution", timeout=timeout)[0]["ctrlexecstate"]
 
     def tasks(self) -> list[dict[str, Any]]:
         return self.get_state("/rw/rapid/tasks")
@@ -351,6 +370,25 @@ class RwsClient:
             params={"action": "stop"},
             data={"stopmode": "stop"},
         )
+
+
+def _connection_problem(
+    error: requests.RequestException,
+) -> str:
+    #
+    # The requests messages repeat the URL and the urllib3 pool
+    # internals; this is all a client needs to know.
+    #
+    if isinstance(error, requests.ConnectTimeout):
+        return "connection timed out"
+
+    if isinstance(error, requests.ReadTimeout):
+        return "no answer in time"
+
+    if isinstance(error, requests.ConnectionError):
+        return "connection failed (refused or no route)"
+
+    return type(error).__name__
 
 
 def _error_message(

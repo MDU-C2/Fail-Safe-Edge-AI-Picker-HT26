@@ -13,10 +13,34 @@ def test_health_needs_no_credentials(
         200,
     )
 
-    assert health == {
-        "status": "ok",
-        "security_mode": gateway.security_mode,
-    }
+    assert health["security_mode"] == gateway.security_mode
+    assert health["robot_provider"] == "mock"
+    assert health["control_lease_active"] is False
+
+    #
+    # The mock camera is fine; RWS points at a closed port.
+    #
+    assert health["camera"]["ok"] is True
+    assert health["camera"]["provider"] == "mock"
+    assert health["camera"]["frame_age_seconds"] <= health["camera"]["max_frame_age_seconds"]
+
+    controller = health["robot_controller"]
+
+    assert controller["ok"] is False and controller["reachable"] is False
+    assert controller["error"].startswith("Robot controller unreachable")
+
+    assert health["status"] == "degraded"
+
+
+def test_health_shows_the_lease(
+    gateway: Gateway,
+) -> None:
+    operator = gateway.client("operator")
+
+    with operator.control():
+        health = expect(gateway.client(None).get("/health"), 200)
+
+    assert health["control_lease_active"] is True
 
 
 @pytest.mark.parametrize(

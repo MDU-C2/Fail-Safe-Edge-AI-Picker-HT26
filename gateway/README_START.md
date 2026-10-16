@@ -33,7 +33,7 @@ uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --reload
 Open:
 
 - API docs: http://127.0.0.1:8000/docs
-- Health: http://127.0.0.1:8000/api/v1/health
+- Health: http://127.0.0.1:8000/api/v1/health (`ok` / `degraded`, with camera and robot controller details)
 - Robot status: http://127.0.0.1:8000/api/v1/robot/status
 - Arm poses: http://127.0.0.1:8000/api/v1/robot/arms
 - RAPID status: http://127.0.0.1:8000/api/v1/robot/rapid
