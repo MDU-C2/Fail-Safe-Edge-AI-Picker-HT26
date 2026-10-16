@@ -20,7 +20,7 @@ Depth is aligned to the RGB image, so depth[v, u] is the distance of
 whatever is at rgb[v, u].
 
 Usage:
-    python gateway/template.py
+    python gateway/scripts/client_template.py
 
 Needs: requests, numpy
 """
@@ -277,6 +277,15 @@ def main() -> None:
     finally:
         stop.set()
         thread.join()
+
+        #
+        # Hand control back so another client can take over at
+        # once instead of waiting for the lease to run out.
+        #
+        requests.post(
+            f"{URL}/control/release",
+            headers=headers,
+        )
 
     print("Stopped")
 

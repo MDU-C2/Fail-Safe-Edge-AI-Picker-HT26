@@ -35,6 +35,10 @@ Open:
 - API docs: http://127.0.0.1:8000/docs
 - Health: http://127.0.0.1:8000/api/v1/health
 - Robot status: http://127.0.0.1:8000/api/v1/robot/status
+- Arm poses: http://127.0.0.1:8000/api/v1/robot/arms
+- RAPID status: http://127.0.0.1:8000/api/v1/robot/rapid
+
+The arm and RAPID endpoints talk to the controller over Robot Web Services at `GATEWAY_RWS_HOST` (default the real YuMi, `192.168.125.1`). To use the RobotStudio virtual controller instead, start the gateway with `GATEWAY_RWS_HOST=127.0.0.1` (and `GATEWAY_ROBOT_HOST=127.0.0.1 GATEWAY_ROBOT_PORT=5000` for robot commands).
 
 Example mock command:
 
@@ -42,7 +46,18 @@ Example mock command:
 curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: application/json' -d 'WAYEND,515.0,200.0,250.0'
 ```
 
-The robot service is a mock and does not contact physical hardware. The next implementation phase is control ownership, priority, lease renewal/expiration, and event notification.
+With `GATEWAY_ROBOT_PROVIDER=mock` the robot service does not contact physical hardware.
+
+## Tests
+
+```bash
+pip install -r gateway/requirements-dev.txt
+python -m pytest                  # mocks only, no hardware needed
+python -m pytest --robotstudio    # also the RobotStudio virtual controller on 127.0.0.1
+python -m pytest --oak            # also the real OAK camera
+```
+
+The tests start their own gateways on free ports, so nothing needs to be running first. Client tools (image capture, event watcher, client template, token generator) are in `gateway/scripts/`.
 
 ## Run in Docker
 

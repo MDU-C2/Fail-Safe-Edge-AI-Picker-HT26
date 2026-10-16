@@ -1,7 +1,21 @@
+"""
+Send targets straight to the RAPID socket server in
+gateway/rapid/LegacyCommServer.mod, bypassing the gateway.
+
+Defaults to localhost:5000, the RobotStudio virtual controller with
+the program loaded by gateway/rapid/upload_rapid.py. Pointing --host
+at the real controller (192.168.125.1) moves the real robot.
+
+Usage (from the repository root):
+    python gateway/scripts/legacy_socket_client.py --home
+    python gateway/scripts/legacy_socket_client.py --x 325 --y 200 --z 300 --rx 90 --ry 0 --rz 90
+    python gateway/scripts/legacy_socket_client.py --poses
+"""
+
 import socket
 import argparse
 
-DEFAULT_HOST = "192.168.125.1"   # YuMi controller IP
+DEFAULT_HOST = "localhost"   # YuMi controller IP
 DEFAULT_PORT = 5000              # must match the RAPID Socket server port
 
 # Tilt used for every pose that has no own rotation: (rx, ry, rz) in degrees.

@@ -2,6 +2,7 @@ EVENT_PERMISSIONS = {
     "control": "robot.read",
     "robot.status": "robot.read",
     "robot.error": "robot.read",
+    "robot.rapid": "robot.read",
     "camera.status": "camera.read",
     "calibration": "camera.read",
 }

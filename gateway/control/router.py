@@ -159,3 +159,39 @@ async def renew_control(
         message=message,
         lease=serialize_lease(lease),
     )
+
+@router.post(
+    "/release",
+    response_model=ControlActionResponse,
+    summary="Release robot control",
+)
+async def release_control(
+    identity: Annotated[
+        Identity,
+        Depends(require_permission("robot.control")),
+    ],
+) -> ControlActionResponse:
+    manager = get_control_manager()
+
+    success, message = manager.release(
+        client_id=identity.client_id,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=message,
+        )
+
+    await event_manager.publish(
+        "control.released",
+        {
+            "client_id": identity.client_id,
+        },
+    )
+
+    return ControlActionResponse(
+        success=True,
+        message=message,
+        lease=serialize_lease(None),
+    )

@@ -40,6 +40,16 @@ class Settings(BaseSettings):
     robot_host: str = "192.168.125.1"
     robot_port: int = 5001
 
+    #
+    # Robot Web Services (RWS 1.0, RobotWare 6) on the robot
+    # controller, used for arm poses and RAPID program control.
+    #
+    rws_host: str = "192.168.125.1"
+    rws_port: int = 80
+    rws_user: str = "Default User"
+    rws_password: str = "robotics"
+    rws_timeout: float = 10.0
+
 
 @lru_cache
 def get_settings() -> Settings:
