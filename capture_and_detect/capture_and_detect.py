@@ -94,8 +94,8 @@ def calibrate(x, y, z):
 
 
 # Reuse Joen's gateway functions (take control, send a command) from SendCalibrationPoses.py
-sys.path.insert(0, str(HERE.parent / "Joen" / "Calibration"))
-from SendCalibrationPoses import acquire, send   # noqa: E402
+sys.path.insert(0, str(HERE.parent / "Calibration" / "Calibration"))
+from SendCalibratedCoordinates import acquire, send   # noqa: E402
 
 MIN_TRAVEL_Z = 200      # travel mode: the arm only travels at this height or higher (mm)
 
