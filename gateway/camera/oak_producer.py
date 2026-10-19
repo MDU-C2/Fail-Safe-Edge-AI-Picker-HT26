@@ -1,5 +1,4 @@
 import asyncio
-from copy import error
 import time
 from datetime import datetime, timezone
 
@@ -43,6 +42,11 @@ class OakCameraProducer(CameraProducer):
 
     Blocking DepthAI operations are executed outside FastAPI's
     asyncio event loop using asyncio.to_thread().
+
+    If capture fails, or no frame arrives for stall_timeout_seconds,
+    the camera is closed and reopened: quick_retries attempts
+    quick_retry_seconds apart, then one every slow_retry_seconds
+    until it is back or the producer is stopped.
     """
 
     def __init__(
@@ -57,6 +61,10 @@ class OakCameraProducer(CameraProducer):
         warmup_seconds: float = 2.0,
         connect_timeout_seconds: float = 60.0,
         reconnect_delay_seconds: float = 3.0,
+        stall_timeout_seconds: float = 10.0,
+        quick_retries: int = 5,
+        quick_retry_seconds: float = 5.0,
+        slow_retry_seconds: float = 60.0,
     ) -> None:
         if fps <= 0:
             raise ValueError(
@@ -99,12 +107,27 @@ class OakCameraProducer(CameraProducer):
         )
 
         #
+        # Recovery after the camera fails while running
+        #
+
+        self._stall_timeout_seconds = stall_timeout_seconds
+
+        self._quick_retries = quick_retries
+        self._quick_retry_seconds = quick_retry_seconds
+        self._slow_retry_seconds = slow_retry_seconds
+
+        #
         # Runtime state
         #
 
         self._running = False
 
         self._task: asyncio.Task | None = None
+
+        #
+        # Set by stop() to cut reconnect and rate-limit waits short.
+        #
+        self._stop_event = asyncio.Event()
 
         #
         # DepthAI objects
@@ -117,12 +140,14 @@ class OakCameraProducer(CameraProducer):
 
         self._intrinsics: CameraIntrinsics | None = None
 
-
-        # ================================================================
+    # ================================================================
     # Camera pipeline
     # ================================================================
 
-    def _open_camera(self) -> None:
+    def _open_camera(
+        self,
+        connect_timeout_seconds: float,
+    ) -> None:
         """
         Connect to the OAK-D Pro PoE and create the RGB + depth
         pipeline.
@@ -137,7 +162,9 @@ class OakCameraProducer(CameraProducer):
         # Connect to the configured PoE camera.
         #
 
-        self._device = self._connect_device()
+        self._device = self._connect_device(
+            connect_timeout_seconds
+        )
 
         #
         # Read the RGB intrinsics from the device calibration,
@@ -312,13 +339,16 @@ class OakCameraProducer(CameraProducer):
 
         self._running = True
 
+        self._stop_event.clear()
+
         try:
             #
             # Opening the camera is blocking.
             #
 
             await asyncio.to_thread(
-                self._open_camera
+                self._open_camera,
+                self._connect_timeout_seconds,
             )
 
             self._camera_service.set_intrinsics(
@@ -363,6 +393,8 @@ class OakCameraProducer(CameraProducer):
 
         self._running = False
 
+        self._stop_event.set()
+
         #
         # Wait for capture task to finish.
         #
@@ -394,18 +426,22 @@ class OakCameraProducer(CameraProducer):
     # Camera connection
     # ================================================================
 
-    def _connect_device(self):
+    def _connect_device(
+        self,
+        timeout_seconds: float,
+    ):
         """
         Connect to the configured PoE OAK camera.
 
         OAK PoE cameras may temporarily disappear while rebooting after
         a pipeline/device closes. Connection attempts are therefore
-        retried until connect_timeout_seconds has elapsed.
+        retried until timeout_seconds has elapsed; with 0 there is a
+        single attempt.
         """
 
         deadline = (
             time.monotonic()
-            + self._connect_timeout_seconds
+            + timeout_seconds
         )
 
         attempt = 0
@@ -430,7 +466,8 @@ class OakCameraProducer(CameraProducer):
 
                 print(
                     f"OAK camera {self._ip} not ready "
-                    f"(attempt {attempt}), retrying..."
+                    f"(attempt {attempt}), retrying...",
+                    flush=True,
                 )
 
                 time.sleep(
@@ -497,8 +534,12 @@ class OakCameraProducer(CameraProducer):
 
     async def _capture_loop(self) -> None:
         """
-        Periodically read the newest available RGB + depth frame pair
-        from the OAK camera and publish it to CameraService.
+        Read the newest RGB + depth frame pair at the configured rate
+        and publish it to CameraService.
+
+        A capture error, or no frame for stall_timeout_seconds, hands
+        over to _reconnect(), and capture carries on once the camera
+        is back.
 
         DepthAI queue access is performed in a worker thread so that
         blocking/device operations cannot block FastAPI's asyncio loop.
@@ -506,9 +547,11 @@ class OakCameraProducer(CameraProducer):
 
         interval = 1.0 / self._fps
 
-        while self._running:
-            loop = asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
 
+        last_frame = loop.time()
+
+        while self._running:
             started = loop.time()
 
             try:
@@ -517,6 +560,8 @@ class OakCameraProducer(CameraProducer):
                 )
 
                 if frame_data is not None:
+                    last_frame = started
+
                     rgb_bytes, depth_bytes = frame_data
 
                     await self._camera_service.publish_frame_set(
@@ -547,6 +592,11 @@ class OakCameraProducer(CameraProducer):
                         ),
                     )
 
+                elif started - last_frame > self._stall_timeout_seconds:
+                    raise RuntimeError(
+                        f"no frames for {self._stall_timeout_seconds:g} s"
+                    )
+
             except asyncio.CancelledError:
                 #
                 # Normal application shutdown.
@@ -561,37 +611,128 @@ class OakCameraProducer(CameraProducer):
                     flush=True,
                 )
 
-                await self._camera_service.set_connected(
-                    False
+                await self._reconnect(
+                    f"Capture failed: {error}"
                 )
 
-                self._running = False
-                break
+                last_frame = loop.time()
+
+                continue
 
             # --------------------------------------------------------
             # Maintain configured publication rate
             # --------------------------------------------------------
 
-            elapsed = (
-                loop.time()
-                - started
-            )
-
             remaining = (
                 interval
-                - elapsed
+                - (loop.time() - started)
             )
 
             if remaining > 0:
-                try:
-                    await asyncio.sleep(
-                        remaining
-                    )
+                await self._wait(
+                    remaining
+                )
 
-                except asyncio.CancelledError:
-                    raise
+    async def _wait(
+        self,
+        seconds: float,
+    ) -> None:
+        """Sleep, but return at once when stop() is called."""
 
-        # ================================================================
+        try:
+            await asyncio.wait_for(
+                self._stop_event.wait(),
+                seconds,
+            )
+
+        except asyncio.TimeoutError:
+            pass
+
+    async def _reconnect(
+        self,
+        reason: str,
+    ) -> None:
+        """
+        Close the camera and reopen it until it works or the producer
+        is stopped.
+
+        The first quick_retries attempts are quick_retry_seconds
+        apart, later ones slow_retry_seconds, so a camera that stays
+        away is not hammered. While it is away, CameraService reports
+        it disconnected with the reason, and the frame routes give 503.
+        """
+
+        await self._camera_service.set_connected(
+            False,
+            error=reason,
+        )
+
+        await asyncio.to_thread(
+            self._close_camera
+        )
+
+        attempt = 0
+
+        while self._running:
+            attempt += 1
+
+            delay = (
+                self._quick_retry_seconds
+                if attempt <= self._quick_retries
+                else self._slow_retry_seconds
+            )
+
+            print(
+                f"OAK camera {self._ip}: reconnect attempt "
+                f"{attempt} in {delay:g} s",
+                flush=True,
+            )
+
+            await self._wait(
+                delay
+            )
+
+            if not self._running:
+                return
+
+            try:
+                await asyncio.to_thread(
+                    self._open_camera,
+                    0.0,
+                )
+
+            except Exception as error:
+                await asyncio.to_thread(
+                    self._close_camera
+                )
+
+                await self._camera_service.set_connected(
+                    False,
+                    error=(
+                        f"{reason}; reconnect attempt "
+                        f"{attempt} failed: {error}"
+                    ),
+                )
+
+                continue
+
+            self._camera_service.set_intrinsics(
+                self._intrinsics
+            )
+
+            await self._camera_service.set_connected(
+                True
+            )
+
+            print(
+                f"OAK camera {self._ip}: reconnected "
+                f"after {attempt} attempt(s)",
+                flush=True,
+            )
+
+            return
+
+    # ================================================================
     # Frame acquisition
     # ================================================================
 

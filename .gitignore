@@ -7,4 +7,7 @@ gateway/.env
 *.wmopkg
 *.wmopkg.*
 /gateway/docker/images/
+/gateway/calibration.json
 capture_and_detect/data
+.pytest_cache/
+/rapid/backups/

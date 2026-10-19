@@ -4,6 +4,50 @@ from gateway.camera.producer import CameraProducer
 from gateway.camera.service import CameraService
 from gateway.models.camera import CameraIntrinsics
 
+WIDTH = 640
+HEIGHT = 480
+
+
+def _mock_rgb() -> bytes:
+    """A BGR888p test pattern in the same layout as the OAK.
+
+    Planar: all blue values, then all green, then all red. Blue
+    grows downwards, green to the right, red is constant.
+    """
+
+    blue = b"".join(
+        bytes([row * 255 // (HEIGHT - 1)]) * WIDTH
+        for row in range(HEIGHT)
+    )
+
+    green = bytes(
+        column * 255 // (WIDTH - 1)
+        for column in range(WIDTH)
+    ) * HEIGHT
+
+    red = bytes([128]) * (WIDTH * HEIGHT)
+
+    return blue + green + red
+
+
+def _mock_depth() -> bytes:
+    """RAW16 depth in mm, little-endian like the OAK.
+
+    The image is a plane tilted from 500 mm at the top to 979 mm
+    at the bottom, with an invalid (0) border column on the left.
+    """
+
+    rows = []
+
+    for row in range(HEIGHT):
+        value = (500 + row).to_bytes(2, "little")
+
+        rows.append(
+            bytes(2) + value * (WIDTH - 1)
+        )
+
+    return b"".join(rows)
+
 
 class MockCameraProducer(CameraProducer):
     def __init__(
@@ -14,6 +58,9 @@ class MockCameraProducer(CameraProducer):
 
         self._running = False
         self._task: asyncio.Task | None = None
+
+        self._rgb = _mock_rgb()
+        self._depth = _mock_depth()
 
     async def start(self) -> None:
         if self._running:
@@ -27,8 +74,8 @@ class MockCameraProducer(CameraProducer):
         #
         self._camera_service.set_intrinsics(
             CameraIntrinsics(
-                width=640,
-                height=480,
+                width=WIDTH,
+                height=HEIGHT,
                 fx=500.0,
                 fy=500.0,
                 cx=320.0,
@@ -66,21 +113,13 @@ class MockCameraProducer(CameraProducer):
             await asyncio.sleep(1.0)
 
     async def _capture_frame(self) -> None:
-        rgb_data = (
-            b"mock-rgb-frame"
-        )
-
-        depth_data = (
-            b"mock-depth-frame"
-        )
-
         await self._camera_service.publish_frame_set(
-            rgb_pixel_format="RGB8",
-            rgb_width=640,
-            rgb_height=480,
-            rgb_data=rgb_data,
-            depth_width=640,
-            depth_height=480,
-            depth_pixel_format="DEPTH16",
-            depth_data=depth_data,
+            rgb_pixel_format="BGR888p",
+            rgb_width=WIDTH,
+            rgb_height=HEIGHT,
+            rgb_data=self._rgb,
+            depth_width=WIDTH,
+            depth_height=HEIGHT,
+            depth_pixel_format="RAW16",
+            depth_data=self._depth,
         )

@@ -38,6 +38,33 @@ def get_control_manager() -> ControlManager:
     return control_manager
 
 
+def require_control(
+    permission: str,
+):
+    """Dependency: the permission and the active control lease.
+
+    Used by every route that moves the robot or changes its
+    program or calibration. Gives 403 without the permission and
+    409 when the caller does not hold the lease.
+    """
+
+    def dependency(
+        identity: Annotated[
+            Identity,
+            Depends(require_permission(permission)),
+        ],
+    ) -> Identity:
+        if not get_control_manager().owns_control(identity.client_id):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Client does not own the active control lease",
+            )
+
+        return identity
+
+    return dependency
+
+
 def serialize_lease(
     lease: ControlLease | None,
 ) -> ControlLeaseResponse:
@@ -158,4 +185,40 @@ async def renew_control(
         success=True,
         message=message,
         lease=serialize_lease(lease),
+    )
+
+@router.post(
+    "/release",
+    response_model=ControlActionResponse,
+    summary="Release robot control",
+)
+async def release_control(
+    identity: Annotated[
+        Identity,
+        Depends(require_permission("robot.control")),
+    ],
+) -> ControlActionResponse:
+    manager = get_control_manager()
+
+    success, message = manager.release(
+        client_id=identity.client_id,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=message,
+        )
+
+    await event_manager.publish(
+        "control.released",
+        {
+            "client_id": identity.client_id,
+        },
+    )
+
+    return ControlActionResponse(
+        success=True,
+        message=message,
+        lease=serialize_lease(None),
     )
