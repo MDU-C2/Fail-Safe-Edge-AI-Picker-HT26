@@ -1,4 +1,4 @@
-MODULE Module1
+MODULE HomeLeft
 
     ! Home pose = calibration position from the IRB 14000 manual.
     ! Axis 7 is the first external axis value: +135 for the left arm.
