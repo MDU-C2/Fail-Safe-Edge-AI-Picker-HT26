@@ -4,7 +4,7 @@ Basic client: client_template.py driving the robot over the RWS API.
 What it does:
     1. Acquires robot control and keeps the lease alive in a thread.
     2. Stops RAPID, replaces the program in both arm tasks with the one
-       in gateway/rapid and starts it (PUT/DELETE /robot/rapid/...,
+       in rapid/ (the arm modules, not CommServer) and starts it (PUT/DELETE /robot/rapid/...,
        POST /robot/rapid/start). Skip this with --no-load.
     3. Reads the camera intrinsics and, in a loop, an RGB + depth frame
        pair as NumPy arrays, passes them to run_model() and sends the
@@ -30,7 +30,7 @@ GATEWAY_ROBOT_HOST points at. Use the RobotStudio virtual controller
 (GATEWAY_ROBOT_HOST=127.0.0.1) unless you mean to move the real YuMi.
 Loading the program replaces every program module in T_ROB_L and
 T_ROB_R without a backup; on the real YuMi use
-gateway/rapid/upload_rapid.py (it saves the old modules) and --no-load.
+rapid/rapidctl.py upload (it saves the old modules) and --no-load.
 
 Usage (from the repository root):
     python gateway/scripts/basic_client.py --client operator        # development mode
@@ -57,10 +57,11 @@ DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
 RENEW_INTERVAL_SECONDS = 2.0
 LOOP_INTERVAL_SECONDS = 1.0
 
-RAPID_DIR = Path(__file__).resolve().parents[1] / "rapid"
+RAPID_DIR = Path(__file__).resolve().parents[2] / "rapid"
 
 #
-# The program in gateway/rapid, as upload_rapid.py loads it.
+# The arm modules of the program in rapid/, as rapidctl.py
+# loads them.
 #
 PROGRAM = {
     "T_ROB_L": ["SharedVars.mod", "LeftArmInstructions.mod", "GoHomeLeft.mod"],

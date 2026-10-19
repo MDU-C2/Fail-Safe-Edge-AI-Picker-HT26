@@ -2,9 +2,9 @@
 Send targets straight to the team's RAPID socket server
 (rapid/CommServer.mod), bypassing the gateway.
 
-The program in gateway/rapid has no socket server (the gateway drives
-it over RWS); the team program in rapid/ runs CommServer in its
-communication task. A job answers STARTED, then STATUS is polled
+The gateway drives the arms over RWS instead; the team program in
+rapid/ still runs CommServer in the communication task of the real
+YuMi. A job answers STARTED, then STATUS is polled
 until it is no longer BUSY; --right sends to the right arm ("R,").
 
 Defaults to localhost:5001, the RobotStudio virtual controller.

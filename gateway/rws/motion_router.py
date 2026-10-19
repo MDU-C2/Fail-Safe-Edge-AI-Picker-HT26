@@ -102,7 +102,7 @@ async def run(
     response_model=CommandResponse,
     summary="Move an arm over Robot Web Services",
     description=(
-        "Writes the target into the arm's RAPID task (gateway/rapid) "
+        "Writes the target into the arm's RAPID task (rapid/) "
         "and waits for the move to finish. arm is left (default) or "
         "right; tool0 in wobj0, mm and degrees; without rx/ry/rz the "
         "orientation is kept. A target outside the gateway's safe "

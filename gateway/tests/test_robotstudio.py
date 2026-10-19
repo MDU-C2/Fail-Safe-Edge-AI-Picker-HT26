@@ -2,7 +2,7 @@
 controller (run with --robotstudio).
 
 Moves are tested both ways: over RWS with the program in
-gateway/rapid (POST /robot/rws/*), and through the legacy tcp robot
+rapid/ (POST /robot/rws/*), and through the legacy tcp robot
 provider with the team's socket server rapid/CommServer.mod
 (POST /robot/command). The virtual controller has no communication
 task, so that test runs CommServer in T_ROB_R and only moves the
@@ -29,8 +29,7 @@ from gateway.tests.support import ROBOTSTUDIO_RWS_PORT, Client, Gateway, expect
 
 pytestmark = pytest.mark.robotstudio
 
-RAPID_DIR = Path(__file__).resolve().parents[1] / "rapid"
-TEAM_RAPID_DIR = Path(__file__).resolve().parents[2] / "rapid"
+RAPID_DIR = Path(__file__).resolve().parents[2] / "rapid"
 
 TASKS = ("T_ROB_L", "T_ROB_R")
 
@@ -45,7 +44,8 @@ ENDMODULE
 """
 
 #
-# The program in gateway/rapid, as upload_rapid.py loads it.
+# The arm modules of the program in rapid/, as rapid/rapidctl.py
+# loads them.
 #
 #
 # The virtual controller has no SmartGripper option, so the gripper
@@ -76,8 +76,8 @@ RWS_PROGRAM = {
 TCP_PROGRAM = {
     "T_ROB_L": LEFT_ARM,
     "T_ROB_R": [
-        TEAM_RAPID_DIR / "SharedVars.mod",
-        TEAM_RAPID_DIR / "CommServer.mod",
+        RAPID_DIR / "SharedVars.mod",
+        RAPID_DIR / "CommServer.mod",
     ],
 }
 

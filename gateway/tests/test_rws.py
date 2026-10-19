@@ -277,7 +277,7 @@ def test_rapid_status_handles_background_tasks(
 # ================================================================
 
 class FakeArmTasks:
-    """The variables of gateway/rapid/SharedVars.mod in the two arm
+    """The variables of rapid/SharedVars.mod in the two arm
     tasks. An arm finishes a job job_seconds after move_request is
     set; a target with x >= 800 is out of reach."""
 

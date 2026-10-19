@@ -202,6 +202,29 @@ class Client:
         assert not lost.is_set(), "Control lease was lost while held"
 
 
+class RemoteGateway:
+    """A gateway the tests did not start, e.g. the one on the
+    Raspberry Pi, reached with a token from its own auth clients
+    file."""
+
+    security_mode = "strict"
+
+    def __init__(
+        self,
+        api_url: str,
+        token: str,
+    ) -> None:
+        self.api_url = api_url.rstrip("/")
+        self.token = token
+
+    def client(self) -> Client:
+        client = Client(self, None)
+
+        client.session.headers["Authorization"] = f"Bearer {self.token}"
+
+        return client
+
+
 def expect(
     response: requests.Response,
     status_code: int,

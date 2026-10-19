@@ -9,8 +9,14 @@ Opt-in hardware:
     --robotstudio  RobotStudio virtual controller on 127.0.0.1
                    (RWS on port 80, RAPID socket server on 5000)
     --oak          the real OAK camera at GATEWAY_CAMERA_IP
+    --real-robot   the real YuMi, through an already running gateway
+                   (default the Raspberry Pi); small moves only, see
+                   test_real_robot.py
+    --real-robot-gripper
+                   also close and open the real grippers
 
-The real robot is never used: every robot address is 127.0.0.1.
+Without --real-robot the real robot is never used: every robot
+address the suite's own gateways get is 127.0.0.1.
 """
 
 from typing import Iterator
@@ -49,17 +55,41 @@ def pytest_addoption(
         help="Run tests against the real OAK camera (no other process may hold it)",
     )
 
+    parser.addoption(
+        "--real-robot",
+        action="store_true",
+        help="MOVES THE REAL YUMI a few mm through the gateway at --real-robot-url (RAPID must be running in AUTO)",
+    )
+
+    parser.addoption(
+        "--real-robot-gripper",
+        action="store_true",
+        help="With --real-robot: also close and open both real grippers",
+    )
+
+    parser.addoption(
+        "--real-robot-url",
+        default="http://169.254.125.202:8000/api/v1",
+        help="API base URL of the gateway in front of the real robot (default: the Raspberry Pi)",
+    )
+
+    parser.addoption(
+        "--real-robot-token",
+        default="BAD_TOKEN_OPERATOR",
+        help="Bearer token of a client with robot.control on that gateway",
+    )
+
 
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    for option in ("robotstudio", "oak"):
+    for option in ("robotstudio", "oak", "real_robot", "real_robot_gripper"):
         if config.getoption(option):
             continue
 
         skip = pytest.mark.skip(
-            reason=f"needs --{option}",
+            reason=f"needs --{option.replace('_', '-')}",
         )
 
         for item in items:

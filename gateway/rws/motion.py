@@ -21,7 +21,7 @@ Arm = Literal["left", "right"]
 
 #
 # RAPID motion task of each arm. The command variables are named
-# <variable>_<arm>, e.g. move_request_left (gateway/rapid/SharedVars.mod).
+# <variable>_<arm>, e.g. move_request_left (rapid/SharedVars.mod).
 #
 ARM_TASKS: dict[Arm, str] = {
     "left": "T_ROB_L",
@@ -97,7 +97,7 @@ class RwsMotion:
     """Commands the arm tasks of the RAPID program over Robot Web
     Services.
 
-    Uses the PERS variables of gateway/rapid/SharedVars.mod: the
+    Uses the PERS variables of rapid/SharedVars.mod: the
     job is written first (target, go_home or grip_cmd), then
     move_request_<arm> is set to TRUE. The arm task does the job,
     writes move_ok_<arm> and clears move_request_<arm>, which is
