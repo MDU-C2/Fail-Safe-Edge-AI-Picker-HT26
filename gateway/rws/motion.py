@@ -1,6 +1,7 @@
 import math
 import threading
 import time
+from typing import Literal
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
@@ -15,6 +16,22 @@ from gateway.rws.client import (
 # How often the move_request flag is read while a move runs.
 #
 POLL_INTERVAL_SECONDS = 0.05
+
+Arm = Literal["left", "right"]
+
+#
+# RAPID motion task of each arm. The command variables are named
+# <variable>_<arm>, e.g. move_request_left (gateway/rapid/SharedVars.mod).
+#
+ARM_TASKS: dict[Arm, str] = {
+    "left": "T_ROB_L",
+    "right": "T_ROB_R",
+}
+
+GRIPPER_COMMANDS = {
+    "grip": "GRIP",
+    "open": "OPEN",
+}
 
 
 class MotionConflict(Exception):
@@ -77,45 +94,66 @@ def rapid_array(
 
 
 class RwsMotion:
-    """Commands the RAPID motion task over Robot Web Services.
+    """Commands the arm tasks of the RAPID program over Robot Web
+    Services.
 
-    Uses the PERS variables of gateway/rapid/LegacyShared.mod:
-    the target is written first, then move_request is set to
-    TRUE. LegacyMotion checks the safe zone, moves, writes
-    move_ok / move_error and clears move_request, which is
+    Uses the PERS variables of gateway/rapid/SharedVars.mod: the
+    job is written first (target, go_home or grip_cmd), then
+    move_request_<arm> is set to TRUE. The arm task does the job,
+    writes move_ok_<arm> and clears move_request_<arm>, which is
     polled here.
 
-    Blocking; call it through asyncio.to_thread. One move at a
-    time: a second call while a move runs is refused.
+    The arm tasks do not check a safe zone, so targets outside the
+    configured box are refused here before anything is written.
+
+    Blocking; call it through asyncio.to_thread. One job per arm at
+    a time; the two arms are independent. With wait=False a job
+    returns STARTED as soon as it is written, like the team's
+    CommServer, and status() reports BUSY / DONE / ERR move failed.
     """
 
     def __init__(
         self,
         client: RwsClient,
-        task: str,
         timeout: float,
+        safe_zone_min: tuple[float, float, float],
+        safe_zone_max: tuple[float, float, float],
     ) -> None:
         self._client = client
-        self._task = task
         self._timeout = timeout
 
-        self._busy = threading.Lock()
+        self._safe_zone_min = safe_zone_min
+        self._safe_zone_max = safe_zone_max
+
+        self._busy = {
+            arm: threading.Lock()
+            for arm in ARM_TASKS
+        }
 
     def move(
         self,
+        arm: Arm,
         position: tuple[float, float, float],
         rotation: tuple[float, float, float] | None,
+        wait: bool = True,
     ) -> CommandResponse:
-        """Move tool0 to position (mm, wobj0).
+        """Move the arm's tool0 to position (mm, wobj0).
 
         rotation is (rx, ry, rz) in degrees, or None to keep the
         current orientation.
         """
 
+        if not self.in_safe_zone(position):
+            return CommandResponse(
+                accepted=False,
+                message="ERR outside safe zone",
+            )
+
         values = {
             "target_pos": rapid_array(position),
             "use_rot": "FALSE" if rotation is None else "TRUE",
             "go_home": "FALSE",
+            "grip_cmd": '""',
         }
 
         if rotation is not None:
@@ -123,18 +161,76 @@ class RwsMotion:
 
             values["target_rot"] = rapid_array(orient_zyx(rz, ry, rx))
 
-        return self._run(values)
+        return self._run(arm, values, wait)
 
-    def is_moving(self) -> bool:
-        """A move sent through the gateway has not finished yet."""
-
-        return self._busy.locked()
-
-    def home(self) -> CommandResponse:
+    def home(
+        self,
+        arm: Arm,
+        wait: bool = True,
+    ) -> CommandResponse:
         return self._run(
+            arm,
             {
                 "go_home": "TRUE",
-            }
+                "grip_cmd": '""',
+            },
+            wait,
+        )
+
+    def gripper(
+        self,
+        arm: Arm,
+        action: Literal["grip", "open"],
+        wait: bool = True,
+    ) -> CommandResponse:
+        return self._run(
+            arm,
+            {
+                "go_home": "FALSE",
+                "grip_cmd": f'"{GRIPPER_COMMANDS[action]}"',
+            },
+            wait,
+        )
+
+    def status(
+        self,
+        arm: Arm,
+    ) -> CommandResponse:
+        """The arm's last job, as CommServer answers STATUS.
+
+        BUSY while it runs, then DONE or ERR move failed. Also
+        reports jobs started by other clients (CommServer).
+        """
+
+        self._check_loaded(arm)
+
+        if self._read(arm, "move_request") == "TRUE":
+            return CommandResponse(
+                accepted=True,
+                message="BUSY",
+            )
+
+        return self._result(arm)
+
+    def in_safe_zone(
+        self,
+        position: tuple[float, float, float],
+    ) -> bool:
+        return all(
+            low <= value <= high
+            for value, low, high in zip(
+                position,
+                self._safe_zone_min,
+                self._safe_zone_max,
+            )
+        )
+
+    def is_moving(self) -> bool:
+        """A job sent through the gateway has not finished yet."""
+
+        return any(
+            lock.locked()
+            for lock in self._busy.values()
         )
 
     # ============================================================
@@ -143,90 +239,129 @@ class RwsMotion:
 
     def _run(
         self,
+        arm: Arm,
         values: dict[str, str],
+        wait: bool,
     ) -> CommandResponse:
-        if not self._busy.acquire(blocking=False):
-            raise MotionConflict("A move is already in progress")
+        if not self._busy[arm].acquire(blocking=False):
+            raise MotionConflict(f"A {arm} arm job is already in progress")
 
         try:
-            self._check_ready()
+            self._check_ready(arm)
 
             for name, value in values.items():
-                self._client.write_symbol(self._task, name, value)
+                self._write(arm, name, value)
 
-            self._client.write_symbol(self._task, "move_request", "TRUE")
+            self._write(arm, "move_request", "TRUE")
 
-            self._wait_for_move()
-
-            if self._read("move_ok") == "TRUE":
+            #
+            # The arm task now owns the job; a new one is refused
+            # until it clears move_request (see _check_ready).
+            #
+            if not wait:
                 return CommandResponse(
                     accepted=True,
-                    message="DONE",
+                    message="STARTED",
                 )
 
-            #
-            # move_error is optional, so the gateway also works with
-            # programs that only report move_ok.
-            #
-            try:
-                error = self._read("move_error").strip('"')
+            self._wait_for_job(arm)
 
-            except RwsError as read_error:
-                if read_error.status_code != 400:
-                    raise
-
-                error = ""
-
-            return CommandResponse(
-                accepted=False,
-                message=f"ERR {error or 'move failed'}",
-            )
+            return self._result(arm)
 
         finally:
-            self._busy.release()
+            self._busy[arm].release()
 
-    def _check_ready(self) -> None:
-        if self._client.execution_state() != "running":
-            raise MotionConflict("RAPID is not running")
+    def _result(
+        self,
+        arm: Arm,
+    ) -> CommandResponse:
+        if self._read(arm, "move_ok") == "TRUE":
+            return CommandResponse(
+                accepted=True,
+                message="DONE",
+            )
 
+        #
+        # Same reply as the team's CommServer: the arm tasks only
+        # report move_ok (an unreachable target or a home move that
+        # stopped early).
+        #
+        return CommandResponse(
+            accepted=False,
+            message="ERR move failed",
+        )
+
+    def _check_loaded(
+        self,
+        arm: Arm,
+    ) -> None:
         try:
-            requested = self._read("move_request")
+            self._read(arm, "move_request")
 
         except RwsError as error:
             if error.status_code != 400:
                 raise
 
             raise MotionConflict(
-                f"The motion program is not loaded in {self._task} "
-                f"(no move_request variable)"
+                f"The motion program is not loaded in {ARM_TASKS[arm]} "
+                f"(no move_request_{arm} variable)"
             ) from error
 
-        #
-        # Still set after an earlier move timed out here, or by
-        # another RWS client.
-        #
-        if requested == "TRUE":
-            raise MotionConflict("The previous move has not finished")
+    def _check_ready(
+        self,
+        arm: Arm,
+    ) -> None:
+        if self._client.execution_state() != "running":
+            raise MotionConflict("RAPID is not running")
 
-    def _wait_for_move(self) -> None:
+        self._check_loaded(arm)
+
+        #
+        # Still set while an earlier job runs: one started with
+        # wait=False, one that timed out here, or one from another
+        # client such as the team's CommServer.
+        #
+        if self._read(arm, "move_request") == "TRUE":
+            raise MotionConflict(f"The {arm} arm is busy with an earlier job")
+
+    def _wait_for_job(
+        self,
+        arm: Arm,
+    ) -> None:
         deadline = time.monotonic() + self._timeout
 
-        while self._read("move_request") == "TRUE":
+        while self._read(arm, "move_request") == "TRUE":
             if self._client.execution_state() != "running":
                 raise MotionConflict("RAPID stopped before the move finished")
 
             if time.monotonic() > deadline:
                 raise MotionTimeout(
-                    f"The move did not finish within {self._timeout:g} s"
+                    f"The {arm} arm did not finish within {self._timeout:g} s"
                 )
 
             time.sleep(POLL_INTERVAL_SECONDS)
 
     def _read(
         self,
+        arm: Arm,
         name: str,
     ) -> str:
-        return self._client.read_symbol(self._task, name)
+        return self._client.read_symbol(
+            ARM_TASKS[arm],
+            f"{name}_{arm}",
+        )
+
+    def _write(
+        self,
+        arm: Arm,
+        name: str,
+        value: str,
+    ) -> None:
+        self._client.write_symbol(
+            ARM_TASKS[arm],
+            f"{name}_{arm}",
+            value,
+        )
 
 
 def create_rws_motion(
@@ -234,8 +369,9 @@ def create_rws_motion(
 ) -> RwsMotion:
     return RwsMotion(
         client=rws_client,
-        task=settings.rws_motion_task,
         timeout=settings.rws_move_timeout,
+        safe_zone_min=settings.rws_safe_zone_min,
+        safe_zone_max=settings.rws_safe_zone_max,
     )
 
 

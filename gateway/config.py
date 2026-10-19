@@ -63,13 +63,18 @@ class Settings(BaseSettings):
     rws_timeout: float = 10.0
 
     #
-    # RAPID task holding the command variables of
-    # gateway/rapid/LegacyShared.mod, written by POST
-    # /robot/rws/move and /robot/rws/home, and how long to wait
-    # for a move to finish.
+    # How long POST /robot/rws/* waits for the arm to finish.
     #
-    rws_motion_task: str = "T_ROB_L"
     rws_move_timeout: float = 60.0
+
+    #
+    # Box that /robot/rws/move targets must lie in, tool0 in wobj0,
+    # mm, for both arms. The arm tasks do not check it themselves
+    # (the team's CommServer did, with these same limits), so the
+    # gateway does. Tighten to tested points.
+    #
+    rws_safe_zone_min: tuple[float, float, float] = (-1000.0, -1000.0, -1000.0)
+    rws_safe_zone_max: tuple[float, float, float] = (1000.0, 1000.0, 1000.0)
 
 
 @lru_cache

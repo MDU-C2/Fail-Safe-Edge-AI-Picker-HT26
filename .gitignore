@@ -10,3 +10,4 @@ gateway/.env
 /gateway/calibration.json
 capture_and_detect/data
 .pytest_cache/
+/gateway/rapid/backup/

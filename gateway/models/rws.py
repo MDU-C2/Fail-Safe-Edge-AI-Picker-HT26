@@ -1,4 +1,4 @@
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -91,8 +91,22 @@ class RapidStartRequest(BaseModel):
     reset_program_pointer: bool = False
 
 
-class RwsMoveRequest(BaseModel):
-    """Target of the left arm's tool0 in wobj0.
+class RwsArmRequest(BaseModel):
+    arm: Literal["left", "right"] = "left"
+
+    #
+    # False: answer STARTED as soon as the job is written and poll
+    # GET /robot/rws/status, like the team's CommServer.
+    #
+    wait: bool = True
+
+
+class RwsGripperRequest(RwsArmRequest):
+    action: Literal["grip", "open"]
+
+
+class RwsMoveRequest(RwsArmRequest):
+    """Target of one arm's tool0 in wobj0 (default the left arm).
 
     Position in mm. The rotation, in degrees, is optional and
     means the same as RAPID's OrientZYX(rz, ry, rx); without it

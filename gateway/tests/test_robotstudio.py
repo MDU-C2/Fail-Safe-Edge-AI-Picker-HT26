@@ -3,8 +3,10 @@ controller (run with --robotstudio).
 
 Moves are tested both ways: over RWS with the program in
 gateway/rapid (POST /robot/rws/*), and through the legacy tcp robot
-provider with the socket server fixture in tests/rapid
-(POST /robot/command).
+provider with the team's socket server rapid/CommServer.mod
+(POST /robot/command). The virtual controller has no communication
+task, so that test runs CommServer in T_ROB_R and only moves the
+left arm.
 
 The tests change the controller's RAPID program. The program
 modules loaded before the run are saved at the start and loaded
@@ -28,7 +30,7 @@ from gateway.tests.support import ROBOTSTUDIO_RWS_PORT, Client, Gateway, expect
 pytestmark = pytest.mark.robotstudio
 
 RAPID_DIR = Path(__file__).resolve().parents[1] / "rapid"
-FIXTURE_DIR = Path(__file__).resolve().parent / "rapid"
+TEAM_RAPID_DIR = Path(__file__).resolve().parents[2] / "rapid"
 
 TASKS = ("T_ROB_L", "T_ROB_R")
 
@@ -45,25 +47,53 @@ ENDMODULE
 #
 # The program in gateway/rapid, as upload_rapid.py loads it.
 #
+#
+# The virtual controller has no SmartGripper option, so the gripper
+# routines the arm modules call are stubbed.
+#
+GRIPPER_STUB = RAPID_DIR / "sim" / "GripperStub.mod"
+
+LEFT_ARM = [
+    RAPID_DIR / "SharedVars.mod",
+    RAPID_DIR / "LeftArmInstructions.mod",
+    RAPID_DIR / "GoHomeLeft.mod",
+    GRIPPER_STUB,
+]
+
 RWS_PROGRAM = {
-    "T_ROB_L": [RAPID_DIR / "LegacyShared.mod", RAPID_DIR / "LegacyMotion.mod"],
-    "T_ROB_R": [RAPID_DIR / "LegacyShared.mod", RAPID_DIR / "RightArmIdle.mod"],
+    "T_ROB_L": LEFT_ARM,
+    "T_ROB_R": [
+        RAPID_DIR / "SharedVars.mod",
+        RAPID_DIR / "RightArmInstructions.mod",
+        RAPID_DIR / "GoHomeRight.mod",
+        GRIPPER_STUB,
+    ],
 }
 
 #
-# The same with the legacy socket server in the right task.
+# The team's socket server in place of the right arm.
 #
 TCP_PROGRAM = {
-    "T_ROB_L": [RAPID_DIR / "LegacyShared.mod", RAPID_DIR / "LegacyMotion.mod"],
-    "T_ROB_R": [RAPID_DIR / "LegacyShared.mod", FIXTURE_DIR / "LegacyCommServer.mod"],
+    "T_ROB_L": LEFT_ARM,
+    "T_ROB_R": [
+        TEAM_RAPID_DIR / "SharedVars.mod",
+        TEAM_RAPID_DIR / "CommServer.mod",
+    ],
 }
 
 #
-# Inside the safe zone, with the calibration tilt.
+# With the calibration tilt; reachable for the left arm.
 #
 TARGET = (325.0, 200.0, 300.0)
 TARGET_ROTATION = (90.0, 0.0, 90.0)
 TARGET_COMMAND = "325,200,300,90,0,90"
+
+RIGHT_TARGET = (420.0, -150.0, 300.0)
+
+#
+# Inside the gateway's default safe zone but out of the arm's reach.
+#
+UNREACHABLE = (900.0, 0.0, 300.0)
 
 POSITION_TOLERANCE_MM = 1.0
 
@@ -363,12 +393,13 @@ def load_program(
         replace_program(backup)
 
 
-def left_pose(
+def arm_pose(
     client: Client,
+    arm: str = "left",
 ) -> dict:
     return expect(
         client.get(
-            "/robot/arms/left/pose",
+            f"/robot/arms/{arm}/pose",
             params={"tool": "tool0", "wobj": "wobj0"},
         ),
         200,
@@ -402,8 +433,9 @@ def rws_move(
     client: Client,
     position: tuple[float, float, float],
     rotation: tuple[float, float, float] | None = None,
+    arm: str = "left",
 ) -> dict:
-    body = dict(zip(("x", "y", "z"), position))
+    body = {"arm": arm, **dict(zip(("x", "y", "z"), position))}
 
     if rotation is not None:
         body.update(zip(("rx", "ry", "rz"), rotation))
@@ -411,7 +443,16 @@ def rws_move(
     return expect(client.post("/robot/rws/move", json=body), 200)
 
 
+def rws_home(
+    client: Client,
+    arm: str = "left",
+) -> dict:
+    return expect(client.post("/robot/rws/home", json={"arm": arm}), 200)
+
+
 DONE = {"accepted": True, "message": "DONE"}
+MOVE_FAILED = {"accepted": False, "message": "ERR move failed"}
+OUTSIDE_SAFE_ZONE = {"accepted": False, "message": "ERR outside safe zone"}
 
 
 def test_rws_moves_the_virtual_robot(
@@ -419,11 +460,14 @@ def test_rws_moves_the_virtual_robot(
 ) -> None:
     operator = load_program(RWS_PROGRAM)
 
+    #
+    # Without a body /home homes the left arm.
+    #
     assert expect(operator.post("/robot/rws/home"), 200) == DONE
 
     assert rws_move(operator, TARGET, TARGET_ROTATION) == DONE
 
-    pose = left_pose(operator)
+    pose = arm_pose(operator)
 
     assert_position(pose, TARGET)
 
@@ -438,22 +482,52 @@ def test_rws_moves_the_virtual_robot(
 
     assert rws_move(operator, second) == DONE
 
-    moved = left_pose(operator)
+    moved = arm_pose(operator)
 
     assert_position(moved, second)
     assert same_orientation(moved, tuple(pose[q] for q in ("q1", "q2", "q3", "q4"))), moved
 
     #
-    # The safe zone is checked by the RAPID program.
+    # The arm program refuses what it cannot reach; the gateway
+    # refuses what is outside its safe zone without sending it.
     #
-    result = rws_move(operator, (1000.0, 0.0, 0.0))
+    assert rws_move(operator, UNREACHABLE) == MOVE_FAILED
 
-    assert result == {"accepted": False, "message": "ERR outside safe zone"}
+    assert rws_move(operator, (1500.0, 0.0, 300.0)) == OUTSIDE_SAFE_ZONE
 
-    assert_position(left_pose(operator), second)
+    assert_position(arm_pose(operator), second)
 
 
-def test_rws_refuses_a_second_move_while_moving(
+def test_rws_moves_the_right_arm(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+
+    left_before = arm_pose(operator)
+
+    assert rws_home(operator, "right") == DONE
+    assert rws_move(operator, RIGHT_TARGET, arm="right") == DONE
+
+    assert_position(arm_pose(operator, "right"), RIGHT_TARGET)
+
+    #
+    # The left arm was not touched.
+    #
+    assert_position(arm_pose(operator), tuple(left_before[axis] for axis in "xyz"))
+
+
+def test_rws_gripper(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+
+    for action in ("grip", "open"):
+        result = operator.post("/robot/rws/gripper", json={"arm": "left", "action": action})
+
+        assert expect(result, 200) == DONE
+
+
+def test_rws_refuses_a_second_job_on_a_busy_arm(
     load_program: LoadProgram,
 ) -> None:
     operator = load_program(RWS_PROGRAM)
@@ -475,10 +549,74 @@ def test_rws_refuses_a_second_move_while_moving(
 
     response = operator.post("/robot/rws/move", json=dict(zip(("x", "y", "z"), TARGET)))
 
+    #
+    # The other arm is independent.
+    #
+    right = rws_home(operator, "right")
+
     homing.join()
 
-    assert expect(response, 409)["detail"] == "A move is already in progress"
+    assert expect(response, 409)["detail"] == "A left arm job is already in progress"
     assert expect(responses["home"], 200) == DONE
+    assert right == DONE
+
+
+def wait_for_status(
+    client: Client,
+    arm: str,
+) -> dict:
+    deadline = time.monotonic() + 30
+
+    while (status := expect(client.get("/robot/rws/status", params={"arm": arm}), 200))["message"] == "BUSY":
+        assert time.monotonic() < deadline
+
+        time.sleep(0.1)
+
+    return status
+
+
+def test_rws_jobs_without_waiting_like_commserver(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+
+    assert rws_home(operator) == DONE
+    assert rws_home(operator, "right") == DONE
+
+    #
+    # Both arms started at once, then polled, as
+    # rapid/tests/handover.py does over the socket.
+    #
+    started = {"accepted": True, "message": "STARTED"}
+
+    body = {"arm": "left", "wait": False, **dict(zip(("x", "y", "z"), TARGET))}
+
+    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+
+    body = {"arm": "right", "wait": False, **dict(zip(("x", "y", "z"), RIGHT_TARGET))}
+
+    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+
+    assert expect(operator.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
+
+    #
+    # A new job for a busy arm is refused (CommServer: ERR busy).
+    #
+    response = operator.post("/robot/rws/gripper", json={"arm": "left", "action": "grip", "wait": False})
+
+    assert expect(response, 409)["detail"] == "The left arm is busy with an earlier job"
+
+    assert wait_for_status(operator, "left") == DONE
+    assert wait_for_status(operator, "right") == DONE
+
+    assert_position(arm_pose(operator), TARGET)
+    assert_position(arm_pose(operator, "right"), RIGHT_TARGET)
+
+    body = {"arm": "left", "wait": False, **dict(zip(("x", "y", "z"), UNREACHABLE))}
+
+    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+
+    assert wait_for_status(operator, "left") == MOVE_FAILED
 
 
 def test_rws_move_needs_running_rapid(
@@ -498,6 +636,27 @@ def send_command(
     command: str,
 ) -> dict:
     return expect(client.post("/robot/command", json={"command": command}), 200)
+
+
+def run_command(
+    client: Client,
+    command: str,
+) -> dict:
+    """Start a job like rapid/tests/handover.py and wait for it."""
+
+    started = send_command(client, command)
+
+    if started["message"] != "STARTED":
+        return started
+
+    deadline = time.monotonic() + 30
+
+    while (status := send_command(client, "STATUS"))["message"] == "BUSY":
+        assert time.monotonic() < deadline
+
+        time.sleep(0.1)
+
+    return status
 
 
 def test_legacy_tcp_commands_move_the_virtual_robot(
@@ -520,12 +679,19 @@ def test_legacy_tcp_commands_move_the_virtual_robot(
 
         time.sleep(0.5)
 
-    assert result == DONE
+    assert result == {"accepted": True, "message": "STARTED"}
 
-    assert send_command(operator, TARGET_COMMAND) == DONE
+    while (status := send_command(operator, "STATUS"))["message"] == "BUSY":
+        time.sleep(0.1)
 
-    assert_position(left_pose(operator), TARGET)
+    assert status == DONE
 
-    result = send_command(operator, "1000,0,0")
+    assert run_command(operator, TARGET_COMMAND) == DONE
 
-    assert result == {"accepted": False, "message": "ERR outside safe zone"}
+    assert_position(arm_pose(operator), TARGET)
+
+    assert run_command(operator, "1,2") == {"accepted": False, "message": "ERR bad format"}
+
+    assert run_command(operator, "900,0,300") == MOVE_FAILED
+
+    assert_position(arm_pose(operator), TARGET)

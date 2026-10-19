@@ -42,7 +42,7 @@ The arm, RAPID and RWS move endpoints talk to the controller over Robot Web Serv
 
 There are two ways to move the robot:
 
-- `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees) and `POST /api/v1/robot/rws/home` write the target into the RAPID program from `gateway/rapid` over RWS and wait for the move. Load that program with `python gateway/rapid/upload_rapid.py` (defaults to the virtual controller). No socket server is involved.
+- `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees, optional `"arm": "left"|"right"`), `POST /api/v1/robot/rws/home` (optional `{"arm"}`) and `POST /api/v1/robot/rws/gripper` (`{"action": "grip"|"open"}`, optional `arm`) write the job into the RAPID program from `gateway/rapid` (the team's arm modules) over RWS and wait for it; with `"wait": false` they answer `STARTED` at once and `GET /api/v1/robot/rws/status?arm=left|right` reports `BUSY` / `DONE` / `ERR move failed`, like the team's CommServer. Targets outside `GATEWAY_RWS_SAFE_ZONE_MIN/MAX` are refused by the gateway. Load the program with `python gateway/rapid/upload_rapid.py` (defaults to the virtual controller; it backs up the modules it replaces). No socket server is involved.
 - `POST /api/v1/robot/command` (deprecated but still working; legacy, `GATEWAY_ROBOT_PROVIDER=tcp`) sends the command text to a RAPID socket server on `GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT`.
 
 Both need `robot.control` and the control lease. `python gateway/scripts/basic_client.py` shows the RWS route from a client: it loads and starts the program through the gateway and runs a short demo path.
@@ -147,11 +147,11 @@ In the lab the gateway runs in Docker on the Raspberry Pi 5 on the switch. The P
 
 | Device | Address |
 |---|---|
-| Raspberry Pi (gateway) | `169.254.125.202` (fixed) and `192.168.125.202` (assigned automatically, can change) |
+| Raspberry Pi (gateway) | `169.254.125.202` (fixed) and `192.168.125.201` (assigned automatically, can change) |
 | OAK camera | `169.254.1.223` |
 | YuMi robot | `192.168.125.1`, port `5001` |
 
-Clients reach the gateway at `http://169.254.125.202:8000` or `http://192.168.125.202:8000`, depending on which network they are on.
+Clients reach the gateway at `http://169.254.125.202:8000` or `http://192.168.125.201:8000`, depending on which network they are on.
 
 Log in to the Pi as `kasun`; ask the team for the password.
 
@@ -178,13 +178,13 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 From PowerShell or WSL, at the repository root:
 
 ```bash
-scp gateway/docker/images/robot-gateway-pi-arm64.tar.gz kasun@192.168.125.202:~/
+scp gateway/docker/images/robot-gateway-pi-arm64.tar.gz kasun@192.168.125.201:~/
 ```
 
 ### 3. Load and start it (on the Pi)
 
 ```bash
-ssh kasun@192.168.125.202
+ssh kasun@192.168.125.201
 
 sudo docker load -i ~/robot-gateway-pi-arm64.tar.gz
 sudo docker rm -f robot-gateway

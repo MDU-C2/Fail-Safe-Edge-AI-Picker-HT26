@@ -31,11 +31,11 @@ API_PREFIX = "/api/v1"
 STARTUP_TIMEOUT_SECONDS = 90.0
 
 #
-# RobotStudio virtual controller: RWS, and the RAPID socket server
-# fixture in gateway/tests/rapid/LegacyCommServer.mod.
+# RobotStudio virtual controller: RWS, and the team's RAPID socket
+# server (rapid/CommServer.mod) when a test loads it.
 #
 ROBOTSTUDIO_RWS_PORT = 80
-ROBOTSTUDIO_SOCKET_PORT = 5000
+ROBOTSTUDIO_SOCKET_PORT = 5001
 
 #
 # Short leases keep the expiry tests fast. Clients that hold

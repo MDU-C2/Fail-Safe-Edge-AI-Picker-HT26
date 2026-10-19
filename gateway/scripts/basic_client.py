@@ -16,23 +16,27 @@ What to change:
                   By default it returns a short demo path (home, two
                   targets, home) for the first frame only.
 
-Moves are dicts:
+Moves are dicts (left arm unless "arm": "right" is given):
     {"x": 325, "y": 200, "z": 300}                           keep orientation
     {"x": 325, "y": 200, "z": 300, "rx": 90, "ry": 0, "rz": 90}
-    "HOME"
+    {"arm": "right", "x": 420, "y": -150, "z": 300}
+    "HOME" / "R,HOME", "GRIP" / "OPEN" / "R,GRIP" / "R,OPEN"
 Positions are tool0 in wobj0 in mm, rotations in degrees (RAPID
-OrientZYX). The RAPID program rejects targets outside its safe zone.
+OrientZYX). The gateway rejects targets outside its safe zone
+(GATEWAY_RWS_SAFE_ZONE_MIN/MAX).
 
 The robot that moves is whichever controller the gateway's
 GATEWAY_ROBOT_HOST points at. Use the RobotStudio virtual controller
 (GATEWAY_ROBOT_HOST=127.0.0.1) unless you mean to move the real YuMi.
 Loading the program replaces every program module in T_ROB_L and
-T_ROB_R.
+T_ROB_R without a backup; on the real YuMi use
+gateway/rapid/upload_rapid.py (it saves the old modules) and --no-load.
 
 Usage (from the repository root):
     python gateway/scripts/basic_client.py --client operator        # development mode
     python gateway/scripts/basic_client.py --token <token>          # strict mode
     python gateway/scripts/basic_client.py --no-load --frames 0     # program already running, run until Ctrl+C
+    python gateway/scripts/basic_client.py --gripper-stub           # virtual controller without SmartGripper
 
 Needs: requests, numpy
 """
@@ -59,12 +63,18 @@ RAPID_DIR = Path(__file__).resolve().parents[1] / "rapid"
 # The program in gateway/rapid, as upload_rapid.py loads it.
 #
 PROGRAM = {
-    "T_ROB_L": ["LegacyShared.mod", "LegacyMotion.mod"],
-    "T_ROB_R": ["LegacyShared.mod", "RightArmIdle.mod"],
+    "T_ROB_L": ["SharedVars.mod", "LeftArmInstructions.mod", "GoHomeLeft.mod"],
+    "T_ROB_R": ["SharedVars.mod", "RightArmInstructions.mod", "GoHomeRight.mod"],
 }
 
 #
-# Inside the RAPID safe zone (X 200..450, Y 50..350, Z 250..350).
+# Simulation only: the gripper routines a virtual controller without
+# the SmartGripper option lacks (see the module).
+#
+GRIPPER_STUB = "sim/GripperStub.mod"
+
+#
+# Left arm, points tested on the virtual controller.
 #
 DEMO_PATH = [
     "HOME",
@@ -190,6 +200,7 @@ def module_name(
 
 def load_program(
     gateway: Gateway,
+    gripper_stub: bool,
 ) -> None:
     gateway.request("POST", "/robot/rapid/stop")
 
@@ -205,7 +216,7 @@ def load_program(
             print(f"{task['name']}: unloaded {module}")
 
     for task, files in PROGRAM.items():
-        for file in files:
+        for file in files + ([GRIPPER_STUB] if gripper_stub else []):
             source = (RAPID_DIR / file).read_text(encoding="utf-8")
 
             gateway.request(
@@ -292,8 +303,20 @@ def send_move(
     Returns True if the robot carried it out.
     """
 
-    if move == "HOME":
-        response = gateway.request("POST", "/robot/rws/home", timeout=90)
+    if isinstance(move, str):
+        arm = "right" if move.startswith("R,") else "left"
+        action = move.removeprefix("R,")
+
+        if action == "HOME":
+            response = gateway.request("POST", "/robot/rws/home", json={"arm": arm}, timeout=90)
+
+        else:
+            response = gateway.request(
+                "POST",
+                "/robot/rws/gripper",
+                json={"arm": arm, "action": action.lower()},
+                timeout=90,
+            )
 
     else:
         response = gateway.request("POST", "/robot/rws/move", json=move, timeout=90)
@@ -330,6 +353,7 @@ def main() -> None:
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (strict mode)")
     parser.add_argument("--client", default="operator", help="Client id (development mode)")
     parser.add_argument("--no-load", action="store_true", help="Use the RAPID program already running")
+    parser.add_argument("--gripper-stub", action="store_true", help="Also load rapid/sim/GripperStub.mod (virtual controller without SmartGripper only)")
     parser.add_argument("--frames", type=int, default=1, help="Stop after N frames (0 = until Ctrl+C)")
 
     args = parser.parse_args()
@@ -348,7 +372,7 @@ def main() -> None:
 
     try:
         if not args.no_load:
-            load_program(gateway)
+            load_program(gateway, args.gripper_stub)
 
         intrinsics = gateway.request("GET", "/camera/intrinsics").json()
 

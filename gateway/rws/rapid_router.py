@@ -87,7 +87,12 @@ def read_status() -> RapidStatus:
                 name=task["name"],
                 state=task["taskstate"],
                 execution_state=task["excstate"],
-                active=task["active"] == "On",
+                #
+                # Background (semi-static) tasks such as YuMiLibBG_L
+                # have no task selection switch and always run, so
+                # the controller omits active for them.
+                #
+                active=task.get("active", "On") == "On",
                 modules=rws_client.program_modules(task["name"]),
             )
             for task in rws_client.tasks()
