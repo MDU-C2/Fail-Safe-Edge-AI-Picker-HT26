@@ -11,3 +11,4 @@ gateway/.env
 capture_and_detect/data
 .pytest_cache/
 /rapid/backups/
+/calibration/calibration_runs

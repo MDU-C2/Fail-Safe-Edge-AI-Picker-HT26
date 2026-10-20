@@ -56,9 +56,9 @@ Client tools in [gateway/scripts/](gateway/scripts/) take `--url`, `--token` (st
 
 | Script | Purpose |
 |---|---|
-| `client_template.py` | Template client: control + lease renewal + camera to NumPy + `run_model()` stub + commands; releases control on exit |
+| `client_template.py` | Template client: control + lease renewal + camera to NumPy + `run_model()` stub returning RWS jobs (`move`/`home`/`gripper`, `wait: false` + `/status`, both arms at once); its docstring is the client-side reference for the RWS job API (bodies, replies, errors); releases control on exit |
 | `basic_client.py` | The template on the RWS API: loads + starts the arm modules from `rapid/` (`--no-load` skips), then sends `run_model()`'s moves to `/robot/rws/move|home` (default: a demo path for the first frame); moves whatever `GATEWAY_ROBOT_HOST` points at |
-| `rws_move.py` | One RWS job for one arm (`--x --y --z [--rx --ry --rz]`, `--home`, `--grip`/`--open`, `--arm right`, `--no-wait` polls `/robot/rws/status`); prints the pose before and after. Defaults to the Pi gateway, i.e. the real YuMi |
+| `rws_move.py` | One RWS job for one arm (`--x --y --z --rx --ry --rz`, each optional: missing values come from the current tool0 pose, so `--rz 90` turns in place and `--z 300` only changes height; `--home`, `--grip`/`--open`, `--arm right`, `--no-wait` polls `/robot/rws/status`); prints the pose (with rx/ry/rz) before and after. Defaults to the Pi gateway, i.e. the real YuMi |
 | `capture_images.py --count N` | Saves RGB / 16-bit depth / depth visualisation (`numpy`, `opencv-python`) |
 | `save_rgb.py` | Writes the latest RGB frame to `rgb.png` (Pillow) |
 | `watch_events.py` | Subscribes to the events WebSocket and prints events (development mode only) |
@@ -156,12 +156,13 @@ The robot-side program is the team's [rapid/](rapid/) folder; there is no separa
 python rapid/rapidctl.py status                 # mode, motors, RAPID state, modules per task
 python rapid/rapidctl.py upload [--task T_ROB_L] [--no-start]   # back up, stop, load rapid/'s files, pointer to main, start
 python rapid/rapidctl.py start [--main] | stop | restart
+python rapid/rapidctl.py reset [--no-start]     # stop, SharedVars' PERS back to their declared values, pointer to main, start
 python rapid/rapidctl.py delete --task T_ROB_L [MODULE ...]     # back up, stop, unload
 python rapid/rapidctl.py backup | restore rapid/backups/<dir>
 python rapid/rapidctl.py --host 127.0.0.1 upload --gripper-stub
 ```
 
-`upload` loads all three tasks as the `.pgf` files list them (`T_ROB_L`, `T_ROB_R`, and `communication` with CommServer; a task the controller lacks, like `communication` in RobotStudio, is skipped). Changing commands save the modules they replace to `rapid/backups/<host>-<time>/` (git-ignored), ask before changing a controller other than 127.0.0.1 (`-y` skips), and need AUTO: in manual mode the controller refuses remote program changes and starts (the script says so). `--gripper-stub` is refused for the real robot. `start` checks that RAPID really runs (a program with errors is accepted but does not start). It replaced `gateway/rapid/upload_rapid.py`.
+`upload` loads all three tasks as the `.pgf` files list them (`T_ROB_L`, `T_ROB_R`, and `communication` with CommServer; a task the controller lacks, like `communication` in RobotStudio, is skipped). Changing commands save the modules they replace to `rapid/backups/<host>-<time>/` (git-ignored), ask before changing a controller other than 127.0.0.1 (`-y` skips), and need AUTO: in manual mode the controller refuses remote program changes and starts (the script says so). `--gripper-stub` is refused for the real robot. `start` checks that RAPID really runs (a program with errors is accepted but does not start). PERS variables survive stop, restart and even `upload` (a PERS lives on while any task declares it), so a half-done job (`move_request_<arm>` still TRUE) comes back after a restart; `reset` writes every PERS of `SharedVars.mod` back to the value declared in the file (parsed from it, once, in the first task that has `SharedVars` – they are shared) and reads them back. It replaced `gateway/rapid/upload_rapid.py`.
 
 ## Things to be aware of
 

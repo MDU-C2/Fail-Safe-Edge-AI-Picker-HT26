@@ -13,6 +13,13 @@ What it does, in one run:
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
      fit and on poses left out of it ("unseen"), then saves calibration.json.
 
+The robot is moved through the gateway's RWS API (POST /robot/rws/home and
+/robot/rws/move, see gateway/scripts/client_template.py), so the RAPID program in
+rapid/ must be running (python rapid/rapidctl.py status). POSES are GRIPPER TCP
+positions (tGrip, 159 mm past the flange) and are saved and fitted as such; the arm
+modules move tool0 (the flange), so flange_target() moves each one back along the
+tool axis for CALIB_ROT before it is sent. A pose the arm cannot reach is skipped.
+
 Refit a saved session without the robot (e.g. to leave out bad poses):
     py camera_calibration.py --fit calibration_runs/session_20261012_140000 --exclude 10 15
 
@@ -31,10 +38,12 @@ import cv2
 import numpy as np
 import requests
 
-CAMERA_URL = "http://192.168.125.10:8000/api/v1"   # camera gateway: rgb, depth, intrinsics
-ROBOT_URL = "http://192.168.125.10:8000/api/v1"        # old robot API: control, robot commands (or --robot-url)
+CAMERA_URL = "http://169.254.125.202:8000/api/v1"   # camera gateway: rgb, depth, intrinsics
+ROBOT_URL = "http://169.254.125.202:8000/api/v1"        # robot API: control, RWS jobs (or --robot-url)
 HEADERS = {"Authorization": "Bearer BAD_TOKEN_OPERATOR", "X-Dev-Client": "operator"}
-ROBOT_TIMEOUT = 100              # s, longer than ARM_TIMEOUT (90 s) in CommServer.mod
+ROBOT_TIMEOUT = 90               # s, longer than the gateway's own 60 s job timeout
+ARM = "left"
+GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 159 mm past the flange
 
 # Gripper orientation during calibration: horizontal, flat side with the tag up.
 CALIB_ROT = (90, 0, 90)
@@ -49,9 +58,9 @@ POSES = [
 ]
 
 TAG_ID = 0
-TAG_OFFSET = (-115, 0.0, 0.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
+TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
+FRAMES = 11                       # frames per pose; the first is discarded, the rest are combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -104,12 +113,64 @@ def acquire_control():
     return stop
 
 
-def robot(command):
-    r = requests.post(f"{ROBOT_URL}/robot/command", headers=HEADERS,
-                      json={"command": command, "parameters": {}}, timeout=ROBOT_TIMEOUT)
-    reply = str(r.json()) if r.ok else f"HTTP {r.status_code}: {r.text}"
-    print(f"  {command}  ->  {reply}")
-    return "DONE" in reply
+def release_control(lease):
+    lease.set()
+    try:
+        requests.post(f"{ROBOT_URL}/control/release", headers=HEADERS, timeout=5)
+    except requests.RequestException:
+        pass                                   # the lease runs out by itself after 5 s
+
+
+def robot_job(path, body):
+    """POST one job to /robot/rws/<path> and wait for the arm. True if it reports DONE."""
+    try:
+        r = requests.post(f"{ROBOT_URL}/robot/rws/{path}", headers=HEADERS,
+                          json={"arm": ARM, **body}, timeout=ROBOT_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"  {path} {body}  ->  {e}")
+        return False
+    # 200: {"accepted", "message"}; 409 busy / no lease / RAPID stopped, 503 unreachable, 504 timeout
+    reply = r.json()["message"] if r.ok else f"HTTP {r.status_code}: {r.text}"
+    print(f"  {path} {body}  ->  {reply}")
+    return reply == "DONE"
+
+
+def orient_zyx(rx, ry, rz):
+    """Rotation matrix of RAPID's OrientZYX(rz, ry, rx), degrees: about z, then y, then x."""
+    a, b, c = np.radians([rz, ry, rx])
+    Rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+    Ry = np.array([[np.cos(b), 0, np.sin(b)], [0, 1, 0], [-np.sin(b), 0, np.cos(b)]])
+    Rx = np.array([[1, 0, 0], [0, np.cos(c), -np.sin(c)], [0, np.sin(c), np.cos(c)]])
+    return Rz @ Ry @ Rx
+
+
+def flange_target(tcp, rot):
+    """tool0 (flange) position that puts the gripper TCP at tcp with orientation rot:
+    GRIPPER_TCP_Z back along the tool's z axis. In CALIB_ROT that axis is +x."""
+    return np.array(tcp, float) - GRIPPER_TCP_Z * orient_zyx(*rot)[:, 2]
+
+
+def home():
+    return robot_job("home", {})
+
+
+def rotate_in_place(rot):
+    """Turn the hand to rot = (rx, ry, rz) degrees with the flange (tool0) where it is now."""
+    r = requests.get(f"{ROBOT_URL}/robot/arms/{ARM}/pose", headers=HEADERS,
+                     params={"tool": "tool0", "wobj": "wobj0"}, timeout=10)
+    if not r.ok:
+        print(f"  could not read the arm's pose: HTTP {r.status_code}: {r.text}")
+        return False
+    pose = r.json()
+    rx, ry, rz = rot
+    return robot_job("move", {"x": pose["x"], "y": pose["y"], "z": pose["z"], "rx": rx, "ry": ry, "rz": rz})
+
+
+def goto(tcp, rot):
+    """Gripper TCP to tcp (mm, wobj0) with orientation rot = (rx, ry, rz) degrees."""
+    x, y, z = flange_target(tcp, rot).round(1)
+    rx, ry, rz = rot
+    return robot_job("move", {"x": float(x), "y": float(y), "z": float(z), "rx": rx, "ry": ry, "rz": rz})
 
 
 # Measurement
@@ -247,15 +308,14 @@ def run(auto):
         return input(f"Enter = {what}, q = stop: ").strip().lower() != "q"
 
     lease = acquire_control()
-    if not ask("go HOME") or not robot("HOME"):
-        lease.set()
+    if not ask("go HOME") or not home():
+        release_control(lease)
         raise SystemExit("Stopped before the first pose")
 
     for n, pose in enumerate(POSES, 1):
         if not ask(f"pose {n}/{len(POSES)} {pose}"):
             break
-        command = "GOTO," + ",".join(f"{v:g}" for v in (*pose, *CALIB_ROT))
-        if not robot(command):
+        if not goto(pose, CALIB_ROT):
             print(f"  pose {n}: robot did not reach it, skipped")
             continue
         time.sleep(SETTLE)
@@ -266,7 +326,7 @@ def run(auto):
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
-    lease.set()
+    release_control(lease)
     print(f"\nImages and poses saved in {folder}")
     solve(folder)
 

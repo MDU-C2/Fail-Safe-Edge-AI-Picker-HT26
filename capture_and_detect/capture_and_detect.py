@@ -15,6 +15,8 @@ Pipeline (repeats every time you press Enter):
            detections_<stamp>.json  all objects of this capture
            latest.json              same as above, always the newest capture
            detections.csv           one row per object, all captures
+    6. the left arm picks the most certain reachable cup and carries it to
+       MEETING_POINT for the hand-over (cups.json tracks every cup)
 
 x_mm, y_mm, z_mm are from the camera; robot_x_mm, robot_y_mm, robot_z_mm are
 the same point after calibrate() - the ones the robot uses.
@@ -25,7 +27,16 @@ the same folder as this file:
     Raspberry Pi   -> best.pt            (detected automatically)
     anything else  -> best.pt            (e.g. the development laptop)
 
-The gateway runs in strict mode, so a read-only access token is needed.
+The robot is driven through the gateway's RWS API (POST /robot/rws/move and
+/robot/rws/gripper, see gateway/scripts/client_template.py), so the RAPID
+program in rapid/ must be running (python rapid/rapidctl.py status).
+All robot positions here are the GRIPPER TCP (tGrip, 159 mm past the flange),
+as in the calibration, with the gripper pointing straight down. The arm modules
+move tool0 (the flange), so goto() sends z + GRIPPER_TCP_Z and the down
+orientation with every move.
+
+The gateway runs in strict mode, so an access token is needed; picking needs
+one with robot.control (the operator token), detection alone a read-only one.
 Set it once in the terminal (never put it in this file):
     PowerShell:  $env:GATEWAY_TOKEN = "<token>"
     Linux:       export GATEWAY_TOKEN="<token>"
@@ -39,7 +50,7 @@ import argparse
 import csv
 import json
 import os
-import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -93,18 +104,22 @@ def calibrate(x, y, z):
     return robot[0], robot[1], robot[2]
 
 
-# Reuse Joen's gateway functions (take control, send a command) from SendCalibrationPoses.py
-sys.path.insert(0, str(HERE.parent / "Joen" / "Calibration"))
-from SendCalibrationPoses import acquire, send   # noqa: E402
+# ---------------- Robot (gateway RWS API) ----------------
+ARM = "left"
+GRIPPER_TCP_Z = 159        # tGrip in rapid/LeftArmInstructions.mod: TCP 159 mm past the flange
+DOWN_ROT = (180, 0, 180)   # rx, ry, rz (deg): gripper straight down, as DOWN_ROT in the old RAPID
+APPROACH = 100             # pick: straight down from this far above the cup (mm)
+JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
 
-MIN_TRAVEL_Z = 200      # travel mode: the arm only travels at this height or higher (mm)
+MIN_TRAVEL_Z = 250      # travel mode: the arm only travels at this height or higher (mm)
 
 # Hand-over meeting point: the left arm brings the cup here and waits for the right arm.
 # Close to the robot's body. X can't go below 350 (X_MIN in CommServer.mod), z max 400 (ceiling).
 MEETING_POINT = (400, -100, 399)       # x, y, z in robot mm
 
 
-# The robot's safe zone (same limits as CommServer.mod): cups outside it are skipped
+# Where this script lets the arm pick (gripper TCP, mm): cups outside are skipped.
+# (Tighter than the gateway's own safe zone, which only refuses |x|,|y|,|z| > 1000.)
 X_MIN, X_MAX = 350, 800
 Y_MIN, Y_MAX = -230, 420
 
@@ -113,24 +128,84 @@ def reachable(cup):
     return X_MIN <= cup["x"] <= X_MAX and Y_MIN <= cup["y"] <= Y_MAX
 
 
+def acquire():
+    """Take robot control and keep it: the lease lasts 5 s, so a thread renews it every 2 s.
+    Returns an Event that stops the renewing; release() also hands control back at once."""
+    r = requests.post(f"{API}/control/acquire", headers=HEADERS, timeout=10)
+    if r.status_code != 200:
+        raise SystemExit(f"Cannot take robot control ({r.status_code}): {r.text}")
+    stop = threading.Event()
+
+    def renew():
+        while not stop.wait(2):
+            try:
+                requests.post(f"{API}/control/renew", headers=HEADERS, timeout=5).raise_for_status()
+            except requests.RequestException as e:
+                print(f"  lease renew failed: {e}", flush=True)
+
+    threading.Thread(target=renew, daemon=True).start()
+    return stop
+
+
+def release(lease):
+    lease.set()
+    try:
+        requests.post(f"{API}/control/release", headers=HEADERS, timeout=5)
+    except requests.RequestException:
+        pass                                   # the lease runs out by itself after 5 s
+
+
+def robot_job(path, body):
+    """POST one job to /robot/rws/<path> and wait until the arm has done it.
+    True if the robot reports DONE; prints the reason otherwise."""
+    try:
+        r = requests.post(f"{API}/robot/rws/{path}", headers=HEADERS,
+                          json={"arm": ARM, **body}, timeout=JOB_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"    robot: {path} {body} -> {e}", flush=True)
+        return False
+    # 200: {"accepted", "message"}; 409 busy / no lease / RAPID stopped, 503 unreachable, 504 timeout
+    if r.status_code == 200:
+        reply = r.json()["message"]
+    else:
+        reply = f"HTTP {r.status_code}: {r.text}"
+    print(f"    robot: {path} {body} -> {reply}", flush=True)
+    return reply == "DONE"
+
+
+def goto(x, y, z):
+    """Gripper TCP to (x, y, z) mm, gripper pointing down. The arm moves tool0 (the flange),
+    which with the gripper down is GRIPPER_TCP_Z straight above the TCP."""
+    rx, ry, rz = DOWN_ROT
+    return robot_job("move", {"x": x, "y": y, "z": z + GRIPPER_TCP_Z, "rx": rx, "ry": ry, "rz": rz})
+
+
+def gripper(action):
+    """action: "open" or "grip"."""
+    return robot_job("gripper", {"action": action})
+
+
 def travel(x, y, z=MIN_TRAVEL_Z):
-    """Travel mode: GOTO x, y at MIN_TRAVEL_Z or higher."""
-    return send(API, HEADERS, f"GOTO,{x:g},{y:g},{max(z, MIN_TRAVEL_Z):g}")
+    """Travel mode: to x, y at MIN_TRAVEL_Z or higher."""
+    return goto(x, y, max(z, MIN_TRAVEL_Z))
 
 
 def pick_cup(cup):
-    """Left arm: travel above the cup, PICK it, back up to travel height, then carry it to
-    MEETING_POINT and wait there for the right arm (hand-over).
+    """Left arm: open, travel above the cup, go down APPROACH mm onto it, grip, back up to
+    travel height, then carry it to MEETING_POINT and wait there for the right arm (hand-over).
 
-    PICK is the robot's own routine: open, straight down from 100 mm above the point,
-    close, straight back up 100 mm.
+    This is the old RAPID PICK routine, now as separate gateway jobs. The arm modules make
+    each move as a joint move (MoveAbsJ, 50 mm/s), so the path is not an exact straight line.
     """
     x, y, z = cup["x"], cup["y"], cup["z"]
     mx, my, mz = MEETING_POINT
+    above = max(z + APPROACH, MIN_TRAVEL_Z)
     steps = [
-        ("travel above cup",      lambda: travel(x, y)),
-        ("pick",                  lambda: send(API, HEADERS, f"PICK,{x:g},{y:g},{z:g}")),
-        ("back up",               lambda: travel(x, y)),
+        ("open gripper",            lambda: gripper("open")),
+        ("travel above cup",        lambda: travel(x, y, above)),
+        ("down to cup",             lambda: goto(x, y, z)),
+        ("grip",                    lambda: gripper("grip")),
+        ("back up",                 lambda: travel(x, y, above)),
         ("travel to meeting point", lambda: travel(mx, my, mz)),
     ]
     for name, step in steps:
@@ -165,7 +240,7 @@ def handle_cups(objects, stamp):
     if not cups:
         return
 
-    lease = acquire(API, HEADERS)                  # keep robot control for the whole sequence
+    lease = acquire()                              # keep robot control for the whole sequence
     try:
         for cup in cups:
             if not reachable(cup):                  # e.g. a cup lying outside the tray
@@ -179,7 +254,7 @@ def handle_cups(objects, stamp):
             save()
             break                                   # the left arm holds one cup at a time
     finally:
-        lease.set()
+        release(lease)
 
 
 def detect_device():

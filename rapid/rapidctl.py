@@ -1,7 +1,7 @@
 """
 Manage the RAPID program on the YuMi over Robot Web Services (RWS 1.0,
-RobotWare 6): status, start, stop, restart, upload, delete, backup,
-restore. Defaults to the REAL robot at 192.168.125.1; use
+RobotWare 6): status, start, stop, restart, reset, upload, delete,
+backup, restore. Defaults to the REAL robot at 192.168.125.1; use
 --host 127.0.0.1 for the RobotStudio virtual controller.
 
     python rapid/rapidctl.py status
@@ -12,6 +12,7 @@ restore. Defaults to the REAL robot at 192.168.125.1; use
     python rapid/rapidctl.py start --main              # program pointer to main first
     python rapid/rapidctl.py stop
     python rapid/rapidctl.py restart                   # stop, pointer to main, start
+    python rapid/rapidctl.py reset                     # stop, SharedVars to their initial values, restart
     python rapid/rapidctl.py delete --task T_ROB_L     # unload every module of a task
     python rapid/rapidctl.py delete --task T_ROB_L LeftArm
     python rapid/rapidctl.py backup
@@ -37,6 +38,11 @@ Notes:
     - --gripper-stub also loads sim/GripperStub.mod into the arm tasks:
       ONLY for a virtual controller without the SmartGripper option.
       Never on the real robot (it refuses with --gripper-stub there).
+    - PERS variables keep their values over stop, restart and even
+      upload (a PERS lives on while any task declares it), so a job
+      left half done (e.g. move_request_left TRUE after a stop) is
+      still there after a restart. reset writes every PERS of
+      SharedVars.mod back to the value declared in the file.
     - Each module is uploaded to $HOME/<file name> on the controller
       and loaded from there.
 
@@ -59,6 +65,8 @@ RAPID_DIR = Path(__file__).resolve().parent
 BACKUP_DIR = RAPID_DIR / "backups"
 
 GRIPPER_STUB = RAPID_DIR / "sim" / "GripperStub.mod"
+
+SHARED_VARS = RAPID_DIR / "SharedVars.mod"
 
 PROGRAM = {
     "T_ROB_L": ["SharedVars.mod", "LeftArmInstructions.mod", "GoHomeLeft.mod"],
@@ -233,6 +241,14 @@ class Controller:
 
         return self._request("GET", f"/fileservice/$TEMP/{name}.mod").content.decode("iso-8859-1")
 
+    # ---------------------------------------------------------------- data
+
+    def read_symbol(self, task: str, name: str) -> str:
+        return self.get_state(f"/rw/rapid/symbol/data/RAPID/{task}/{name}")[0]["value"]
+
+    def write_symbol(self, task: str, name: str, value: str) -> None:
+        self.post(f"/rw/rapid/symbol/data/RAPID/{task}/{name}?action=set", {"value": value})
+
     def unload(self, task: str, module: str) -> None:
         self.post(f"/rw/rapid/tasks/{task}?action=unloadmod", {"module": module})
 
@@ -325,6 +341,31 @@ def replace_modules(controller: Controller, program: dict[str, list[Path]], star
     finish(controller, start)
 
 
+def initial_values(module: Path) -> dict[str, str]:
+    """The PERS declarations of a module: name -> initial value as written."""
+
+    values = {}
+
+    for line in module.read_text(encoding="iso-8859-1").splitlines():
+        match = re.match(r"\s*PERS\s+\w+\s+(\w+)\s*:=\s*(.*?);", line)
+
+        if match:
+            values[match.group(1)] = match.group(2)
+
+    return values
+
+
+def same_value(a: str, b: str) -> bool:
+    #
+    # The controller writes numbers its own way ([0,0,0] for
+    # [0, 0, 0]); strings keep their spaces.
+    #
+    if a.startswith('"'):
+        return a == b
+
+    return a.replace(" ", "").upper() == b.replace(" ", "").upper()
+
+
 def finish(controller: Controller, start: bool) -> None:
     controller.reset_program_pointer()
 
@@ -386,6 +427,42 @@ def command_restart(controller: Controller, args: argparse.Namespace) -> None:
     print("RAPID stopped")
 
     finish(controller, start=True)
+
+
+def command_reset(controller: Controller, args: argparse.Namespace) -> None:
+    check_auto(controller)
+
+    values = initial_values(SHARED_VARS)
+
+    #
+    # The variables are shared between the tasks that declare them,
+    # so one task with SharedVars loaded is enough.
+    #
+    task = next(
+        (task for task in existing_tasks(controller, list(PROGRAM)) if "SharedVars" in controller.program_modules(task)),
+        None,
+    )
+
+    if task is None:
+        sys.exit("SharedVars is not loaded in any task (upload first)")
+
+    controller.stop()
+
+    print("RAPID stopped")
+
+    with controller.mastership():
+        for name, value in values.items():
+            controller.write_symbol(task, name, value)
+
+    for name, value in values.items():
+        now = controller.read_symbol(task, name)
+
+        if not same_value(now, value):
+            raise ControllerError(f"{name} is {now} after writing {value}")
+
+        print(f"{name} = {now}")
+
+    finish(controller, start=not args.no_start)
 
 
 def command_upload(controller: Controller, args: argparse.Namespace) -> None:
@@ -499,6 +576,9 @@ def main() -> None:
 
     commands.add_parser("restart", help="Stop, program pointer to main, start")
 
+    reset = commands.add_parser("reset", help="Stop, SharedVars back to their initial values, pointer to main, start")
+    reset.add_argument("--no-start", action="store_true", help="Leave RAPID stopped")
+
     upload = commands.add_parser("upload", help="Back up, stop, replace the modules with the files in rapid/, start")
     upload.add_argument("--task", action="append", choices=list(PROGRAM), help="Only this task (repeatable; default: all)")
     upload.add_argument("--no-start", action="store_true", help="Leave RAPID stopped")
@@ -534,6 +614,7 @@ def main() -> None:
         "start": command_start,
         "stop": command_stop,
         "restart": command_restart,
+        "reset": command_reset,
         "upload": command_upload,
         "delete": command_delete,
         "backup": command_backup,
