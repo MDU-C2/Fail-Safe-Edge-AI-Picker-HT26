@@ -276,7 +276,8 @@ def test_modules_cannot_change_while_running(
 # ================================================================
 
 class Controller:
-    """Direct RWS access, only to save and restore the program."""
+    """Direct RWS access, to save and restore the program and to
+    read RAPID variables the gateway has no endpoint for."""
 
     def __init__(self) -> None:
         self._session = requests.Session()
@@ -307,6 +308,21 @@ class Controller:
         response.raise_for_status()
 
         return response.content.decode("iso-8859-1")
+
+    def read_symbol(
+        self,
+        task: str,
+        name: str,
+    ) -> str:
+        response = self._session.get(
+            f"{self._base}/rw/rapid/symbol/data/RAPID/{task}/{name}",
+            params={"json": "1"},
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        return response.json()["_embedded"]["_state"][0]["value"]
 
 
 def module_source(
@@ -527,6 +543,64 @@ def test_rws_gripper(
         assert expect(result, 200) == DONE
 
 
+def timed_move(
+    client: Client,
+    position: tuple[float, float, float],
+    **speed: float,
+) -> float:
+    body = {"arm": "left", **dict(zip(("x", "y", "z"), position)), **speed}
+
+    started = time.monotonic()
+
+    assert expect(client.post("/robot/rws/move", json=body), 200) == DONE
+
+    return time.monotonic() - started
+
+
+def test_rws_move_speed_and_acceleration(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+    controller = Controller()
+
+    low = TARGET
+    high = (TARGET[0], TARGET[1], TARGET[2] + 60.0)
+
+    assert rws_move(operator, low) == DONE
+
+    #
+    # 60 mm: about 3 s at 20 mm/s, well under 1 s at 400 mm/s.
+    #
+    slow = timed_move(operator, high, speed=20)
+
+    assert controller.read_symbol("T_ROB_L", "move_speed_left").startswith("[20,")
+
+    fast = timed_move(operator, low, speed=400, acceleration=50, ramp=40)
+
+    assert slow > 2.5, slow
+    assert fast < slow / 2, (slow, fast)
+
+    assert_position(arm_pose(operator), low)
+
+    assert controller.read_symbol("T_ROB_L", "move_speed_left").startswith("[400,")
+    assert float(controller.read_symbol("T_ROB_L", "move_acc_left")) == 50
+    assert float(controller.read_symbol("T_ROB_L", "move_ramp_left")) == 40
+
+    #
+    # Without a speed: the default, v50 and full acceleration.
+    #
+    assert rws_home(operator) == DONE
+
+    assert controller.read_symbol("T_ROB_L", "move_speed_left") == "[50,500,5000,1000]"
+    assert float(controller.read_symbol("T_ROB_L", "move_acc_left")) == 100
+    assert float(controller.read_symbol("T_ROB_L", "move_ramp_left")) == 100
+
+    #
+    # The right arm keeps its own.
+    #
+    assert controller.read_symbol("T_ROB_R", "move_speed_right") == "[50,500,5000,1000]"
+
+
 def test_rws_refuses_a_second_job_on_a_busy_arm(
     load_program: LoadProgram,
 ) -> None:
@@ -543,7 +617,8 @@ def test_rws_refuses_a_second_job_on_a_busy_arm(
     homing.start()
 
     #
-    # Homing from TARGET takes about two seconds.
+    # Homing from TARGET takes several seconds at the default
+    # 50 mm/s.
     #
     time.sleep(0.5)
 

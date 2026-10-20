@@ -1,7 +1,7 @@
 import math
 import threading
 import time
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
@@ -32,6 +32,26 @@ GRIPPER_COMMANDS = {
     "grip": "GRIP",
     "open": "OPEN",
 }
+
+
+#
+# The rest of the speeddata, as in RAPID's v5 .. v1000: orientation
+# speed in degrees/s, arm angle (external axis) speed in mm/s and
+# degrees/s.
+#
+SPEEDDATA_REST = (500.0, 5000.0, 1000.0)
+
+
+class MotionSpeed(NamedTuple):
+    """Speed of a move or home job.
+
+    speed is the TCP speed in mm/s (v_tcp of the RAPID speeddata);
+    acceleration and ramp are RAPID AccSet's, in % of the maximum.
+    """
+
+    speed: float
+    acceleration: float
+    ramp: float
 
 
 class MotionConflict(Exception):
@@ -98,7 +118,8 @@ class RwsMotion:
     Services.
 
     Uses the PERS variables of rapid/SharedVars.mod: the
-    job is written first (target, go_home or grip_cmd), then
+    job is written first (target, go_home or grip_cmd, and for moves
+    and home the speed: move_speed, move_acc, move_ramp), then
     move_request_<arm> is set to TRUE. The arm task does the job,
     writes move_ok_<arm> and clears move_request_<arm>, which is
     polled here.
@@ -118,9 +139,12 @@ class RwsMotion:
         timeout: float,
         safe_zone_min: tuple[float, float, float],
         safe_zone_max: tuple[float, float, float],
+        default_speed: MotionSpeed = MotionSpeed(50.0, 100.0, 100.0),
     ) -> None:
         self._client = client
         self._timeout = timeout
+
+        self.default_speed = default_speed
 
         self._safe_zone_min = safe_zone_min
         self._safe_zone_max = safe_zone_max
@@ -136,11 +160,12 @@ class RwsMotion:
         position: tuple[float, float, float],
         rotation: tuple[float, float, float] | None,
         wait: bool = True,
+        speed: MotionSpeed | None = None,
     ) -> CommandResponse:
         """Move the arm's tool0 to position (mm, wobj0).
 
         rotation is (rx, ry, rz) in degrees, or None to keep the
-        current orientation.
+        current orientation. speed None is the default speed.
         """
 
         if not self.in_safe_zone(position):
@@ -154,6 +179,7 @@ class RwsMotion:
             "use_rot": "FALSE" if rotation is None else "TRUE",
             "go_home": "FALSE",
             "grip_cmd": '""',
+            **self._speed_values(speed),
         }
 
         if rotation is not None:
@@ -167,12 +193,14 @@ class RwsMotion:
         self,
         arm: Arm,
         wait: bool = True,
+        speed: MotionSpeed | None = None,
     ) -> CommandResponse:
         return self._run(
             arm,
             {
                 "go_home": "TRUE",
                 "grip_cmd": '""',
+                **self._speed_values(speed),
             },
             wait,
         )
@@ -233,6 +261,18 @@ class RwsMotion:
             for lock in self._busy.values()
         )
 
+    def _speed_values(
+        self,
+        speed: MotionSpeed | None,
+    ) -> dict[str, str]:
+        speed = speed or self.default_speed
+
+        return {
+            "move_speed": rapid_array((speed.speed, *SPEEDDATA_REST)),
+            "move_acc": f"{speed.acceleration:.6f}",
+            "move_ramp": f"{speed.ramp:.6f}",
+        }
+
     # ============================================================
     # Handshake
     # ============================================================
@@ -248,6 +288,19 @@ class RwsMotion:
 
         try:
             self._check_ready(arm)
+
+            #
+            # A program from before the speed variables would refuse
+            # the write half way through the job.
+            #
+            if "move_speed" in values:
+                self._check_variable(
+                    arm,
+                    "move_speed",
+                    f"The RAPID program in {ARM_TASKS[arm]} has no speed "
+                    f"variables (no move_speed_{arm}); upload rapid/ "
+                    f"again (rapidctl.py upload)",
+                )
 
             for name, value in values.items():
                 self._write(arm, name, value)
@@ -295,17 +348,27 @@ class RwsMotion:
         self,
         arm: Arm,
     ) -> None:
+        self._check_variable(
+            arm,
+            "move_request",
+            f"The motion program is not loaded in {ARM_TASKS[arm]} "
+            f"(no move_request_{arm} variable)",
+        )
+
+    def _check_variable(
+        self,
+        arm: Arm,
+        name: str,
+        message: str,
+    ) -> None:
         try:
-            self._read(arm, "move_request")
+            self._read(arm, name)
 
         except RwsError as error:
             if error.status_code != 400:
                 raise
 
-            raise MotionConflict(
-                f"The motion program is not loaded in {ARM_TASKS[arm]} "
-                f"(no move_request_{arm} variable)"
-            ) from error
+            raise MotionConflict(message) from error
 
     def _check_ready(
         self,
@@ -372,6 +435,11 @@ def create_rws_motion(
         timeout=settings.rws_move_timeout,
         safe_zone_min=settings.rws_safe_zone_min,
         safe_zone_max=settings.rws_safe_zone_max,
+        default_speed=MotionSpeed(
+            speed=settings.rws_default_speed,
+            acceleration=settings.rws_default_acceleration,
+            ramp=settings.rws_default_ramp,
+        ),
     )
 
 

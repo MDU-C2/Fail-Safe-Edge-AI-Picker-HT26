@@ -114,6 +114,11 @@ DOWN_ROT = (180, 0, 180)   # rx, ry, rz (deg): gripper straight down, as DOWN_RO
 APPROACH = 100             # pick: straight down from this far above the cup (mm)
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
 
+# Sent with every move (the gateway sets the arm's speed per job; left out it is 50 mm/s, 100 %)
+SPEED = 300                 # TCP speed, mm/s (1..1500)
+ACCELERATION = 100         # % of max acceleration (20..100)
+RAMP = 100                 # % how fast the acceleration builds up (10..100)
+
 MIN_TRAVEL_Z = 250      # travel mode: the arm only travels at this height or higher (mm)
 
 # Hand-over meeting point: the left arm brings the cup here and waits for the right arm.
@@ -182,7 +187,8 @@ def goto(x, y, z):
     rx, ry, rz = DOWN_ROT
     ox, oy, oz = OFFSET
     return robot_job("move", {"x": x + ox, "y": y + oy, "z": z + oz + GRIPPER_TCP_Z,
-                              "rx": rx, "ry": ry, "rz": rz})
+                              "rx": rx, "ry": ry, "rz": rz,
+                              "speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
 
 
 def gripper(action):

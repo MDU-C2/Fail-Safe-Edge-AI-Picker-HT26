@@ -42,6 +42,10 @@ CAMERA_URL = "http://169.254.125.202:8000/api/v1"   # camera gateway: rgb, depth
 ROBOT_URL = "http://169.254.125.202:8000/api/v1"        # robot API: control, RWS jobs (or --robot-url)
 HEADERS = {"Authorization": "Bearer BAD_TOKEN_OPERATOR", "X-Dev-Client": "operator"}
 ROBOT_TIMEOUT = 90               # s, longer than the gateway's own 60 s job timeout
+# Sent with every move and home (the gateway sets the arm's speed per job; left out it is 50 mm/s, 100 %)
+SPEED = 300                       # TCP speed, mm/s (1..1500)
+ACCELERATION = 100               # % of max acceleration (20..100)
+RAMP = 100                       # % how fast the acceleration builds up (10..100)
 ARM = "left"
 GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 159 mm past the flange
 
@@ -60,7 +64,7 @@ POSES = [
 TAG_ID = 0
 TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 11                       # frames per pose; the first is discarded, the rest are combined
+FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -122,10 +126,11 @@ def release_control(lease):
 
 
 def robot_job(path, body):
-    """POST one job to /robot/rws/<path> and wait for the arm. True if it reports DONE."""
+    """POST one job (move or home) to /robot/rws/<path> and wait for the arm. True if it reports DONE."""
+    speed = {"speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP}
     try:
         r = requests.post(f"{ROBOT_URL}/robot/rws/{path}", headers=HEADERS,
-                          json={"arm": ARM, **body}, timeout=ROBOT_TIMEOUT)
+                          json={"arm": ARM, **speed, **body}, timeout=ROBOT_TIMEOUT)
     except requests.RequestException as e:
         print(f"  {path} {body}  ->  {e}")
         return False

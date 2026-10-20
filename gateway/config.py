@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     rws_safe_zone_min: tuple[float, float, float] = (-1000.0, -1000.0, -1000.0)
     rws_safe_zone_max: tuple[float, float, float] = (1000.0, 1000.0, 1000.0)
 
+    #
+    # Speed of /robot/rws/move and /home when the request gives
+    # none: TCP speed in mm/s (v50), and acceleration and ramp in %
+    # of the maximum (RAPID AccSet).
+    #
+    rws_default_speed: float = 50.0
+    rws_default_acceleration: float = 100.0
+    rws_default_ramp: float = 100.0
+
 
 @lru_cache
 def get_settings() -> Settings:

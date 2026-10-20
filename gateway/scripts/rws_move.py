@@ -10,6 +10,8 @@ result: a move, home, or the gripper.
     python gateway/scripts/rws_move.py --rz 90                 # turn in place
     python gateway/scripts/rws_move.py --rx 180 --ry 0 --rz 180  # point down, in place
     python gateway/scripts/rws_move.py --z 300                 # only change the height
+    python gateway/scripts/rws_move.py --z 300 --speed 200     # 200 mm/s instead of 50
+    python gateway/scripts/rws_move.py --home --speed 200 --acc 50 --ramp 50
 
 Positions are tool0 in wobj0 in mm, rotations in degrees (RAPID
 OrientZYX(rz, ry, rx)). Every value left out is taken from the arm's
@@ -19,6 +21,11 @@ gripper tip, 159 mm further out, swings around it), without
 before and after, with its orientation as rx/ry/rz. --no-wait starts the job
 (STARTED) and polls GET /robot/rws/status until it is done, the way
 clients of the team's CommServer do.
+
+--speed is the TCP speed in mm/s (RAPID speeddata v_tcp, 1..1500),
+--acc and --ramp the acceleration and its ramp in % of the maximum
+(RAPID AccSet, 20..100 and 10..100). They apply to moves and home;
+left out, the gateway's defaults are used (50 mm/s, 100 %, 100 %).
 
 The robot that moves is the one the gateway at --url controls; the
 default is the gateway on the Raspberry Pi, i.e. the real YuMi.
@@ -113,6 +120,10 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open the gripper")
     parser.add_argument("--no-wait", action="store_true", help="Answer STARTED at once and poll /robot/rws/status")
 
+    parser.add_argument("--speed", type=float, help="TCP speed in mm/s for a move or home (gateway default 50)")
+    parser.add_argument("--acc", type=float, help="Acceleration in %% of the maximum, 20..100 (default 100)")
+    parser.add_argument("--ramp", type=float, help="Acceleration ramp in %%, 10..100 (default 100)")
+
     args = parser.parse_args()
 
     position = (args.x, args.y, args.z)
@@ -153,7 +164,20 @@ def main() -> None:
     else:
         parser.error("give --x/--y/--z and/or --rx/--ry/--rz, --home, --grip or --open")
 
-    body.update(arm=args.arm, wait=not args.no_wait)
+    speed = {
+        name: value
+        for name, value in (
+            ("speed", args.speed),
+            ("acceleration", args.acc),
+            ("ramp", args.ramp),
+        )
+        if value is not None
+    }
+
+    if speed and path == "/robot/rws/gripper":
+        parser.error("--speed, --acc and --ramp are for moves and home, not the gripper")
+
+    body.update(arm=args.arm, wait=not args.no_wait, **speed)
 
     response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
 

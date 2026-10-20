@@ -40,6 +40,7 @@ Jobs (each one for one arm, "left" by default):
     POST /robot/rws/move      {"arm": "left", "x": 300, "y": 150, "z": 280}
                               {"x": 300, "y": 150, "z": 280, "rx": 90, "ry": 0, "rz": 90}
     POST /robot/rws/home      {"arm": "right"}            (body optional)
+                              {"x": 300, "y": 150, "z": 280, "speed": 200}
     POST /robot/rws/gripper   {"arm": "left", "action": "grip" | "open"}
 
     x, y, z     tool0 position in wobj0 (the robot base), millimetres
@@ -47,6 +48,10 @@ Jobs (each one for one arm, "left" by default):
                 all three or none (none = keep the current orientation)
     "wait"      true (default): the reply comes when the job is done
                 false: the reply comes at once, then poll the status
+    "speed"     move and home only: TCP speed in mm/s, 1..1500 (default 50)
+    "acceleration", "ramp"
+                move and home only: % of the maximum acceleration,
+                20..100, and how fast it builds up, 10..100 (default 100)
 
 Replies (HTTP 200):
 
@@ -63,7 +68,7 @@ Errors (HTTP status, reason in "detail"):
 
     409  no lease / another client holds it, RAPID not running,
          that arm is still busy with an earlier job
-    422  bad body (e.g. only rx given)
+    422  bad body (e.g. only rx given, speed out of range)
     503  the controller cannot be reached
     504  the job took longer than the gateway's timeout (60 s)
 

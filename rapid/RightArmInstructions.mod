@@ -18,6 +18,7 @@ MODULE RightArm
 
     WHILE TRUE DO
       WaitUntil move_request_right = TRUE;
+      AccSet move_acc_right, move_ramp_right;
 
       IF go_home_right THEN
         GoHomeRight;
@@ -37,7 +38,7 @@ MODULE RightArm
         IF use_rot_right pTarget.rot := target_rot_right;
 
         IF Reachable(pTarget) THEN
-          MoveAbsJ jTarget \NoEOffs, v50, fine, tool0;   ! CHANGED: exactly the joints the check found
+          MoveAbsJ jTarget \NoEOffs, move_speed_right, fine, tool0;   ! CHANGED: exactly the joints the check found
           move_ok_right := TRUE;
         ELSE
           TPWrite "Rejected: unreachable";
