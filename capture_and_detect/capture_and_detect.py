@@ -15,7 +15,7 @@ Every time you press Enter:
            detections.csv                            one row per object, all captures
            cups_<stamp>.json and cups.json           the cups and what happened to them
     5. the most certain reachable cup is moved (the hand-over of rapid/tests/handover.py):
-           left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER ... wait, open, up, home
+           left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
            right: open ... wait, beside the hand-over ... wait, slide in under the cup, up, grip
                   ... wait, down, turn over, place, open, up, home
        Both arms move at the same time and only wait for each other (the "wait"s). The right arm
@@ -29,9 +29,10 @@ The model is picked by the device; the weights sit next to this file:
 
 The robot is driven through the gateway's RWS API (POST /robot/rws/move|home|gripper, see
 gateway/scripts/client_template.py), so the RAPID program in rapid/ must be running
-(python rapid/rapidctl.py status). The cup positions are the gripper TCP (tGrip, 159 mm past
-the flange) as in the calibration; the arm modules move tool0 (the flange), so Arm.goto()
-adds GRIPPER_TCP_Z, and the fixed hand-over poses below are flange positions.
+(python rapid/rapidctl.py status). The camera gives each cup's x, y (gripper TCP, tGrip, as in
+the calibration); the heights are fixed (PICK_Z, TRAVEL_Z), since the cups stand on the table.
+The arm modules move tool0 (the flange): Arm.goto() adds GRIPPER_TCP_Z, and the fixed
+hand-over poses are flange positions.
 
 The gateway runs in strict mode and needs a token with robot.control (the operator token).
 Set it once in the terminal (never put it in this file):
@@ -71,7 +72,7 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 50                 # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 100                 # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 
@@ -79,45 +80,30 @@ LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in
 RIGHT_DOWN = (180, 0, 0)   # right gripper straight down (as in handover.py)
 RIGHT_UP = (0, 0, 0)       # right gripper pointing up
 
-# ---------------- Left arm: picking from the table (gripper TCP, mm) ----------------
-GRIPPER_TCP_Z = 159        # tGrip: left TCP 159 mm past the flange
-APPROACH = 100             # straight down onto the cup from this far above it
-MIN_TRAVEL_Z = 250         # the arm only travels at this height or higher
+# ---------------- Left arm: picking (gripper TCP, mm) ----------------
+# The camera gives x, y; the heights are fixed because the cups stand on the table.
+GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
+PICK_Z = 55                # TCP height when gripping a cup
+TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
 Y_MIN, Y_MAX = -230, 420
-# Flange (tool0) pose the left arm passes on its way from home to a cup. Straight from home,
-# the joint move to a far cup (x >= 600) swings the hand down into the table.
+
+# ---------------- Hand-over and placing (tool0 = flange positions, mm, tuned in RobotStudio) ----
+# The left arm comes from home via LEFT_READY (straight from home, the joint move to a far cup
+# swings the hand into the table), picks the cup and holds it at HANDOVER_L. The right arm
+# waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
+# R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
+# must stay within the gateway's z <= 600), the right goes down again, turns the cup over
+# above R_PLACE and puts it down there.
 LEFT_READY = (400, 100, 450)
-
-# ---------------- Hand-over (from rapid/tests/handover.py) ----------------
-# The cup stands upside down (rim on the table). The left arm holds it at HANDOVER, the right
-# arm waits beside it at the height just under the rim, slides in, goes up the last bit and
-# takes it by the rim (gripper pointing up), then turns it over and places it.
-# With the gripper up, the right wrist hangs about 60 mm below the flange, so the hand-over
-# is as high as the gateway allows: the right wrist stays about 85 mm above the table.
-TOOL_R = 159               # right flange to fingertips (MEASURE)
-CUP_H = 80                 # cup height
-GRIP_FROM_RIM = 80         # the left fingers hold the cup this far above the rim
-RIM_GRIP = 10              # the right fingers hold the rim this far above its edge
-CUP_RADIUS = 35            # right fingers sit on the rim wall, one radius from the centre (MEASURE)
-TAKE_APPROACH = 30         # the right fingertips start this far below where they grip (20 mm under the rim)
-LEFT_LIFT = 30             # the left arm moves up this far after letting go; then the right
-                           # arm pulls the cup TAKE_APPROACH down, so they part by 60 mm
-R_SIDE = 120               # the right arm waits this far beside the hand-over (-y, away from the left)
-
-# Left fingertips (TCP) at the hand-over. The gateway's safe zone (flange z <= 600)
-# caps z at 600 - GRIPPER_TCP_Z - LEFT_LIFT = 411.
-HANDOVER = (400, -100, 410)
-
-# Flange positions (tool0, mm) that follow from it
-_hx, _hy, _hz = HANDOVER
-HANDOVER_L = (_hx, _hy, _hz + GRIPPER_TCP_Z)
-HANDOVER_L_UP = (_hx, _hy, _hz + GRIPPER_TCP_Z + LEFT_LIFT)
-R_TAKE = (_hx, _hy - CUP_RADIUS, _hz - GRIP_FROM_RIM + RIM_GRIP - TOOL_R)
-R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - TAKE_APPROACH)
-R_BESIDE = (R_BELOW[0], R_BELOW[1] - R_SIDE, R_BELOW[2])
-R_PLACE = (420, -200, CUP_H - RIM_GRIP + TOOL_R + 3)         # cup bottom 3 mm above the table
-R_PLACE_ABOVE = (R_PLACE[0], R_PLACE[1], R_PLACE[2] + 80)    # turning to RIGHT_DOWN here flips the cup
+HANDOVER_L = (400, -100, 569)
+LEFT_LIFT = 30
+R_VIA = (200, -250, 200)
+R_TAKE = (400, -135, 321)
+R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
+R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
+R_PLACE = (420, -200, 167)
+R_PLACE_ABOVE = (R_PLACE[0], R_PLACE[1], R_PLACE[2] + 80)   # the cup is turned over here
 
 
 def log(*parts):
@@ -260,14 +246,10 @@ class Arm:
                           "speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
 
     def goto(self, x, y, z):
-        """Gripper TCP to a point seen by the camera, gripper down: adds the calibration's
-        tag_offset, and the flange is GRIPPER_TCP_Z straight above the TCP."""
-        ox, oy, oz = self.offset
-        self.move((x + ox, y + oy, z + oz + GRIPPER_TCP_Z), LEFT_DOWN)
-
-    def travel(self, x, y, z=MIN_TRAVEL_Z):
-        """Like goto(), but at MIN_TRAVEL_Z or higher."""
-        self.goto(x, y, max(z, MIN_TRAVEL_Z))
+        """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
+        at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
+        ox, oy, _ = self.offset
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN)
 
     def gripper(self, action):
         """action: "open" or "grip"."""
@@ -283,7 +265,7 @@ class Handover:
     def __init__(self, left, right, abort):
         self.left, self.right, self.abort = left, right, abort
         self.left_has_cup = threading.Event()      # left gripped the cup and left the picking area
-        self.at_handover = threading.Event()       # left holds the cup at HANDOVER
+        self.at_handover = threading.Event()       # left holds the cup at HANDOVER_L
         self.right_has_cup = threading.Event()     # right closed on the rim
         self.left_clear = threading.Event()        # left let go and moved up
         self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup, self.left_clear)
@@ -306,21 +288,20 @@ class Handover:
         return not self.abort.is_set()
 
     def _left_job(self, cup):
-        x, y, z = cup["x"], cup["y"], cup["z"]
-        above = max(z + APPROACH, MIN_TRAVEL_Z)
+        x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
         arm.gripper("open")
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
-        arm.travel(x, y, above)
-        arm.goto(x, y, z)
+        arm.goto(x, y, TRAVEL_Z)
+        arm.goto(x, y, PICK_Z)
         arm.gripper("grip")
-        arm.travel(x, y, above)
+        arm.goto(x, y, TRAVEL_Z)
         self.left_has_cup.set()                    # -> right: come to the hand-over
         arm.move(HANDOVER_L, LEFT_DOWN)
         self.at_handover.set()                     # -> right: come and take it
         self._wait_for(self.right_has_cup)
         arm.gripper("open")
-        arm.move(HANDOVER_L_UP, LEFT_DOWN)
+        arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)
         self.left_clear.set()                      # -> right: you can pull it down
         arm.home()                                 # out of the camera view for the next capture
 
@@ -328,10 +309,11 @@ class Handover:
         arm = self.right
         arm.gripper("open")
         self._wait_for(self.left_has_cup)          # stay home, out of the picking area
+        arm.move(R_VIA, RIGHT_UP)
         arm.move(R_BESIDE, RIGHT_UP)               # beside the hand-over, just under the rim height
         self._wait_for(self.at_handover)
         arm.move(R_BELOW, RIGHT_UP)                # slide in under the cup
-        arm.move(R_TAKE, RIGHT_UP)                 # the last TAKE_APPROACH straight up
+        arm.move(R_TAKE, RIGHT_UP)                 # the last bit straight up
         arm.gripper("grip")
         self.right_has_cup.set()                   # -> left: let go
         self._wait_for(self.left_clear)
@@ -378,7 +360,7 @@ class Calibration:
         with open(path) as f:
             cal = json.load(f)
         self.scale, self.R, self.t = cal["scale"], np.array(cal["R"]), np.array(cal["t"])
-        # tag centre minus gripper TCP (robot mm); Arm.goto() adds it to every move
+        # tag centre minus gripper TCP (robot mm); Arm.goto() adds its x, y to every pick move
         self.offset = tuple(cal.get("tag_offset", (0, 0, 0)))
 
     def to_robot(self, x, y, z):
