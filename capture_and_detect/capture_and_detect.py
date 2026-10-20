@@ -86,7 +86,7 @@ RIGHT_UP = (0, 0, 0)       # right gripper pointing up
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 55                # TCP height when gripping a cup
+PICK_Z = 75                # TCP height when gripping a cup
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
 Y_MIN, Y_MAX = -230, 420
