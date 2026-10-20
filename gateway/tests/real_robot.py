@@ -29,7 +29,7 @@ POSITION_TOLERANCE_MM = 1.0
 # YuMi's reach (about 560 mm).
 #
 OUTSIDE_SAFE_ZONE = (1500.0, 0.0, 300.0)
-OUT_OF_REACH = (900.0, 0.0, 300.0)
+OUT_OF_REACH = (780.0, 0.0, 300.0)
 
 DONE = {"accepted": True, "message": "DONE"}
 STARTED = {"accepted": True, "message": "STARTED"}

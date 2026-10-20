@@ -93,7 +93,7 @@ RIGHT_TARGET = (420.0, -150.0, 300.0)
 #
 # Inside the gateway's default safe zone but out of the arm's reach.
 #
-UNREACHABLE = (900.0, 0.0, 300.0)
+UNREACHABLE = (780.0, 0.0, 300.0)
 
 POSITION_TOLERANCE_MM = 1.0
 
