@@ -277,7 +277,7 @@ def solve(folder, exclude=()):
     if exclude:
         print(f"Excluded images: {sorted(exclude)}")
 
-    result = {"scale": float(scale), "R": R.tolist(), "t": (t + np.array(TAG_OFFSET)).tolist(),
+    result = {"scale": float(scale), "R": R.tolist(), "t": (t).tolist(),
               "intrinsics": k, "tag_offset": list(TAG_OFFSET),
               "fit_error_mm": float(err.mean()), "unseen_error_mm": float(unseen.mean()),
               "unseen_error_xyz_mm": np.abs(unseen_xyz).mean(axis=0).tolist(),

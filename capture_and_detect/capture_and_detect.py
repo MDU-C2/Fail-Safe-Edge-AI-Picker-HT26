@@ -92,12 +92,15 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 with open(HERE.parent / "Calibration/calibration.json") as f:
     CAL = json.load(f)
 
+# x, y, z offset (robot mm) added to every move sent to the robot (see goto()):
+# the calibration's tag_offset (tag centre minus gripper TCP)
+OFFSET = tuple(CAL.get("tag_offset", (0, 0, 0)))
+
 
 def calibrate(x, y, z):
-    """Camera x, y, z (mm) -> robot x, y, z (mm):  robot = scale * R @ camera + t + tag_offset
+    """Camera x, y, z (mm) -> robot x, y, z (mm):  robot = scale * R @ camera + t
 
-    tag_offset = tag centre minus gripper TCP (robot axes, mm). The calibration maps the
-    tag onto the TCP, so the offset is added back to land on the true position.
+    tag_offset is not added here: goto() adds it (as OFFSET) to every move sent to the robot.
     """
     robot = (CAL["scale"] * np.array(CAL["R"]) @ np.array([x, y, z])
              + np.array(CAL["t"]))
@@ -175,9 +178,11 @@ def robot_job(path, body):
 
 def goto(x, y, z):
     """Gripper TCP to (x, y, z) mm, gripper pointing down. The arm moves tool0 (the flange),
-    which with the gripper down is GRIPPER_TCP_Z straight above the TCP."""
+    which with the gripper down is GRIPPER_TCP_Z straight above the TCP. OFFSET is added here."""
     rx, ry, rz = DOWN_ROT
-    return robot_job("move", {"x": x, "y": y, "z": z + GRIPPER_TCP_Z, "rx": rx, "ry": ry, "rz": rz})
+    ox, oy, oz = OFFSET
+    return robot_job("move", {"x": x + ox, "y": y + oy, "z": z + oz + GRIPPER_TCP_Z,
+                              "rx": rx, "ry": ry, "rz": rz})
 
 
 def gripper(action):
