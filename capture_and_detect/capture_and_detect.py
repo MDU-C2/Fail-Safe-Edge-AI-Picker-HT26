@@ -20,6 +20,8 @@ Every time you press Enter:
                   ... wait, down, turn over, place, open, up, home
        Both arms move at the same time and only wait for each other (the "wait"s). The right arm
        stays home while the left one picks, so they never share the picking area.
+       With --left-only the right arm stays home: the left arm picks the cup, lifts it to
+       TRAVEL_Z, puts it back where it stood, lets go and goes home.
 
 A cup is a CUP BASE inside a detected CUP (the robot's joint was once seen as a CUP BASE).
 
@@ -42,6 +44,7 @@ Set it once in the terminal (never put it in this file):
 Usage:
     py capture_and_detect.py
     py capture_and_detect.py --gateway http://169.254.125.202:8000 --conf 0.6
+    py capture_and_detect.py --left-only
 """
 
 import argparse
@@ -72,7 +75,7 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 100                 # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 50                 # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 
@@ -270,12 +273,15 @@ class Handover:
         self.left_clear = threading.Event()        # left let go and moved up
         self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup, self.left_clear)
 
-    def run(self, cup):
-        """True if the cup was placed. Ctrl+C stops both arms after their current job."""
+    def run(self, cup, left_only=False):
+        """True if the cup was placed. Ctrl+C stops both arms after their current job.
+        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over."""
         for event in self.events:
             event.clear()
+        jobs = [(self._pick_only_job, (cup,))] if left_only else \
+               [(self._left_job, (cup,)), (self._right_job, ())]
         arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
-                for job, args in ((self._left_job, (cup,)), (self._right_job, ()))]
+                for job, args in jobs]
         for arm in arms:
             arm.start()
         try:
@@ -287,7 +293,7 @@ class Handover:
             raise
         return not self.abort.is_set()
 
-    def _left_job(self, cup):
+    def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
         arm.gripper("open")
@@ -296,6 +302,18 @@ class Handover:
         arm.goto(x, y, PICK_Z)
         arm.gripper("grip")
         arm.goto(x, y, TRAVEL_Z)
+
+    def _pick_only_job(self, cup):
+        arm = self.left
+        self._pick(cup)
+        arm.goto(cup["x"], cup["y"], PICK_Z)       # put it back where it stood
+        arm.gripper("open")
+        arm.goto(cup["x"], cup["y"], TRAVEL_Z)
+        arm.home()
+
+    def _left_job(self, cup):
+        arm = self.left
+        self._pick(cup)
         self.left_has_cup.set()                    # -> right: come to the hand-over
         arm.move(HANDOVER_L, LEFT_DOWN)
         self.at_handover.set()                     # -> right: come and take it
@@ -516,8 +534,9 @@ class CaptureStore:
 class Picker:
     """Capture, detect, save, then move the most certain reachable cup - once per Enter."""
 
-    def __init__(self, gateway, detector, handover, store):
+    def __init__(self, gateway, detector, handover, store, left_only=False):
         self.gateway, self.detector, self.handover, self.store = gateway, detector, handover, store
+        self.left_only = left_only
         self.captures = 0
 
     def run(self):
@@ -553,13 +572,14 @@ class Picker:
             if cups:
                 log("  no cup within reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
             return
-        log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} -> hand-over")
+        what = "left arm only" if self.left_only else "hand-over"
+        log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} -> {what}")
         cup["status"] = "moving"
         self.store.save_cups(cups, stamp)
         placed = False
         try:
             with self.gateway.control():           # keep robot control for the whole sequence
-                placed = self.handover.run(cup)
+                placed = self.handover.run(cup, self.left_only)
         finally:
             cup["status"] = "placed" if placed else "failed"
             self.store.save_cups(cups, stamp)
@@ -571,6 +591,8 @@ def main():
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--gateway", default="http://192.168.125.201:8000", help="Gateway address")
     parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold")
+    parser.add_argument("--left-only", action="store_true",
+                        help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
     args = parser.parse_args()
 
     gateway = Gateway(args.gateway, load_token())
@@ -586,7 +608,7 @@ def main():
     left = Arm(gateway, "left", abort, calibration.offset)
     right = Arm(gateway, "right", abort)
     Picker(gateway, Detector(model, calibration, K, args.conf),
-           Handover(left, right, abort), store).run()
+           Handover(left, right, abort), store, args.left_only).run()
 
 
 if __name__ == "__main__":
