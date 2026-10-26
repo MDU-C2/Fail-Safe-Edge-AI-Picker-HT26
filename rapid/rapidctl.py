@@ -1,7 +1,7 @@
 """
 Manage the RAPID program on the YuMi over Robot Web Services (RWS 1.0,
-RobotWare 6): status, start, stop, restart, upload, delete, backup,
-restore. Defaults to the REAL robot at 192.168.125.1; use
+RobotWare 6): status, start, stop, restart, reset, speed, upload,
+delete, backup, restore. Defaults to the REAL robot at 192.168.125.1; use
 --host 127.0.0.1 for the RobotStudio virtual controller.
 
     python rapid/rapidctl.py status
@@ -12,6 +12,10 @@ restore. Defaults to the REAL robot at 192.168.125.1; use
     python rapid/rapidctl.py start --main              # program pointer to main first
     python rapid/rapidctl.py stop
     python rapid/rapidctl.py restart                   # stop, pointer to main, start
+    python rapid/rapidctl.py reset                     # stop, SharedVars to their initial values, restart
+    python rapid/rapidctl.py speed                     # both arms' move speed and acceleration
+    python rapid/rapidctl.py speed --set 200           # 200 mm/s for both arms
+    python rapid/rapidctl.py speed --arm left --set 100 --acc 50 --ramp 50
     python rapid/rapidctl.py delete --task T_ROB_L     # unload every module of a task
     python rapid/rapidctl.py delete --task T_ROB_L LeftArm
     python rapid/rapidctl.py backup
@@ -37,6 +41,17 @@ Notes:
     - --gripper-stub also loads sim/GripperStub.mod into the arm tasks:
       ONLY for a virtual controller without the SmartGripper option.
       Never on the real robot (it refuses with --gripper-stub there).
+    - PERS variables keep their values over stop, restart and even
+      upload (a PERS lives on while any task declares it), so a job
+      left half done (e.g. move_request_left TRUE after a stop) is
+      still there after a restart. reset writes every PERS of
+      SharedVars.mod back to the value declared in the file.
+    - speed shows or sets move_speed_<arm> (TCP mm/s of the speeddata
+      used for moves and home), move_acc_<arm> and move_ramp_<arm>
+      (AccSet, %). Works while RAPID runs and applies from the next
+      job. The gateway's /robot/rws/move and /home write their own
+      speed (default 50 mm/s, 100 %) with every job, so this is for
+      the legacy CommServer path, which uses whatever was set last.
     - Each module is uploaded to $HOME/<file name> on the controller
       and loaded from there.
 
@@ -60,6 +75,8 @@ BACKUP_DIR = RAPID_DIR / "backups"
 
 GRIPPER_STUB = RAPID_DIR / "sim" / "GripperStub.mod"
 
+SHARED_VARS = RAPID_DIR / "SharedVars.mod"
+
 PROGRAM = {
     "T_ROB_L": ["SharedVars.mod", "LeftArmInstructions.mod", "GoHomeLeft.mod"],
     "T_ROB_R": ["SharedVars.mod", "RightArmInstructions.mod", "GoHomeRight.mod"],
@@ -67,6 +84,17 @@ PROGRAM = {
 }
 
 ARM_TASKS = ("T_ROB_L", "T_ROB_R")
+
+ARMS = {
+    "left": "T_ROB_L",
+    "right": "T_ROB_R",
+}
+
+#
+# The rest of the speeddata, as in v5 .. v1000 (orientation deg/s,
+# arm angle mm/s and deg/s). The gateway writes the same.
+#
+SPEEDDATA_REST = "500,5000,1000"
 
 REAL_ROBOT = "192.168.125.1"
 
@@ -233,6 +261,14 @@ class Controller:
 
         return self._request("GET", f"/fileservice/$TEMP/{name}.mod").content.decode("iso-8859-1")
 
+    # ---------------------------------------------------------------- data
+
+    def read_symbol(self, task: str, name: str) -> str:
+        return self.get_state(f"/rw/rapid/symbol/data/RAPID/{task}/{name}")[0]["value"]
+
+    def write_symbol(self, task: str, name: str, value: str) -> None:
+        self.post(f"/rw/rapid/symbol/data/RAPID/{task}/{name}?action=set", {"value": value})
+
     def unload(self, task: str, module: str) -> None:
         self.post(f"/rw/rapid/tasks/{task}?action=unloadmod", {"module": module})
 
@@ -325,6 +361,31 @@ def replace_modules(controller: Controller, program: dict[str, list[Path]], star
     finish(controller, start)
 
 
+def initial_values(module: Path) -> dict[str, str]:
+    """The PERS declarations of a module: name -> initial value as written."""
+
+    values = {}
+
+    for line in module.read_text(encoding="iso-8859-1").splitlines():
+        match = re.match(r"\s*PERS\s+\w+\s+(\w+)\s*:=\s*(.*?);", line)
+
+        if match:
+            values[match.group(1)] = match.group(2)
+
+    return values
+
+
+def same_value(a: str, b: str) -> bool:
+    #
+    # The controller writes numbers its own way ([0,0,0] for
+    # [0, 0, 0]); strings keep their spaces.
+    #
+    if a.startswith('"'):
+        return a == b
+
+    return a.replace(" ", "").upper() == b.replace(" ", "").upper()
+
+
 def finish(controller: Controller, start: bool) -> None:
     controller.reset_program_pointer()
 
@@ -386,6 +447,81 @@ def command_restart(controller: Controller, args: argparse.Namespace) -> None:
     print("RAPID stopped")
 
     finish(controller, start=True)
+
+
+def command_reset(controller: Controller, args: argparse.Namespace) -> None:
+    check_auto(controller)
+
+    values = initial_values(SHARED_VARS)
+
+    #
+    # The variables are shared between the tasks that declare them,
+    # so one task with SharedVars loaded is enough.
+    #
+    task = next(
+        (task for task in existing_tasks(controller, list(PROGRAM)) if "SharedVars" in controller.program_modules(task)),
+        None,
+    )
+
+    if task is None:
+        sys.exit("SharedVars is not loaded in any task (upload first)")
+
+    controller.stop()
+
+    print("RAPID stopped")
+
+    with controller.mastership():
+        for name, value in values.items():
+            controller.write_symbol(task, name, value)
+
+    for name, value in values.items():
+        now = controller.read_symbol(task, name)
+
+        if not same_value(now, value):
+            raise ControllerError(f"{name} is {now} after writing {value}")
+
+        print(f"{name} = {now}")
+
+    finish(controller, start=not args.no_start)
+
+
+def command_speed(controller: Controller, args: argparse.Namespace) -> None:
+    arms = [args.arm] if args.arm else list(ARMS)
+
+    for value, low, high, flag in ((args.set, 1, 1500, "--set"), (args.acc, 20, 100, "--acc"), (args.ramp, 10, 100, "--ramp")):
+        if value is not None and not low <= value <= high:
+            sys.exit(f"{flag} must be between {low} and {high}")
+
+    writes = {
+        name: value
+        for name, value in (
+            ("move_speed", None if args.set is None else f"[{args.set:g},{SPEEDDATA_REST}]"),
+            ("move_acc", None if args.acc is None else f"{args.acc:g}"),
+            ("move_ramp", None if args.ramp is None else f"{args.ramp:g}"),
+        )
+        if value is not None
+    }
+
+    for arm in arms:
+        task = ARMS[arm]
+
+        try:
+            for name, value in writes.items():
+                #
+                # No mastership: the controller refuses it while RAPID
+                # runs, and PERS data can be written without it.
+                #
+                controller.write_symbol(task, f"{name}_{arm}", value)
+
+            speed, acc, ramp = (controller.read_symbol(task, f"{name}_{arm}") for name in ("move_speed", "move_acc", "move_ramp"))
+
+        except ControllerError as error:
+            if "400" not in str(error):
+                raise
+
+            sys.exit(f"{task} has no move_speed_{arm} (the program predates the speed variables; upload first)")
+
+        print(f"{arm:<5} speed {speed.strip('[]').split(',')[0]} mm/s ({speed}), acceleration {acc} %, ramp {ramp} %")
 
 
 def command_upload(controller: Controller, args: argparse.Namespace) -> None:
@@ -499,6 +635,15 @@ def main() -> None:
 
     commands.add_parser("restart", help="Stop, program pointer to main, start")
 
+    reset = commands.add_parser("reset", help="Stop, SharedVars back to their initial values, pointer to main, start")
+    reset.add_argument("--no-start", action="store_true", help="Leave RAPID stopped")
+
+    speed = commands.add_parser("speed", help="Show or set the arms' move speed and acceleration")
+    speed.add_argument("--arm", choices=list(ARMS), help="Only this arm (default: both)")
+    speed.add_argument("--set", type=float, metavar="MM_S", help="TCP speed in mm/s, 1..1500 (declared default 50)")
+    speed.add_argument("--acc", type=float, metavar="PERCENT", help="Acceleration in %% of the maximum, 20..100 (default 100)")
+    speed.add_argument("--ramp", type=float, metavar="PERCENT", help="Acceleration ramp in %%, 10..100 (default 100)")
+
     upload = commands.add_parser("upload", help="Back up, stop, replace the modules with the files in rapid/, start")
     upload.add_argument("--task", action="append", choices=list(PROGRAM), help="Only this task (repeatable; default: all)")
     upload.add_argument("--no-start", action="store_true", help="Leave RAPID stopped")
@@ -534,6 +679,8 @@ def main() -> None:
         "start": command_start,
         "stop": command_stop,
         "restart": command_restart,
+        "reset": command_reset,
+        "speed": command_speed,
         "upload": command_upload,
         "delete": command_delete,
         "backup": command_backup,

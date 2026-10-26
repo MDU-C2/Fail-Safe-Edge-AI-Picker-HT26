@@ -7,12 +7,25 @@ result: a move, home, or the gripper.
     python gateway/scripts/rws_move.py --home
     python gateway/scripts/rws_move.py --grip          # or --open
     python gateway/scripts/rws_move.py --x 540 --y 306 --z 338 --no-wait
+    python gateway/scripts/rws_move.py --rz 90                 # turn in place
+    python gateway/scripts/rws_move.py --rx 180 --ry 0 --rz 180  # point down, in place
+    python gateway/scripts/rws_move.py --z 300                 # only change the height
+    python gateway/scripts/rws_move.py --z 300 --speed 200     # 200 mm/s instead of 50
+    python gateway/scripts/rws_move.py --home --speed 200 --acc 50 --ramp 50
 
 Positions are tool0 in wobj0 in mm, rotations in degrees (RAPID
-OrientZYX); without --rx/--ry/--rz the orientation is kept. The
-arm's pose is printed before and after. --no-wait starts the job
+OrientZYX(rz, ry, rx)). Every value left out is taken from the arm's
+current pose: without --x/--y/--z the flange stays where it is (the
+gripper tip, 159 mm further out, swings around it), without
+--rx/--ry/--rz the orientation is kept. The arm's pose is printed
+before and after, with its orientation as rx/ry/rz. --no-wait starts the job
 (STARTED) and polls GET /robot/rws/status until it is done, the way
 clients of the team's CommServer do.
+
+--speed is the TCP speed in mm/s (RAPID speeddata v_tcp, 1..1500),
+--acc and --ramp the acceleration and its ramp in % of the maximum
+(RAPID AccSet, 20..100 and 10..100). They apply to moves and home;
+left out, the gateway's defaults are used (50 mm/s, 100 %, 100 %).
 
 The robot that moves is the one the gateway at --url controls; the
 default is the gateway on the Raspberry Pi, i.e. the real YuMi.
@@ -21,6 +34,7 @@ Needs: requests
 """
 
 import argparse
+import math
 import sys
 import threading
 import time
@@ -37,21 +51,49 @@ DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
 JOB_TIMEOUT_SECONDS = 90
 
 
-def show_pose(
+def zyx_angles(
+    pose: dict,
+) -> tuple[float, float, float]:
+    """(rx, ry, rz) in degrees of the pose's quaternion: the inverse
+    of RAPID's OrientZYX(rz, ry, rx) (and of the gateway's orient_zyx)."""
+
+    w, x, y, z = (pose[name] for name in ("q1", "q2", "q3", "q4"))
+
+    rx = math.atan2(2 * (y * z + w * x), 1 - 2 * (x * x + y * y))
+    ry = math.asin(max(-1.0, min(1.0, 2 * (w * y - x * z))))
+    rz = math.atan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z))
+
+    return tuple(round(math.degrees(angle), 3) + 0.0 for angle in (rx, ry, rz))
+
+
+def get_pose(
     base: str,
     headers: dict,
     arm: str,
-    label: str,
-) -> None:
-    pose = requests.get(
+) -> dict:
+    response = requests.get(
         f"{base}/robot/arms/{arm}/pose",
         headers=headers,
         params={"tool": "tool0", "wobj": "wobj0"},
         timeout=10,
-    ).json()
+    )
+
+    if not response.ok:
+        sys.exit(f"Could not read the {arm} arm's pose: {response.status_code} {response.text}")
+
+    return response.json()
+
+
+def show_pose(
+    pose: dict,
+    arm: str,
+    label: str,
+) -> None:
+    rx, ry, rz = zyx_angles(pose)
 
     print(
         f"{label}: {arm} arm at x={pose['x']:.1f} y={pose['y']:.1f} z={pose['z']:.1f} "
+        f"rx={rx:.1f} ry={ry:.1f} rz={rz:.1f} "
         f"q=({pose['q1']:.3f}, {pose['q2']:.3f}, {pose['q3']:.3f}, {pose['q4']:.3f})"
     )
 
@@ -78,10 +120,23 @@ def main() -> None:
     parser.add_argument("--open", action="store_true", help="Open the gripper")
     parser.add_argument("--no-wait", action="store_true", help="Answer STARTED at once and poll /robot/rws/status")
 
+    parser.add_argument("--speed", type=float, help="TCP speed in mm/s for a move or home (gateway default 50)")
+    parser.add_argument("--acc", type=float, help="Acceleration in %% of the maximum, 20..100 (default 100)")
+    parser.add_argument("--ramp", type=float, help="Acceleration ramp in %%, 10..100 (default 100)")
+
     args = parser.parse_args()
 
     position = (args.x, args.y, args.z)
     rotation = (args.rx, args.ry, args.rz)
+
+    headers = {
+        "Authorization": f"Bearer {args.token}",
+        "X-Dev-Client": args.client,
+    }
+
+    before = get_pose(args.url, headers, args.arm)
+
+    show_pose(before, args.arm, "Before")
 
     if args.home:
         path, body = "/robot/rws/home", {}
@@ -89,26 +144,40 @@ def main() -> None:
     elif args.grip or args.open:
         path, body = "/robot/rws/gripper", {"action": "grip" if args.grip else "open"}
 
-    elif None not in position:
-        path, body = "/robot/rws/move", dict(zip(("x", "y", "z"), position))
+    elif any(value is not None for value in position + rotation):
+        #
+        # Whatever is not given stays as it is now.
+        #
+        current = (before["x"], before["y"], before["z"])
+
+        path, body = "/robot/rws/move", {
+            name: given if given is not None else now
+            for name, given, now in zip(("x", "y", "z"), position, current)
+        }
 
         if any(value is not None for value in rotation):
-            if None in rotation:
-                parser.error("give all of --rx --ry --rz, or none")
-
-            body.update(zip(("rx", "ry", "rz"), rotation))
+            body.update(
+                (name, given if given is not None else now)
+                for name, given, now in zip(("rx", "ry", "rz"), rotation, zyx_angles(before))
+            )
 
     else:
-        parser.error("give --x --y --z (optionally --rx --ry --rz), --home, --grip or --open")
+        parser.error("give --x/--y/--z and/or --rx/--ry/--rz, --home, --grip or --open")
 
-    body.update(arm=args.arm, wait=not args.no_wait)
-
-    headers = {
-        "Authorization": f"Bearer {args.token}",
-        "X-Dev-Client": args.client,
+    speed = {
+        name: value
+        for name, value in (
+            ("speed", args.speed),
+            ("acceleration", args.acc),
+            ("ramp", args.ramp),
+        )
+        if value is not None
     }
 
-    show_pose(args.url, headers, args.arm, "Before")
+    if speed and path == "/robot/rws/gripper":
+        parser.error("--speed, --acc and --ramp are for moves and home, not the gripper")
+
+    body.update(arm=args.arm, wait=not args.no_wait, **speed)
 
     response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
 
@@ -171,7 +240,7 @@ def main() -> None:
 
         requests.post(f"{args.url}/control/release", headers=headers, timeout=10)
 
-    show_pose(args.url, headers, args.arm, "After")
+    show_pose(get_pose(args.url, headers, args.arm), args.arm, "After")
 
 
 if __name__ == "__main__":

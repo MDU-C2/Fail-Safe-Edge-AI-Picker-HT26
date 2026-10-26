@@ -15,6 +15,7 @@ from gateway.rws import rapid_router
 from gateway.rws.client import RwsError
 from gateway.rws.motion import (
     MotionConflict,
+    MotionSpeed,
     RwsMotion,
     orient_zyx,
 )
@@ -154,6 +155,12 @@ def test_rws_moves_need_permission_and_lease(
         {"x": 300, "y": 150, "z": 280, "rx": 90},
         {"x": 300, "y": 150, "z": 280, "rx": 90, "ry": 0},
         {"arm": "middle", "x": 300, "y": 150, "z": 280},
+        {"x": 300, "y": 150, "z": 280, "speed": 0},
+        {"x": 300, "y": 150, "z": 280, "speed": 2000},
+        {"x": 300, "y": 150, "z": 280, "speed": "fast"},
+        {"x": 300, "y": 150, "z": 280, "acceleration": 10},
+        {"x": 300, "y": 150, "z": 280, "acceleration": 150},
+        {"x": 300, "y": 150, "z": 280, "ramp": 5},
     ],
 )
 def test_rws_move_is_validated(
@@ -187,6 +194,8 @@ def test_rws_status_needs_read_permission_only(
     "path, body",
     [
         ("/robot/rws/home", {"arm": "middle"}),
+        ("/robot/rws/home", {"speed": -50}),
+        ("/robot/rws/home", {"acceleration": 0}),
         ("/robot/rws/gripper", {"action": "squeeze"}),
         ("/robot/rws/gripper", {}),
     ],
@@ -301,6 +310,9 @@ class FakeArmTasks:
                 ("grip_cmd", '""'),
                 ("target_pos", "[0,0,0]"),
                 ("target_rot", "[1,0,0,0]"),
+                ("move_speed", "[50,500,5000,1000]"),
+                ("move_acc", "100"),
+                ("move_ramp", "100"),
             )
         }
 
@@ -381,6 +393,61 @@ def test_rws_motion_writes_the_arms_variables() -> None:
     assert controller.writes[-1] == ("T_ROB_R", "move_request_right", "TRUE")
 
     assert not any(name.endswith("_left") for _, name, _ in controller.writes)
+
+    #
+    # No speed given: the default (v50, AccSet 100, 100).
+    #
+    assert written["move_speed_right"] == ("T_ROB_R", "[50.000000,500.000000,5000.000000,1000.000000]")
+    assert written["move_acc_right"] == ("T_ROB_R", "100.000000")
+    assert written["move_ramp_right"] == ("T_ROB_R", "100.000000")
+
+
+def test_rws_motion_writes_the_speed() -> None:
+    controller = FakeArmTasks()
+    arms = motion(controller)
+
+    assert arms.move("left", (400.0, 150.0, 320.0), None, speed=MotionSpeed(200.0, 50.0, 30.0)).message == "DONE"
+
+    assert controller.symbols["move_speed_left"] == "[200.000000,500.000000,5000.000000,1000.000000]"
+    assert controller.symbols["move_acc_left"] == "50.000000"
+    assert controller.symbols["move_ramp_left"] == "30.000000"
+
+    #
+    # Every job writes its own speed, so nothing carries over.
+    #
+    assert arms.home("left").message == "DONE"
+
+    assert controller.symbols["move_speed_left"] == "[50.000000,500.000000,5000.000000,1000.000000]"
+    assert controller.symbols["move_acc_left"] == "100.000000"
+
+    assert arms.home("right", speed=MotionSpeed(120.0, 100.0, 100.0)).message == "DONE"
+
+    assert controller.symbols["move_speed_right"].startswith("[120.000000,")
+
+    #
+    # The gripper does not touch the speed.
+    #
+    controller.writes.clear()
+
+    assert arms.gripper("left", "grip").message == "DONE"
+
+    assert not any(name.startswith("move_speed") for _, name, _ in controller.writes)
+
+
+def test_rws_motion_refuses_a_program_without_speed_variables() -> None:
+    controller = FakeArmTasks()
+
+    del controller.symbols["move_speed_left"]
+
+    with pytest.raises(MotionConflict, match="no speed variables"):
+        motion(controller).move("left", (400.0, 150.0, 320.0), None)
+
+    assert controller.writes == []
+
+    #
+    # The gripper does not need them.
+    #
+    assert motion(controller).gripper("left", "open").message == "DONE"
 
 
 def test_rws_motion_home_and_gripper() -> None:

@@ -9,7 +9,7 @@ MODULE HomeLeft
 
         ! Preferred: let the controller plan all axes together.
         IF IsCollFree(home_left) THEN
-            MoveAbsJ home_left \NoEOffs, v200, fine, tool0;
+            MoveAbsJ home_left \NoEOffs, move_speed_left, fine, tool0;
             RETURN;
         ENDIF
 
@@ -40,7 +40,7 @@ MODULE HomeLeft
 
         ! Axes that were skipped may be clear now that others have moved.
         IF IsCollFree(home_left) THEN
-            MoveAbsJ home_left \NoEOffs, v200, fine, tool0;
+            MoveAbsJ home_left \NoEOffs, move_speed_left, fine, tool0;
         ELSE
             TPWrite "GoHomeLeft: blocked, move the arm clear by hand.";
         ENDIF
@@ -49,7 +49,7 @@ MODULE HomeLeft
     ! Move only if the target is collision-free; otherwise skip it.
     PROC TryMove(jointtarget target)
         IF IsCollFree(target) THEN
-            MoveAbsJ target \NoEOffs, v200, fine, tool0;
+            MoveAbsJ target \NoEOffs, move_speed_left, fine, tool0;
         ENDIF
     ENDPROC
 

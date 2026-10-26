@@ -105,7 +105,42 @@ class RwsGripperRequest(RwsArmRequest):
     action: Literal["grip", "open"]
 
 
-class RwsMoveRequest(RwsArmRequest):
+class RwsMotionRequest(RwsArmRequest):
+    """A job that moves the arm (move or home).
+
+    Left out, each value is the gateway's default
+    (GATEWAY_RWS_DEFAULT_SPEED / _ACCELERATION / _RAMP).
+    """
+
+    #
+    # TCP speed in mm/s, the v_tcp of the RAPID speeddata
+    # (v50 = 50).
+    #
+    speed: FiniteFloat | None = Field(
+        default=None,
+        ge=1,
+        le=1500,
+    )
+
+    #
+    # RAPID AccSet, in % of the maximum: acceleration, and ramp
+    # (how fast the acceleration builds up). The controller treats
+    # less than 20 % / 10 % as 20 % / 10 %, so that is refused.
+    #
+    acceleration: FiniteFloat | None = Field(
+        default=None,
+        ge=20,
+        le=100,
+    )
+
+    ramp: FiniteFloat | None = Field(
+        default=None,
+        ge=10,
+        le=100,
+    )
+
+
+class RwsMoveRequest(RwsMotionRequest):
     """Target of one arm's tool0 in wobj0 (default the left arm).
 
     Position in mm. The rotation, in degrees, is optional and

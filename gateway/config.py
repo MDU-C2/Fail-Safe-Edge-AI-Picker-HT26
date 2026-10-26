@@ -68,13 +68,24 @@ class Settings(BaseSettings):
     rws_move_timeout: float = 60.0
 
     #
-    # Box that /robot/rws/move targets must lie in, tool0 in wobj0,
-    # mm, for both arms. The arm tasks do not check it themselves
-    # (the team's CommServer did, with these same limits), so the
-    # gateway does. Tighten to tested points.
+    # Box that /robot/rws/move targets must lie in, tool0 (the
+    # flange) in wobj0, mm, for both arms. The arm tasks do not
+    # check it themselves, so the gateway does. Holds the picking
+    # poses (gripper down: flange 159 mm above the TCP) and the
+    # camera calibration poses (gripper along +x: flange 159 mm
+    # behind the TCP in x, at its height).
     #
-    rws_safe_zone_min: tuple[float, float, float] = (-1000.0, -1000.0, -1000.0)
-    rws_safe_zone_max: tuple[float, float, float] = (1000.0, 1000.0, 1000.0)
+    rws_safe_zone_min: tuple[float, float, float] = (180.0, -400.0, 50.0)
+    rws_safe_zone_max: tuple[float, float, float] = (800.0, 500.0, 600.0)
+
+    #
+    # Speed of /robot/rws/move and /home when the request gives
+    # none: TCP speed in mm/s (v50), and acceleration and ramp in %
+    # of the maximum (RAPID AccSet).
+    #
+    rws_default_speed: float = 50.0
+    rws_default_acceleration: float = 100.0
+    rws_default_ramp: float = 100.0
 
 
 @lru_cache

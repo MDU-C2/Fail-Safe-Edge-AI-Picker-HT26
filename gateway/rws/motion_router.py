@@ -13,8 +13,8 @@ from gateway.control.router import require_control
 from gateway.events.manager import event_manager
 from gateway.models.commands import CommandResponse
 from gateway.models.rws import (
-    RwsArmRequest,
     RwsGripperRequest,
+    RwsMotionRequest,
     RwsMoveRequest,
 )
 from gateway.robot.service import COMMAND_STATES
@@ -22,6 +22,7 @@ from gateway.rws.client import RwsError
 from gateway.rws.errors import to_http_exception
 from gateway.rws.motion import (
     MotionConflict,
+    MotionSpeed,
     MotionTimeout,
     rws_motion,
 )
@@ -64,6 +65,32 @@ async def call(
         ) from error
 
     return response
+
+
+def motion_speed(
+    request: RwsMotionRequest,
+) -> MotionSpeed:
+    """The request's speed; what it leaves out is the default."""
+
+    default = rws_motion.default_speed
+
+    return MotionSpeed(
+        speed=(
+            default.speed
+            if request.speed is None
+            else request.speed
+        ),
+        acceleration=(
+            default.acceleration
+            if request.acceleration is None
+            else request.acceleration
+        ),
+        ramp=(
+            default.ramp
+            if request.ramp is None
+            else request.ramp
+        ),
+    )
 
 
 async def run(
@@ -110,7 +137,10 @@ async def run(
         "reach (ERR move failed) gives accepted=false. 409 if RAPID "
         "is not running or the arm is busy, 504 on timeout. With "
         "wait=false it answers STARTED once the job is written; poll "
-        "GET /robot/rws/status."
+        "GET /robot/rws/status. speed is the TCP speed in mm/s "
+        "(default 50, RAPID v50), acceleration and ramp are RAPID "
+        "AccSet's in % (default 100); they also apply to later "
+        "legacy /robot/command moves of that arm."
     ),
 )
 async def move(
@@ -132,6 +162,7 @@ async def move(
         (request.x, request.y, request.z),
         rotation,
         request.wait,
+        motion_speed(request),
     )
 
 
@@ -141,7 +172,8 @@ async def move(
     summary="Move an arm to its home position over Robot Web Services",
     description=(
         "Body optional; arm is left (default) or right. ERR move "
-        "failed if the arm stopped before reaching home (blocked)."
+        "failed if the arm stopped before reaching home (blocked). "
+        "speed, acceleration and ramp as for /move."
     ),
 )
 async def home(
@@ -149,14 +181,15 @@ async def home(
         Identity,
         Depends(require_control("robot.control")),
     ],
-    request: RwsArmRequest | None = None,
+    request: RwsMotionRequest | None = None,
 ) -> CommandResponse:
-    request = request or RwsArmRequest()
+    request = request or RwsMotionRequest()
 
     return await run(
         rws_motion.home,
         request.arm,
         request.wait,
+        motion_speed(request),
     )
 
 
