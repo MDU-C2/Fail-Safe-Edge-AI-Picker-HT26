@@ -589,7 +589,7 @@ class Picker:
 def main():
     parser = argparse.ArgumentParser(description="Capture, detect cups and hand one over between the arms")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
-    parser.add_argument("--gateway", default="http://192.168.125.201:8000", help="Gateway address")
+    parser.add_argument("--gateway", default="http://169.254.125.202:8000", help="Gateway address")
     parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold")
     parser.add_argument("--left-only", action="store_true",
                         help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
