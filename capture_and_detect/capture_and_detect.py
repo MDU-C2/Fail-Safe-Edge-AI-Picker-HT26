@@ -99,10 +99,10 @@ Y_MIN, Y_MAX = -230, 420
 # must stay within the gateway's z <= 600), the right goes down again, turns the cup over
 # above R_PLACE and puts it down there.
 LEFT_READY = (400, 100, 450)
-HANDOVER_L = (400, -100, 569)
-LEFT_LIFT = 30
+HANDOVER_L = (400, -100, 549)
+LEFT_LIFT = 50
 R_VIA = (200, -250, 200)
-R_TAKE = (400, -135, 321)
+R_TAKE = (400, -135, 230)
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
 R_PLACE = (420, -200, 167)
