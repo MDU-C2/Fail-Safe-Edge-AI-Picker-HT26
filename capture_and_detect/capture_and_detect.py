@@ -69,13 +69,14 @@ from ultralytics import YOLO
 HERE = Path(__file__).resolve().parent
 CALIBRATION_FILE = HERE.parent / "Calibration/calibration.json"
 KEEP_CLASSES = ["CUP", "CUP BASE", "CUP HANDLE"]
+CUP_Z_MIN, CUP_Z_MAX = 10, 150   # robot Z (mm) of a CUP BASE on a cup standing on the table
 
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px"]
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 50                 # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 1200               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 
@@ -100,12 +101,12 @@ Y_MIN, Y_MAX = -230, 420
 # above R_PLACE and puts it down there.
 LEFT_READY = (400, 100, 450)
 HANDOVER_L = (400, -100, 549)
-LEFT_LIFT = 50
+LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
 R_VIA = (200, -250, 200)
-R_TAKE = (400, -135, 230)
+R_TAKE = (380, -115, 210)
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
-R_PLACE = (420, -200, 167)
+R_PLACE = (420, -200, 230)
 R_PLACE_ABOVE = (R_PLACE[0], R_PLACE[1], R_PLACE[2] + 80)   # the cup is turned over here
 
 
@@ -271,7 +272,9 @@ class Handover:
         self.at_handover = threading.Event()       # left holds the cup at HANDOVER_L
         self.right_has_cup = threading.Event()     # right closed on the rim
         self.left_clear = threading.Event()        # left let go and moved up
-        self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup, self.left_clear)
+        self.right_away = threading.Event()        # right took the cup away from the hand-over
+        self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup,
+                       self.left_clear, self.right_away)
 
     def run(self, cup, left_only=False):
         """True if the cup was placed. Ctrl+C stops both arms after their current job.
@@ -319,8 +322,9 @@ class Handover:
         self.at_handover.set()                     # -> right: come and take it
         self._wait_for(self.right_has_cup)
         arm.gripper("open")
-        arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)
+        arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
         self.left_clear.set()                      # -> right: you can pull it down
+        self._wait_for(self.right_away)            # the way home could cross the right arm
         arm.home()                                 # out of the camera view for the next capture
 
     def _right_job(self):
@@ -337,6 +341,7 @@ class Handover:
         self._wait_for(self.left_clear)
         arm.move(R_BELOW, RIGHT_UP)
         arm.move(R_PLACE_ABOVE, RIGHT_DOWN)        # turn over: cup now upright
+        self.right_away.set()                      # -> left: you can go home
         arm.move(R_PLACE, RIGHT_DOWN)
         arm.gripper("open")
         arm.move(R_PLACE_ABOVE, RIGHT_DOWN)
@@ -448,24 +453,36 @@ def mm(value):
 
 
 def mark_cup_bases(objects, boxes):
-    """Set "in_cup" on every CUP BASE: whether its centre lies inside a detected CUP."""
+    """Set "is_cup" on every CUP BASE. It is a cup if one of these is true (the robot's joint
+    was once detected as CUP BASE, with no CUP around it and high above the table):
+        in_cup       its centre lies inside a detected CUP
+        near_handle  a CUP HANDLE is next to it (within half a base size)
+        cup_height   its robot Z is that of a cup on the table (CUP_Z_MIN..CUP_Z_MAX); straight
+                     from above, an upside-down mug often gives only a CUP BASE and no CUP"""
     cup_boxes = [b for o, b in zip(objects, boxes) if o["class"] == "CUP"]
-    for o in objects:
-        if o["class"] == "CUP BASE":
-            o["in_cup"] = any(x1 <= o["x_px"] <= x2 and y1 <= o["y_px"] <= y2
-                              for x1, y1, x2, y2 in cup_boxes)
+    handle_boxes = [b for o, b in zip(objects, boxes) if o["class"] == "CUP HANDLE"]
+    for o, (bx1, by1, bx2, by2) in zip(objects, boxes):
+        if o["class"] != "CUP BASE":
+            continue
+        o["in_cup"] = any(x1 <= o["x_px"] <= x2 and y1 <= o["y_px"] <= y2
+                          for x1, y1, x2, y2 in cup_boxes)
+        mx, my = (bx2 - bx1) / 2, (by2 - by1) / 2
+        o["near_handle"] = any(x1 <= bx2 + mx and x2 >= bx1 - mx and y1 <= by2 + my and y2 >= by1 - my
+                               for x1, y1, x2, y2 in handle_boxes)
+        o["cup_height"] = o["robot_z_mm"] is not None and CUP_Z_MIN <= o["robot_z_mm"] <= CUP_Z_MAX
+        o["is_cup"] = o["in_cup"] or o["near_handle"] or o["cup_height"]
 
 
 def find_cups(objects):
-    """Every CUP BASE inside a detected CUP = one cup, most certain first.
+    """Every CUP BASE that is a cup (see mark_cup_bases) = one cup, most certain first.
     Cups outside X_MIN..X_MAX, Y_MIN..Y_MAX get status "out of reach"."""
     cups = []
     for o in sorted(objects, key=lambda o: o["confidence"], reverse=True):
         if o["class"] != "CUP BASE" or o["robot_x_mm"] is None:
             continue
-        if not o["in_cup"]:
-            log(f"  CUP BASE at X={o['robot_x_mm']} Y={o['robot_y_mm']} has no CUP around it - "
-                f"ignored (false detection?)")
+        if not o["is_cup"]:
+            log(f"  CUP BASE at X={o['robot_x_mm']} Y={o['robot_y_mm']} Z={o['robot_z_mm']}: no CUP "
+                f"around it, no handle next to it, not at cup height - ignored (false detection?)")
             continue
         x, y = o["robot_x_mm"], o["robot_y_mm"]
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
