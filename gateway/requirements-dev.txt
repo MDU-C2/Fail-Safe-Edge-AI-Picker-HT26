@@ -1,0 +1,11 @@
+# Test suite and client scripts. Not installed in the Docker image.
+-r requirements.txt
+
+# gateway/tests
+pytest
+websockets
+
+# gateway/scripts
+numpy
+opencv-python
+pillow

@@ -33,8 +33,19 @@ uvicorn gateway.main:app --host 127.0.0.1 --port 8000 --reload
 Open:
 
 - API docs: http://127.0.0.1:8000/docs
-- Health: http://127.0.0.1:8000/api/v1/health
+- Health: http://127.0.0.1:8000/api/v1/health (`ok` / `degraded`, with camera and robot controller details)
 - Robot status: http://127.0.0.1:8000/api/v1/robot/status
+- Arm poses: http://127.0.0.1:8000/api/v1/robot/arms
+- RAPID status: http://127.0.0.1:8000/api/v1/robot/rapid
+
+The arm, RAPID and RWS move endpoints talk to the controller over Robot Web Services at `GATEWAY_ROBOT_HOST:GATEWAY_RWS_PORT` (default the real YuMi, `192.168.125.1:80`); the legacy `/robot/command` uses the same host with `GATEWAY_ROBOT_PORT`. To use the RobotStudio virtual controller instead, start the gateway with `GATEWAY_ROBOT_HOST=127.0.0.1` (and `GATEWAY_ROBOT_PORT=5000` for the legacy socket server).
+
+There are two ways to move the robot:
+
+- `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees, optional `"arm": "left"|"right"`, optional `"speed"` mm/s (default 50) and `"acceleration"`/`"ramp"` % (default 100)), `POST /api/v1/robot/rws/home` (optional `{"arm"}`, same speed fields) and `POST /api/v1/robot/rws/gripper` (`{"action": "grip"|"open"}`, optional `arm`) write the job into the RAPID program in `rapid/` (its arm modules) over RWS and wait for it; with `"wait": false` they answer `STARTED` at once and `GET /api/v1/robot/rws/status?arm=left|right` reports `BUSY` / `DONE` / `ERR move failed`, like the team's CommServer. Targets outside `GATEWAY_RWS_SAFE_ZONE_MIN/MAX` are refused by the gateway. Load and start the program with `python rapid/rapidctl.py upload` (defaults to the real YuMi, which must be in AUTO; it backs up the modules it replaces; `--host 127.0.0.1 upload --gripper-stub` for RobotStudio). No socket server is involved.
+- `POST /api/v1/robot/command` (deprecated but still working; legacy, `GATEWAY_ROBOT_PROVIDER=tcp`) sends the command text to a RAPID socket server on `GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT`.
+
+Both need `robot.control` and the control lease. `python gateway/scripts/basic_client.py` shows the RWS route from a client: it loads and starts the program through the gateway and runs a short demo path.
 
 Example mock command:
 
@@ -42,7 +53,18 @@ Example mock command:
 curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: application/json' -d 'WAYEND,515.0,200.0,250.0'
 ```
 
-The robot service is a mock and does not contact physical hardware. The next implementation phase is control ownership, priority, lease renewal/expiration, and event notification.
+With `GATEWAY_ROBOT_PROVIDER=mock` the robot service does not contact physical hardware.
+
+## Tests
+
+```bash
+pip install -r gateway/requirements-dev.txt
+python -m pytest                  # mocks only, no hardware needed
+python -m pytest --robotstudio    # also the RobotStudio virtual controller on 127.0.0.1
+python -m pytest --oak            # also the real OAK camera
+```
+
+The tests start their own gateways on free ports, so nothing needs to be running first. Client tools (image capture, event watcher, client template, token generator) are in `gateway/scripts/`.
 
 ## Run in Docker
 
@@ -125,11 +147,11 @@ In the lab the gateway runs in Docker on the Raspberry Pi 5 on the switch. The P
 
 | Device | Address |
 |---|---|
-| Raspberry Pi (gateway) | `169.254.125.202` (fixed) and `192.168.125.202` (assigned automatically, can change) |
+| Raspberry Pi (gateway) | `169.254.125.202` (fixed) and `192.168.125.201` (assigned automatically, can change) |
 | OAK camera | `169.254.1.223` |
 | YuMi robot | `192.168.125.1`, port `5001` |
 
-Clients reach the gateway at `http://169.254.125.202:8000` or `http://192.168.125.202:8000`, depending on which network they are on.
+Clients reach the gateway at `http://169.254.125.202:8000` or `http://192.168.125.201:8000`, depending on which network they are on.
 
 Log in to the Pi as `kasun`; ask the team for the password.
 
@@ -156,13 +178,13 @@ docker run --privileged --rm tonistiigi/binfmt --install arm64
 From PowerShell or WSL, at the repository root:
 
 ```bash
-scp gateway/docker/images/robot-gateway-pi-arm64.tar.gz kasun@192.168.125.202:~/
+scp gateway/docker/images/robot-gateway-pi-arm64.tar.gz kasun@192.168.125.201:~/
 ```
 
 ### 3. Load and start it (on the Pi)
 
 ```bash
-ssh kasun@192.168.125.202
+ssh kasun@192.168.125.201
 
 sudo docker load -i ~/robot-gateway-pi-arm64.tar.gz
 sudo docker rm -f robot-gateway

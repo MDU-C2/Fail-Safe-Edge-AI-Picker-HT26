@@ -19,6 +19,12 @@ class CameraStatus(BaseModel):
     depth_height: int | None = None
     depth_format: str | None = None
 
+    #
+    # Why the camera is disconnected, while it is; cleared when it
+    # connects again.
+    #
+    error: str | None = None
+
 
 class CameraIntrinsics(BaseModel):
     width: int

@@ -1,3 +1,5 @@
+import json
+
 from fastapi import (
     APIRouter,
     WebSocket,
@@ -52,7 +54,28 @@ async def events(
 
     try:
         while True:
-            message = await websocket.receive_json()
+            #
+            # A bad message gets an error reply; it must not end
+            # the handler, or the connection would stay registered.
+            #
+            try:
+                message = json.loads(
+                    await websocket.receive_text()
+                )
+
+            except json.JSONDecodeError:
+                await send_error(
+                    websocket,
+                    "Message must be JSON",
+                )
+                continue
+
+            if not isinstance(message, dict):
+                await send_error(
+                    websocket,
+                    "Message must be a JSON object",
+                )
+                continue
 
             action = message.get("action")
             requested_events = message.get(
@@ -172,4 +195,21 @@ async def events(
                 )
 
     except WebSocketDisconnect:
+        pass
+
+    finally:
         event_manager.disconnect(websocket)
+
+
+async def send_error(
+    websocket: WebSocket,
+    message: str,
+) -> None:
+    await websocket.send_json(
+        {
+            "type": "error",
+            "data": {
+                "message": message,
+            },
+        }
+    )

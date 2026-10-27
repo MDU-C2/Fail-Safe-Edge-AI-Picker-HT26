@@ -49,11 +49,32 @@ class MockRobotService:
         )
 
 
+#
+# Replies of the team's CommServer (rapid/CommServer.mod), one
+# message per connection:
+#
+#   "x,y,z[,rx,ry,rz]", "HOME", "GRIP", "OPEN"  ->  STARTED
+#   "STATUS"                                    ->  BUSY / DONE / ERR move failed
+#   anything refused                            ->  ERR <reason>
+#
+# An "R," prefix addresses the right arm. Jobs answer at once, so
+# the client polls STATUS until it is no longer BUSY. Older servers
+# answered DONE when the move was finished instead.
+#
+COMMAND_STATES = {
+    "STARTED": "command_started",
+    "BUSY": "busy",
+    "DONE": "command_completed",
+}
+
+
 class RobotService:
     """Temporary TCP interface to the real robot.
 
     Sends the command text received by the gateway directly to the
-    robot TCP server and waits for a text response.
+    robot TCP server and returns its text response unchanged; the
+    reply decides accepted (anything but ERR ...) and the state of
+    the robot.status event.
     """
 
     def __init__(
@@ -74,7 +95,7 @@ class RobotService:
         self,
         command: RobotCommand,
     ) -> CommandResponse:
-        response = await asyncio.to_thread(
+        response, connected = await asyncio.to_thread(
             self._send_command,
             command.command,
         )
@@ -82,11 +103,10 @@ class RobotService:
         await event_manager.publish(
             "robot.status",
             {
-                "connected": response.accepted,
-                "state": (
-                    "command_completed"
-                    if response.accepted
-                    else "command_failed"
+                "connected": connected,
+                "state": COMMAND_STATES.get(
+                    response.message,
+                    "command_failed",
                 ),
             },
         )
@@ -96,7 +116,9 @@ class RobotService:
     def _send_command(
         self,
         command: str,
-    ) -> CommandResponse:
+    ) -> tuple[CommandResponse, bool]:
+        """The robot's reply, and whether the server answered at all."""
+
         try:
             with socket.create_connection(
                 (self._host, self._port),
@@ -115,14 +137,20 @@ class RobotService:
                 )
 
         except OSError as error:
-            return CommandResponse(
-                accepted=False,
-                message=f"Robot connection error: {error}",
+            return (
+                CommandResponse(
+                    accepted=False,
+                    message=f"Robot connection error: {error}",
+                ),
+                False,
             )
 
-        return CommandResponse(
-            accepted=response == "DONE",
-            message=response,
+        return (
+            CommandResponse(
+                accepted=response in COMMAND_STATES,
+                message=response,
+            ),
+            True,
         )
 
 

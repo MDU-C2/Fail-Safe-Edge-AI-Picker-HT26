@@ -1,8 +1,29 @@
+"""
+Send targets straight to the team's RAPID socket server
+(rapid/CommServer.mod), bypassing the gateway.
+
+The gateway drives the arms over RWS instead; the team program in
+rapid/ still runs CommServer in the communication task of the real
+YuMi. A job answers STARTED, then STATUS is polled
+until it is no longer BUSY; --right sends to the right arm ("R,").
+
+Defaults to localhost:5001, the RobotStudio virtual controller.
+Pointing --host at the real controller (192.168.125.1) moves the
+real robot.
+
+Usage (from the repository root):
+    python gateway/scripts/legacy_socket_client.py --home
+    python gateway/scripts/legacy_socket_client.py --x 325 --y 200 --z 300 --rx 90 --ry 0 --rz 90
+    python gateway/scripts/legacy_socket_client.py --right --x 420 --y -150 --z 300
+    python gateway/scripts/legacy_socket_client.py --poses
+"""
+
 import socket
 import argparse
+import time
 
-DEFAULT_HOST = "192.168.125.1"   # YuMi controller IP
-DEFAULT_PORT = 5000              # must match the RAPID Socket server port
+DEFAULT_HOST = "localhost"   # YuMi controller IP
+DEFAULT_PORT = 5001              # must match the RAPID Socket server port
 
 # Tilt used for every pose that has no own rotation: (rx, ry, rz) in degrees.
 CALIB_ROT = (90, 0, 90)
@@ -24,12 +45,24 @@ POSES = [
 ]
 
 
-def send(host: str, port: int, payload: str) -> str:
+PREFIX = ""                  # "R," with --right
+
+
+def exchange(host: str, port: int, payload: str) -> str:
+    """One message per connection, as CommServer expects."""
     with socket.create_connection((host, port), timeout=5) as sock:
         sock.settimeout(60)
         sock.sendall(payload.encode())
-        response = sock.recv(1024).decode().strip()
-    print(f"Sent: {payload}  →  Response: {response}")
+        return sock.recv(1024).decode().strip()
+
+
+def send(host: str, port: int, payload: str) -> str:
+    """Start a job and wait for it; returns DONE or the error."""
+    response = exchange(host, port, PREFIX + payload)
+    if response == "STARTED":
+        while (response := exchange(host, port, PREFIX + "STATUS")) == "BUSY":
+            time.sleep(0.1)
+    print(f"Sent: {PREFIX}{payload}  →  Response: {response}")
     return response
 
 
@@ -50,7 +83,11 @@ if __name__ == "__main__":
     parser.add_argument("--rz", type=float, help="Rotation about Z in degrees")
     parser.add_argument("--poses", action="store_true", help="Go to calibration position, then run POSES")
     parser.add_argument("--home", action="store_true", help="Go to the YuMi calibration position")
+    parser.add_argument("--right", action="store_true", help="Send to the right arm instead of the left")
     args = parser.parse_args()
+
+    if args.right:
+        PREFIX = "R,"
 
     if args.poses:
         if send(args.host, args.port, "HOME") != "DONE":

@@ -45,6 +45,7 @@ class CameraService:
 
     def __init__(self) -> None:
         self._connected = False
+        self._error: str | None = None
 
         self._sequence = 0
         self._latest: CameraFrameSet | None = None
@@ -59,6 +60,7 @@ class CameraService:
 
             return CameraStatus(
                 connected=self._connected,
+                error=self._error,
 
                 rgb_available=(
                     latest is not None
@@ -125,6 +127,10 @@ class CameraService:
                 ),
             )
 
+    def is_connected(self) -> bool:
+        with self._lock:
+            return self._connected
+
     def get_latest_frame_set(
         self,
     ) -> CameraFrameSet | None:
@@ -167,12 +173,19 @@ class CameraService:
     async def set_connected(
         self,
         connected: bool,
+        error: str | None = None,
     ) -> None:
+        """Set the connection state; error says why it is down."""
+
+        if connected:
+            error = None
+
         changed = False
 
         with self._lock:
-            if self._connected != connected:
+            if (self._connected, self._error) != (connected, error):
                 self._connected = connected
+                self._error = error
                 changed = True
 
         if changed:
@@ -239,6 +252,7 @@ class CameraService:
 
             self._latest = frame_set
             self._connected = True
+            self._error = None
 
         return frame_set
 
