@@ -2,6 +2,9 @@ MODULE RightArm
 
   VAR robtarget pTarget;
   VAR jointtarget jTarget;                     ! CHANGED: joint angles found by Reachable
+  ! The cup the right arm holds: mass kg, centre of gravity mm from the flange (guess: mug ~0.35 kg,
+  ! ~120 mm out). Without it the robot sees the heavy cup as a collision when turning it over.
+  PERS loaddata cup_load := [0.35, [0, 0, 120], [1, 0, 0, 0], 0, 0, 0];
 
   PROC main()
     ! Clear requests left over from an earlier run (PERS keeps its values)
@@ -25,10 +28,12 @@ MODULE RightArm
         move_ok_right := AtHome();
       ELSEIF grip_cmd_right = "GRIP" THEN
         g_GripIn;
+        GripLoad cup_load;                     ! holding a cup now
         grip_cmd_right := "";
         move_ok_right := TRUE;
       ELSEIF grip_cmd_right = "OPEN" THEN
         g_GripOut;
+        GripLoad load0;                        ! no cup any more
         grip_cmd_right := "";
         move_ok_right := TRUE;
       ELSE

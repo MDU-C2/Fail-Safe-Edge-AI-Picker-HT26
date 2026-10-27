@@ -14,7 +14,8 @@ Every time you press Enter:
            detections_<stamp>.json and latest.json   all objects of this capture
            detections.csv                            one row per object, all captures
            cups_<stamp>.json and cups.json           the cups and what happened to them
-    5. the most certain reachable cup is moved (the hand-over of rapid/tests/handover.py):
+    5. every reachable cup is moved, most certain first, each to the next free spot in
+       placing_grid.json; it stops at the first failure (the hand-over of rapid/tests/handover.py):
            left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
            right: open ... wait, beside the hand-over ... wait, slide in under the cup, up, grip
                   ... wait, down, turn over, place, open, up, home
@@ -79,10 +80,13 @@ JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
 SPEED = 1200               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
+FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
+FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
 RIGHT_DOWN = (180, 0, 0)   # right gripper straight down (as in handover.py)
 RIGHT_UP = (0, 0, 0)       # right gripper pointing up
+RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the cup over
 
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
@@ -98,7 +102,7 @@ Y_MIN, Y_MAX = -230, 420
 # waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
 # R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
 # must stay within the gateway's z <= 600), the right goes down again, turns the cup over
-# above R_PLACE and puts it down there.
+# PLACE_ABOVE mm above the first free spot in placing_grid.json and puts it down there.
 LEFT_READY = (400, 100, 450)
 HANDOVER_L = (400, -100, 549)
 LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
@@ -106,8 +110,8 @@ R_VIA = (200, -250, 200)
 R_TAKE = (380, -115, 210)
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
-R_PLACE = (420, -200, 230)
-R_PLACE_ABOVE = (R_PLACE[0], R_PLACE[1], R_PLACE[2] + 80)   # the cup is turned over here
+PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
+PLACE_ABOVE = 80                             # mm above the place spot: the cup is turned over here
 
 
 def log(*parts):
@@ -243,11 +247,11 @@ class Arm:
         if not self.gateway.robot_job(self.name, path, body):
             raise RobotError(f"{self.name} {path} failed")
 
-    def move(self, flange, rotation):
+    def move(self, flange, rotation, speed=SPEED, acceleration=ACCELERATION):
         """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees."""
         (x, y, z), (rx, ry, rz) = flange, rotation
         self.job("move", {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz,
-                          "speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
+                          "speed": speed, "acceleration": acceleration, "ramp": RAMP})
 
     def goto(self, x, y, z):
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
@@ -276,13 +280,14 @@ class Handover:
         self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup,
                        self.left_clear, self.right_away)
 
-    def run(self, cup, left_only=False):
+    def run(self, cup, left_only=False, place=None):
         """True if the cup was placed. Ctrl+C stops both arms after their current job.
-        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over."""
+        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over.
+        place: the place spot from placing_grid.json (needed for the hand-over)."""
         for event in self.events:
             event.clear()
         jobs = [(self._pick_only_job, (cup,))] if left_only else \
-               [(self._left_job, (cup,)), (self._right_job, ())]
+               [(self._left_job, (cup,)), (self._right_job, (place,))]
         arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
                 for job, args in jobs]
         for arm in arms:
@@ -327,8 +332,10 @@ class Handover:
         self._wait_for(self.right_away)            # the way home could cross the right arm
         arm.home()                                 # out of the camera view for the next capture
 
-    def _right_job(self):
+    def _right_job(self, place):
         arm = self.right
+        spot = (place["x"], place["y"], place["z"])
+        above = (place["x"], place["y"], place["z"] + PLACE_ABOVE)
         arm.gripper("open")
         self._wait_for(self.left_has_cup)          # stay home, out of the picking area
         arm.move(R_VIA, RIGHT_UP)
@@ -340,11 +347,14 @@ class Handover:
         self.right_has_cup.set()                   # -> left: let go
         self._wait_for(self.left_clear)
         arm.move(R_BELOW, RIGHT_UP)
-        arm.move(R_PLACE_ABOVE, RIGHT_DOWN)        # turn over: cup now upright
+        # turn the cup over slowly and in two steps (the cup is heavy for the right arm)
+        half = tuple((a + b) / 2 for a, b in zip(R_BELOW, above))
+        arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
+        arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
         self.right_away.set()                      # -> left: you can go home
-        arm.move(R_PLACE, RIGHT_DOWN)
+        arm.move(spot, RIGHT_DOWN)
         arm.gripper("open")
-        arm.move(R_PLACE_ABOVE, RIGHT_DOWN)
+        arm.move(above, RIGHT_DOWN)
         arm.home()                                 # out of the picking area for the next cup
 
     def _wait_for(self, event):
@@ -549,7 +559,7 @@ class CaptureStore:
 # ================================================================
 
 class Picker:
-    """Capture, detect, save, then move the most certain reachable cup - once per Enter."""
+    """Capture, detect, save, then move all reachable cups one by one - once per Enter."""
 
     def __init__(self, gateway, detector, handover, store, left_only=False):
         self.gateway, self.detector, self.handover, self.store = gateway, detector, handover, store
@@ -580,27 +590,54 @@ class Picker:
         cups = find_cups(objects)
         self.store.save_cups(cups, stamp)
         log(f"{len(cups)} cup(s) saved to cups.json")
-        self.move_one(cups, stamp)
+        while self.move_one(cups, stamp):          # all cups of this capture, most certain first
+            pass
+        out_of_reach = sum(c["status"] == "out of reach" for c in cups)
+        if out_of_reach:
+            log(f"  {out_of_reach} cup(s) not moved: out of reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
 
     def move_one(self, cups, stamp):
-        """Hand over the first cup that is still "waiting" (the most certain reachable one)."""
+        """Hand over the first cup that is still "waiting" (the most certain reachable one).
+        True if it was placed, False if there was none left or it failed (then stop)."""
         cup = next((c for c in cups if c["status"] == "waiting"), None)
         if cup is None:
-            if cups:
-                log("  no cup within reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
-            return
-        what = "left arm only" if self.left_only else "hand-over"
+            return False
+        places, place = None, None
+        if not self.left_only:
+            places = load_places()
+            place = next((p for p in places["locations"] if not p["occupied"]), None)
+            if place is None:
+                log(f"  all place locations are occupied - empty them and set occupied to false in {PLACE_FILE.name}")
+                return False
+        what = "left arm only" if self.left_only else f"hand-over, place at location {place['id']}"
         log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} -> {what}")
         cup["status"] = "moving"
         self.store.save_cups(cups, stamp)
         placed = False
         try:
             with self.gateway.control():           # keep robot control for the whole sequence
-                placed = self.handover.run(cup, self.left_only)
+                placed = self.handover.run(cup, self.left_only, place)
         finally:
             cup["status"] = "placed" if placed else "failed"
             self.store.save_cups(cups, stamp)
+        if placed and place is not None:
+            place["occupied"] = True               # the next cup goes to the next free location
+            save_places(places)
+            log(f"  location {place['id']} is now occupied")
         log(f"  cup {cup['id']}: {cup['status']}")
+        return placed
+
+
+def load_places():
+    with open(PLACE_FILE) as f:
+        return json.load(f)
+
+
+def save_places(places):
+    """Same layout as the file: one location per line."""
+    lines = ",\n".join("    " + json.dumps(p) for p in places["locations"])
+    with open(PLACE_FILE, "w") as f:
+        f.write(f'{{\n  "locations": [\n{lines}\n  ]\n}}\n')
 
 
 def main():
