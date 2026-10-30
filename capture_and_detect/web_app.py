@@ -13,6 +13,7 @@ import time
 import uuid
 
 from web_controller import WebController, WebError
+from handover_plan import DEFAULT_SPEED
 
 HERE = Path(__file__).resolve().parent
 
@@ -20,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 def create_app(controller, *, port=8080, image_root=None):
     # Optional web dependencies are never needed by the original terminal app.
     from fastapi import FastAPI, Request
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, Response
 
     root = Path(image_root).resolve() if image_root is not None else None
     hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
@@ -70,6 +71,21 @@ def create_app(controller, *, port=8080, image_root=None):
     @app.get("/api/state")
     def state():
         return controller.state()
+
+    @app.get("/api/status")
+    def operator_status():
+        return controller.status()
+
+    @app.get("/api/help")
+    def operator_help():
+        return controller.help()
+
+    @app.get("/api/saved-image/{cup_id}")
+    def saved_image(cup_id: str):
+        data = controller.saved_image(cup_id)
+        if data is None:
+            return JSONResponse({"detail": "Saved cup image unavailable."}, status_code=404)
+        return Response(content=data, media_type="image/jpeg")
 
     @app.get("/api/image/{capture_id}")
     def image(capture_id: str):
@@ -141,17 +157,25 @@ class DemoLanguage:
         return {"action": action, "selector": selector, "cup_id": cup_id, "message": message}
 
 
-def demo_factory(directory):
+def demo_factory(directory, *, speed=DEFAULT_SPEED):
     """Use real selection/planning checks and a dry-run robot with synthetic cups."""
     def factory(controller):
         from cup_commands import CupSession
-        from cup_inventory import build_inventory
+        from cup_inventory import atomic_json, build_inventory
         from language_commands import LanguageController
+        from placing_grid import PlacingGrid
         from robot_client import RobotClient
 
         directory.mkdir(parents=True, exist_ok=True)
         image_path = directory / "demo-table.svg"
         image_path.write_text(DEMO_IMAGE, encoding="utf-8")
+        # This synthetic grid belongs to the demo's temporary directory. Never
+        # load, reset, reserve or mark the project's real placement file here.
+        grid_path = directory / "demo-placing-grid.json"
+        atomic_json(grid_path, {"locations": [
+            {"id": index + 1, "x": 400 + (index % 4) * 80,
+             "y": -200 - (index // 4) * 80, "z": 230, "occupied": index < 9}
+            for index in range(12)]})
         sequence = 0
         def capture(purpose):
             nonlocal sequence
@@ -173,7 +197,8 @@ def demo_factory(directory):
             return result, time.monotonic()
         session = CupSession(capture, lambda inventory: controller.publish_session(),
                              RobotClient("http://127.0.0.1:1", {}, dry_run=True),
-                             "demo-calibration", tag_offset=(-115, 0, 40))
+                             "demo-calibration", tag_offset=(-115, 0, 40), speed=speed,
+                             placing_grid=PlacingGrid(grid_path))
         language = LanguageController(session, DemoLanguage(), audit_dir=directory / "language")
         return session, language
     return factory
@@ -188,6 +213,9 @@ def hardware_factory(args):
         from cup_commands import CupSession
         from language_commands import LanguageController
         from local_llm import OllamaIntentClient
+        from cup_visual_matcher import OllamaCupMatcher
+        from named_cups import NamedCupStore
+        from placing_grid import PlacingGrid
         from recovery_journal import RecoveryJournal
         from robot_client import RobotClient
 
@@ -200,7 +228,9 @@ def hardware_factory(args):
         controller.event("Reading camera configuration from the Pi…")
         detector = Detector(model, calibration, camera.intrinsics(), args.conf)
         store = CaptureStore(args.output)
-        captures = CaptureService(camera, detector, store, weights)
+        grid = PlacingGrid(args.placing_grid)
+        captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
+                                  grid_table_z=args.grid_table_z, grid_cell_size=args.grid_cell_size)
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
         def capture(purpose):
             controller.event("Capturing and detecting cups…" if purpose == "scan" else "Rechecking the selected cup with a fresh camera observation…")
@@ -211,9 +241,12 @@ def hardware_factory(args):
         session = CupSession(capture, save, RobotClient(api, headers, dry_run=not args.live),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                     recovery=recovery)
+                     recovery=recovery, placing_grid=grid)
         interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url) if args.llm else NoLanguage()
-        return session, LanguageController(session, interpreter, audit_dir=store.folder / "language")
+        library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
+        matcher = OllamaCupMatcher(model=args.llm_model, url=args.ollama_url) if args.llm else None
+        return session, LanguageController(session, interpreter, audit_dir=store.folder / "language",
+                                           named_cups=library, cup_matcher=matcher)
     return factory
 
 
@@ -248,13 +281,18 @@ def main(argv=None):
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--live", action="store_true", help="Enable physical robot execution after explicit confirmation")
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")
-    parser.add_argument("--llm", action="store_true", help="Enable typed natural language through local Ollama")
-    parser.add_argument("--llm-model", default="qwen3:4b")
+    parser.add_argument("--llm", action="store_true", help="Enable local Ollama commands and saved-cup visual matching")
+    parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration.json"))
+    parser.add_argument("--placing-grid", default=str(HERE / "placing_grid.json"),
+                        help="Placement JSON shared with the original program; occupancy is preserved")
+    parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table in mm (default 0)")
+    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Placement cell width in mm (default 80; 20..200)")
     parser.add_argument("--conf", type=float, default=0.5)
-    parser.add_argument("--speed", type=float, default=50)
+    parser.add_argument("--speed", type=float, default=DEFAULT_SPEED,
+                        help="Normal robot speed in mm/s (default 1200); cup flips are capped at 100")
     parser.add_argument("--max-result-age", type=float, default=15)
     parser.add_argument("--match-mm", type=float, default=20)
     parser.add_argument("--match-px", type=float, default=40)
@@ -270,6 +308,8 @@ def main(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
     if args.conf > 1 or not 1 <= args.speed <= 1500:
         parser.error("Confidence must be at most 1; speed must be between 1 and 1500 mm/s")
+    if not math.isfinite(args.grid_table_z) or not math.isfinite(args.grid_cell_size) or not 20 <= args.grid_cell_size <= 200:
+        parser.error("--grid-table-z must be finite; --grid-cell-size must be 20..200 mm")
     try:
         import uvicorn
         import fastapi
@@ -279,7 +319,7 @@ def main(argv=None):
     temporary = tempfile.TemporaryDirectory(prefix="cup-dashboard-") if mode == "demo" else None
     directory = Path(temporary.name if temporary else args.output).resolve()
     try:
-        factory = demo_factory(directory) if mode == "demo" else hardware_factory(args)
+        factory = demo_factory(directory, speed=args.speed) if mode == "demo" else hardware_factory(args)
         controller = WebController(factory, mode=mode, model="Scripted demo" if mode == "demo" else args.llm_model,
                                    llm_enabled=mode == "demo" or args.llm)
         app = create_app(controller, port=args.port, image_root=directory)

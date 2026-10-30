@@ -45,6 +45,22 @@ There are two ways to move the robot:
 - `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees, optional `"arm": "left"|"right"`, optional `"speed"` mm/s (default 50) and `"acceleration"`/`"ramp"` % (default 100)), `POST /api/v1/robot/rws/home` (optional `{"arm"}`, same speed fields) and `POST /api/v1/robot/rws/gripper` (`{"action": "grip"|"open"}`, optional `arm`) write the job into the RAPID program in `rapid/` (its arm modules) over RWS and wait for it; with `"wait": false` they answer `STARTED` at once and `GET /api/v1/robot/rws/status?arm=left|right` reports `BUSY` / `DONE` / `ERR move failed`, like the team's CommServer. Targets outside `GATEWAY_RWS_SAFE_ZONE_MIN/MAX` are refused by the gateway. Load and start the program with `python rapid/rapidctl.py upload` (defaults to the real YuMi, which must be in AUTO; it backs up the modules it replaces; `--host 127.0.0.1 upload --gripper-stub` for RobotStudio). No socket server is involved.
 - `POST /api/v1/robot/command` (deprecated but still working; legacy, `GATEWAY_ROBOT_PROVIDER=tcp`) sends the command text to a RAPID socket server on `GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT`.
 
+The custom web app's **Robot controls** panel also uses these administration routes:
+
+| Route | Effect |
+|---|---|
+| `GET /api/v1/robot/rapid/collision` | Read collision acknowledgement state; requires `robot.read`. |
+| `POST /api/v1/robot/rapid/collision/ack` | Request collision acknowledgement with RAPID stopped; requires `robot.control` and the active lease. No motor enable, start or home. ABB can reject remote clients without Local Client privileges. |
+| `POST /api/v1/robot/rapid/reset` | With `start: false` (default), stop RAPID, clear/read back pending arm requests, reset PP to main and leave stopped. Requires `robot.control` and the active lease. |
+
+For explicit initialization, the reset route accepts `start: true` with the
+`stop_generation` value just read from `GET /api/v1/robot/rapid`. A new Stop
+invalidates that value. Initialization requires AUTO, motors already on, and a
+cleared collision state; main may calibrate the grippers. The web app always
+binds reset/initialization to this value and never falls back to resuming an
+interrupted program. This is separate from app recovery acknowledgement and
+homing. No route disables collision supervision or enables motors.
+
 Both need `robot.control` and the control lease. `python gateway/scripts/basic_client.py` shows the RWS route from a client: it loads and starts the program through the gateway and runs a short demo path.
 
 Example mock command:

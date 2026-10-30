@@ -1,7 +1,7 @@
 import math
 import threading
 import time
-from typing import Literal, NamedTuple
+from typing import Callable, Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
@@ -239,6 +239,66 @@ class RwsMotion:
             )
 
         return self._result(arm)
+
+    def reset_program(self, start: bool = False, stop_generation: int | None = None,
+                      check_authorization: Callable[[], None] | None = None) -> None:
+        """Discard pending jobs and reset PP; optional fresh start is explicit.
+
+        Both per-arm locks exclude command staging, including wait=False jobs.
+        Stop remains callable independently. No motor or collision settings are
+        changed. Starting main may initialize/calibrate the grippers.
+        """
+        with self._client.program_change():
+            self._reset_program(start, stop_generation, check_authorization)
+
+    def _reset_program(self, start: bool, stop_generation: int | None, check_authorization) -> None:
+        generation = self._client.stop_generation() if stop_generation is None else stop_generation
+        self._client.check_stop_generation(generation)
+        deadline = time.monotonic() + 30
+
+        def check():
+            self._client.check_stop_generation(generation)
+            if check_authorization is not None:
+                check_authorization()
+            if time.monotonic() >= deadline:
+                raise MotionConflict("Program reset exceeded 30 seconds; no start will be sent")
+
+        check()
+        self._client.stop_for_reset()
+        held = []
+        try:
+            for arm in ARM_TASKS:
+                if not self._busy[arm].acquire(blocking=False):
+                    raise MotionConflict("Wait for the previous arm request to unwind before resetting RAPID")
+                held.append(self._busy[arm])
+            self._client.check_stop_generation(generation)
+            values = {"move_request": "FALSE", "go_home": "FALSE", "use_rot": "FALSE",
+                      "grip_cmd": '""', "move_ok": "FALSE"}
+            # Validate all required symbols before changing any of them.
+            for arm in ARM_TASKS:
+                for name in values:
+                    check()
+                    self._check_variable(arm, name, f"Missing {name}_{arm}; reset was not performed")
+            with self._client.mastership():
+                for arm in ARM_TASKS:
+                    for name, value in values.items():
+                        check()
+                        self._write(arm, name, value)
+                for arm in ARM_TASKS:
+                    for name, value in values.items():
+                        check()
+                        if self._read(arm, name).strip().upper() != value:
+                            raise MotionConflict(f"Reset could not verify {name}_{arm}; RAPID remains stopped")
+            check()
+            self._client.reset_program_pointer()
+            if self._client.execution_state() != "stopped":
+                raise MotionConflict("RAPID did not remain stopped after resetting its program pointer")
+            self._client.check_stop_generation(generation)
+            if start:
+                self._client.start_fresh(generation, deadline, check_authorization)
+        finally:
+            for lock in reversed(held):
+                lock.release()
 
     def in_safe_zone(
         self,

@@ -14,6 +14,7 @@ from cup_commands import CupSession
 from cup_inventory import SelectionError, atomic_json, build_inventory, selected_cup
 from robot_client import RobotClient, RobotCommandError
 from recovery_journal import RecoveryJournal
+from test_support_grid import temporary_grid
 
 
 def detection(kind, u, *, x=500, z=50, detection_id=None):
@@ -68,14 +69,11 @@ class CupSelectionTests(unittest.TestCase):
         original = inventory()
         if fresh is None:
             fresh = inventory(capture="verification-1", sequence=11)
-        after_ready = copy.deepcopy(fresh)
-        after_ready["capture"] = "verification-after-ready"
-        after_ready["frame"]["sequence"] += 1
-        capture = Mock(side_effect=[(original, 90), (fresh, started), (after_ready, started)])
+        capture = Mock(side_effect=[(original, 90), (fresh, started)])
         robot = robot if robot is not None else RobotDouble()
         save = save if save is not None else Mock()
         session = CupSession(capture, save, robot, "cal-1", clock=lambda: 100,
-                             max_result_age=10, recovery=recovery)
+                             max_result_age=10, recovery=recovery, placing_grid=temporary_grid(self))
         return session, capture, robot, save
 
     def select(self, session, **changes):
@@ -146,7 +144,7 @@ class CupSelectionTests(unittest.TestCase):
                 self.assertEqual(capture.call_count, 1)
                 self.assertEqual(robot.commands, [])
 
-    def test_hover_reobserves_around_ready_and_uses_fresh_rws_coordinates_then_invalidates(self):
+    def test_hover_verifies_once_before_ready_and_uses_fresh_coordinates_then_invalidates(self):
         fresh = inventory(capture="verify", sequence=11,
                           objects=[detection("CUP", 102), detection("CUP BASE", 102, x=505)])
         session, capture, robot, save = self.session(fresh=fresh)
@@ -154,8 +152,7 @@ class CupSelectionTests(unittest.TestCase):
         handle_terminal(session, "hover 1")
         self.assertEqual([(c["x"], c["y"], c["z"]) for c in robot.commands], [(400, 100, 450), (505, 100, 409)])
         self.assertTrue(all(c["arm"] == "left" and c["wait"] is True for c in robot.commands))
-        self.assertEqual(capture.call_args_list[-1].args, ("verification",))
-        self.assertEqual(capture.call_count, 3)
+        self.assertEqual([call.args[0] for call in capture.call_args_list], ["scan", "verification"])
         self.assertEqual(session.inventory["cups"][0]["status"], "at_hover")
         self.assertFalse(session.scan_usable)
         self.assertEqual(save.call_count, 6)
@@ -193,13 +190,15 @@ class CupSelectionTests(unittest.TestCase):
         frozen["frame"]["sequence"] = 10
         cases.extend([("frozen", frozen, 99), ("old", baseline, 89), ("future clock", baseline, 101)])
         for name, fresh, started in cases:
-            with self.subTest(name=name):
-                session, _, robot, _ = self.session(fresh=fresh, started=started)
-                session.scan()
-                with self.assertRaises(SelectionError):
-                    self.select(session)
-                self.assertEqual(robot.commands, [])
-                self.assertFalse(session.scan_usable)
+            for action in ("hover", "goto"):
+                with self.subTest(name=name, action=action):
+                    session, capture, robot, _ = self.session(fresh=fresh, started=started)
+                    session.scan()
+                    with self.assertRaises(SelectionError):
+                        self.select(session, action=action)
+                    self.assertEqual(robot.commands, [])
+                    self.assertEqual(capture.call_count, 2)
+                    self.assertFalse(session.scan_usable)
 
     def test_failed_scan_invalidates_previous_authorization(self):
         session, capture, robot, _ = self.session()
@@ -233,7 +232,7 @@ class CupSelectionTests(unittest.TestCase):
         session.scan()
         with self.assertRaises(OSError):
             self.select(session)
-        save.assert_called_once()
+        save.assert_called()
         self.assertEqual(robot.commands, [])
         self.assertFalse(session.scan_usable)
 
@@ -241,15 +240,14 @@ class CupSelectionTests(unittest.TestCase):
         session, capture, robot, _ = self.session()
         session.tag_offset = (-115, 0, 40)
         capture.side_effect = [(inventory(tag_offset=session.tag_offset), 90),
-                               (inventory(capture="v1", sequence=11, tag_offset=session.tag_offset), 99),
-                               (inventory(capture="v2", sequence=12, tag_offset=session.tag_offset), 99)]
+                               (inventory(capture="v1", sequence=11, tag_offset=session.tag_offset), 99)]
         session.scan()
         self.select(session)
         self.assertEqual((robot.commands[1]["x"], robot.commands[1]["y"], robot.commands[1]["z"]), (385, 100, 409))
         self.assertEqual(session.inventory["cups"][0]["x"], 500)
         self.assertEqual(session.inventory["cups"][0]["last_verification"]["jobs"][1]["endpoint"], "/robot/rws/move")
 
-    def test_slow_ready_move_gets_new_observation_before_hover(self):
+    def test_slow_ready_expires_initial_observation_and_blocks_without_second_capture(self):
         now = [100]
         robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if count == 1 else None)
         session, capture, _, _ = self.session(robot=robot)
@@ -258,22 +256,25 @@ class CupSelectionTests(unittest.TestCase):
                             objects=[detection("CUP", 102), detection("CUP BASE", 102, x=505)])
         capture.side_effect = [(inventory(), 90), (inventory(capture="v1", sequence=11), 99), (changed, 129)]
         session.scan()
-        moves = [job["body"] for job in self.select(session)]
-        self.assertEqual(len(robot.commands), 2)
-        self.assertEqual(robot.commands[1]["x"], 505)
-        self.assertEqual(moves[1]["x"], 505)
-        self.assertFalse(session.motion_uncertain)
+        with self.assertRaisesRegex(SelectionError, "old; motion blocked"):
+            self.select(session)
+        self.assertEqual([job["name"] for job in robot.jobs], ["left_ready"])
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(session.inventory["cups"][0]["last_verification"]["capture"], "v1")
+        self.assertTrue(session.motion_uncertain)
+        self.assertFalse(session.scan_usable)
 
-    def test_cup_disappears_after_ready_blocks_hover_and_requires_recovery(self):
+    def test_second_camera_frame_is_unused_after_ready(self):
         session, capture, robot, _ = self.session()
         capture.side_effect = [(inventory(), 90), (inventory(capture="v1", sequence=11), 99),
                                (inventory(capture="v2", sequence=12, objects=[]), 99)]
         session.scan()
-        with self.assertRaises(SelectionError):
-            self.select(session)
-        self.assertEqual(len(robot.commands), 1)
-        self.assertEqual(robot.commands[0]["x"], 400)
-        self.assertTrue(session.motion_uncertain)
+        self.select(session)
+        self.assertEqual([job["name"] for job in robot.jobs], ["left_ready", "approach_cup"])
+        self.assertEqual(robot.commands[1]["x"], 500)
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(session.inventory["cups"][0]["last_verification"]["capture"], "v1")
+        self.assertFalse(session.motion_uncertain)
         self.assertFalse(session.scan_usable)
 
     def test_post_ready_save_failure_blocks_hover(self):
@@ -320,13 +321,14 @@ class CupSelectionTests(unittest.TestCase):
         jobs = {job["name"]: job for job in robot.jobs}
         for name, height in (("approach_cup", 409), ("descend_to_cup", 234), ("lift_cup", 409)):
             body = jobs[name]["body"]
-            self.assertEqual((body["x"], body["y"], body["z"]), (493, 100, height))
+            self.assertEqual((body["x"], body["y"], body["z"]), (490, 100, height))
         self.assertEqual(robot.jobs[-1]["name"], "right_home")
         self.assertIn("left_home", jobs)
-        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(capture.call_count, 2)
         selected = session.inventory["cups"][1]
         self.assertEqual(selected["x"], 600)  # Original observation is retained.
         self.assertEqual(selected["last_verification"]["matched_cup_id"], 3)
+        self.assertEqual(selected["last_verification"]["capture"], "v1")
         self.assertEqual(selected["status"], "placed")
         self.assertEqual(selected["execution"]["completed_steps"], robot.jobs)
         self.assertEqual(selected["execution"]["state"], "completed")
@@ -381,7 +383,7 @@ class CupSelectionTests(unittest.TestCase):
         with self.assertRaises(SelectionError):
             self.select(session, action="goto", capture_id="new")
 
-    def test_slow_initial_home_is_followed_by_fresh_camera_check_before_approach(self):
+    def test_slow_initial_home_expires_initial_check_and_blocks_approach_without_recapture(self):
         now = [100]
         robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if count == 1 else None)
         session, capture, _, _ = self.session(robot=robot)
@@ -389,9 +391,14 @@ class CupSelectionTests(unittest.TestCase):
         capture.side_effect = [(inventory(), 90), (inventory(capture="v1", sequence=11), 99),
                                (inventory(capture="v2", sequence=12), 129)]
         session.scan()
-        self.select(session, action="goto")
-        self.assertEqual(session.inventory["cups"][0]["status"], "placed")
-        self.assertEqual(capture.call_count, 3)
+        with self.assertRaisesRegex(SelectionError, "old; motion blocked"):
+            self.select(session, action="goto")
+        self.assertEqual([job["name"] for job in robot.jobs],
+                         ["right_home_start", "left_open", "left_ready"])
+        self.assertEqual(capture.call_count, 2)
+        self.assertTrue(session.motion_uncertain)
+        self.assertFalse(session.scan_usable)
+        self.assertTrue(session.placing_grid.snapshot()["locations"][0]["reserved"])
 
     def test_age_limit_stops_before_descent_but_not_during_transfer_after_grip(self):
         for delayed_step, should_fail in (("approach_cup", True), ("descend_to_cup", True), ("grip_cup", False)):
@@ -469,6 +476,19 @@ class CupSelectionTests(unittest.TestCase):
             self.select(session, action="goto")
         self.assertEqual(robot.jobs, [])
         journal.clear.assert_not_called()
+
+    def test_failed_final_recovery_clear_keeps_hover_locked_until_recovery(self):
+        journal = Mock()
+        journal.required.return_value = False
+        journal.clear.side_effect = OSError("cannot clear recovery")
+        session, _, robot, _ = self.session(recovery=journal)
+        session.scan()
+        with self.assertRaisesRegex(OSError, "cannot clear recovery"):
+            self.select(session, action="hover")
+        self.assertEqual(len(robot.jobs), 2)
+        self.assertTrue(session.motion_uncertain)
+        self.assertFalse(session.scan_usable)
+        journal.clear.assert_called_once()
 
     def test_dry_run_does_not_create_live_recovery_journal(self):
         with tempfile.TemporaryDirectory() as directory:

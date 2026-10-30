@@ -4,7 +4,34 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="5bde6c2d-4187-4170-aa6b-e65190a624ce" name="Changes" comment="" />
+    <list default="true" id="5bde6c2d-4187-4170-aa6b-e65190a624ce" name="Changes" comment="UI for the robot">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/capture_and_detect_custom.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/capture_and_detect_custom.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/cup_commands.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/cup_commands.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/handover_plan.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/handover_plan.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/language_commands.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/language_commands.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/local_llm.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/local_llm.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/placing_grid.json" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/placing_grid.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/robot_client.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/robot_client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_cup_selection.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_cup_selection.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_handover_plan.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_handover_plan.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_language_commands.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_language_commands.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_language_terminal.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_language_terminal.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_local_llm.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_local_llm.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_web_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_web_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/test_web_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/test_web_controller.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/web_app.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/web_app.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/web_controller.py" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/web_controller.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/web_static/app.css" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/web_static/app.css" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/web_static/app.js" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/web_static/app.js" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/capture_and_detect/web_static/index.html" beforeDir="false" afterPath="$PROJECT_DIR$/capture_and_detect/web_static/index.html" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gateway/README_START.md" beforeDir="false" afterPath="$PROJECT_DIR$/gateway/README_START.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gateway/models/rws.py" beforeDir="false" afterPath="$PROJECT_DIR$/gateway/models/rws.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gateway/rws/client.py" beforeDir="false" afterPath="$PROJECT_DIR$/gateway/rws/client.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gateway/rws/motion.py" beforeDir="false" afterPath="$PROJECT_DIR$/gateway/rws/motion.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/gateway/rws/rapid_router.py" beforeDir="false" afterPath="$PROJECT_DIR$/gateway/rws/rapid_router.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -73,11 +100,24 @@
       <updated>1792136994039</updated>
       <workItem from="1792136995094" duration="4844000" />
       <workItem from="1792396579393" duration="5634000" />
-      <workItem from="1793089386494" duration="7554000" />
+      <workItem from="1793089386494" duration="18843000" />
     </task>
+    <task id="LOCAL-00001" summary="UI for the robot">
+      <option name="closed" value="true" />
+      <created>1793102768017</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1793102768017</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="UI for the robot" />
+    <option name="LAST_COMMIT_MESSAGE" value="UI for the robot" />
   </component>
 </project>

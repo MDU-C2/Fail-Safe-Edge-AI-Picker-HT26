@@ -26,10 +26,14 @@ from cup_commands import CupSession
 from cup_inventory import (SelectionError, atomic_json, build_inventory, normalize_offset,
                            save_inventory)
 from robot_client import RobotClient, RobotCommandError
-from handover_plan import pick_position_problem
+from handover_plan import DEFAULT_SPEED, FLIP_SPEED, pick_position_problem
+from placing_grid import PlacingGrid
+from placement_vision import PlacementVision, SCAN_FRAMES
 from recovery_journal import RecoveryJournal
 from language_commands import LanguageController
-from local_llm import OllamaIntentClient
+from local_llm import DisabledIntentClient, OllamaIntentClient
+from operator_commands import START_COMMANDS, STOP_COMMANDS
+from terminal_controller import TerminalController
 
 HERE = Path(__file__).resolve().parent
 CALIBRATION_FILE = HERE.parent / "calibration" / "calibration.json"
@@ -38,17 +42,31 @@ CUP_Z_MIN, CUP_Z_MAX = 10, 150
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px"]
 HELP = """Commands:
+  start               Scan now and preview a pick-all batch; then confirm it.
+  stop / halt         Block further jobs and request a software stop of both arms.
+  status              Show application state without contacting the robot.
   Enter / scan        Detect and save cups; no robot movement.
   list                Show cups, saved XYZ, and the corrected hover target.
   show 2              Show all stored information for cup 2.
   goto 2              Verify cup 2; pick with left, hand to right, place it,
                       then finish with both arms home.
   hover 2             Verify cup 2; move the left arm above it without gripping.
+  goto all            Preview a batch of available cups, limited by free slots.
+  save cup 2 as mug    Save a named visual reference; no movement.
+  saved cups          List saved references.
+  pick saved mug      Scan, match the reference, then require confirmation (--llm).
+  forget saved mug    Remove that saved reference; no movement.
+  confirm <code>      Execute the displayed batch or language proposal once.
+  cancel              Discard a proposal; does not stop an active movement.
   reset               Acknowledge checking the robot after an unconfirmed move.
                       Sends nothing. A new scan is still required.
   help                Show this help.
-  q / quit            Exit (does not stop an already dispatched movement).
+  q / quit            Exit; request Stop first if a command is running.
 IDs belong to one scan and may change after scanning again.
+Stop remains responsive while a command runs. A software stop depends on the
+gateway and controller; use the robot's physical emergency stop when needed.
+After Stop, inspect/recover using the robot controls, then reset and scan.
+Start never restarts RAPID or resumes an interrupted movement.
 """
 LANGUAGE_HELP = """Local language mode:
   Type a sentence, for example: pick cup two / hover above the rightmost cup.
@@ -56,7 +74,8 @@ LANGUAGE_HELP = """Local language mode:
   confirm <code>      Execute that exact proposal through the existing checks.
   cancel             Discard a pending proposal; does not stop a moving robot.
   Exact terminal commands (scan, goto 2, hover 2, reset, etc.) still work directly.
-Left/right refer to the numbered camera image. Colors and gestures are not known.
+Left/right refer to the numbered camera image. Use saved names for visual cup
+matching; arbitrary color selectors and gestures are not supported.
 """
 
 
@@ -237,11 +256,16 @@ class CaptureStore:
 
 
 class CaptureService:
-    def __init__(self, camera, detector, store, weights):
+    def __init__(self, camera, detector, store, weights, *, placing_grid=None,
+                 grid_table_z=0.0, grid_cell_size=80.0):
         self.camera, self.detector, self.store = camera, detector, store
         self.weights = Path(weights)
+        self.placing_grid = placing_grid
+        self.placement_vision = (PlacementVision(detector.calibration, detector.K,
+                                table_z=grid_table_z, cell_size=grid_cell_size)
+                                 if placing_grid is not None else None)
 
-    def capture(self, purpose):
+    def _observe(self):
         calibration = self.detector.calibration
         calibration.ensure_unchanged()
         if self.camera.intrinsics() != self.detector.K:
@@ -255,6 +279,24 @@ class CaptureService:
         before = time.perf_counter()
         objects, annotated = self.detector.analyse(rgb, depth)
         elapsed_ms = (time.perf_counter() - before) * 1000
+        return rgb, depth, frame, started, objects, annotated, elapsed_ms
+
+    def capture(self, purpose):
+        calibration = self.detector.calibration
+        snapshot, grid_error = None, None
+        if self.placing_grid is not None:
+            try:
+                snapshot = self.placing_grid.snapshot()
+            except SelectionError as error:
+                grid_error = str(error)
+        observations, sequences = [], []
+        count = SCAN_FRAMES if purpose == "scan" and snapshot is not None else 1
+        for _ in range(count):
+            rgb, depth, frame, started, objects, annotated, elapsed_ms = self._observe()
+            if snapshot is not None:
+                observations.append(self.placement_vision.assess(depth, objects, snapshot["locations"]))
+                sequences.append(frame.get("sequence"))
+        calibration.ensure_unchanged()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + purpose
         images = {kind: str(self.store.folder / f"{kind}_{stamp}.{extension}")
                   for kind, extension in (("rgb", "jpg"), ("depth", "png"), ("annotated", "jpg"))}
@@ -263,6 +305,18 @@ class CaptureService:
                                     gateway=self.camera.api, images=images,
                                     model={"weights": str(self.weights), "confidence_threshold": self.detector.conf,
                                            "inference_ms": round(elapsed_ms, 1)})
+        if observations:
+            self.placement_vision.exclude_placed_cups(inventory["cups"], snapshot["locations"])
+            if purpose == "scan":
+                observation = self.placement_vision.combine(snapshot, observations, sequences)
+            else:
+                observation = {"frame_count": 1, "slots": observations[-1], "applied": False,
+                               "released_ids": [], "message": "Verification image only; placement status unchanged."}
+            inventory["placement_observation"] = observation
+            self.placement_vision.draw(annotated, observation["slots"])
+        elif grid_error:
+            inventory["placement_observation"] = {"frame_count": 0, "slots": [], "applied": False,
+                "released_ids": [], "message": "Placement camera check unavailable: " + grid_error}
         for cup in inventory["cups"]:
             u, v = cup["pixel"]["u"], cup["pixel"]["v"]
             if u is None or v is None:
@@ -300,6 +354,11 @@ def print_cups(inventory):
     if not inventory["cups"]:
         log("No cups detected.")
     log(f"Numbered image: {inventory['images']['annotated']}")
+    observation = inventory.get("placement_observation")
+    if observation:
+        log(observation["message"])
+        if observation.get("released_ids"):
+            log("Placement locations released:", ", ".join(map(str, observation["released_ids"])))
 
 
 def handle_terminal(session, line):
@@ -352,15 +411,45 @@ def positive(value):
 
 def handle_input(session, line, language=None):
     """Keep operator commands separate from untrusted language interpretation."""
+    command = " ".join(line.strip().lower().split())
+    if command in STOP_COMMANDS:
+        try:
+            session.latch_stop()
+        except OSError as error:
+            log(f"Stop recovery state could not be saved: {error}")
+        result = session.request_stop()
+        if language is not None:
+            try:
+                language.cancel()
+            except SelectionError:
+                # Interactive operation uses TerminalController to invalidate
+                # the proposal when its ordinary worker exits.
+                pass
+        log(result["message"])
+        if not result.get("dry_run") and not result.get("stopped"):
+            log("Robot stop is unconfirmed. Use the physical robot controls; recovery remains required.")
+        return True
     if language is None:
+        if command == "status":
+            log(json.dumps(session.status_summary(), indent=2))
+            return True
         return handle_terminal(session, line)
     words = line.strip().split()
     first = words[0].lower() if words else ""
-    if first == "confirm":
+    if command in START_COMMANDS:
+        result = language.start()
+    elif command == "status":
+        result = language.status()
+    elif command == "help":
+        log(language.help()["message"])
+        return True
+    elif command in ("goto all", "pick all", "pick all available cups"):
+        result = language.propose_batch(capture_id=session.inventory["capture"] if session.inventory else "")
+    elif first == "confirm":
         if len(words) != 2:
             raise SelectionError("Type confirm followed by the displayed proposal code.")
         result = language.confirm(words[1])
-    elif first in ("cancel", "stop"):
+    elif first == "cancel":
         if len(words) != 1:
             raise SelectionError("Use cancel to discard a proposal. It does not stop robot motion.")
         language.cancel()
@@ -395,15 +484,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(CALIBRATION_FILE))
+    parser.add_argument("--placing-grid", default=str(HERE / "placing_grid.json"), help="Placement locations and their occupied/reserved flags")
+    parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table, mm (default 0)")
+    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Placement cell width in mm (default 80; 20..200)")
     parser.add_argument("--gateway", default="http://169.254.125.202:8000")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
-    parser.add_argument("--speed", type=positive, default=50.0, help="Requested speed for terminal moves, mm/s (1..1500; default 50)")
+    parser.add_argument("--speed", type=positive, default=DEFAULT_SPEED, help="Normal motion speed, mm/s (1..1500; default 1200). Turning is capped at 100.")
     parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
     parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
     parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")
-    parser.add_argument("--llm", action="store_true", help="Enable local Ollama language commands with movement previews and confirmation")
-    parser.add_argument("--llm-model", default="qwen3:4b", help="Installed local Ollama model (default qwen3:4b)")
+    parser.add_argument("--llm", action="store_true", help="Enable local Ollama commands and saved-cup visual matching with movement confirmation")
+    parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct", help="Installed local Ollama model (default qwen3-vl:4b-instruct)")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Local Ollama address; loopback hosts only")
     parser.add_argument("--check-llm", action="store_true", help="Test local interpretation only; no camera, token, YOLO or robot connection")
     args = parser.parse_args(argv)
@@ -411,7 +503,9 @@ def main(argv=None):
         parser.error("--conf must be greater than 0 and at most 1")
     if not 1 <= args.speed <= 1500:
         parser.error("--speed must be between 1 and 1500 mm/s")
-    interpreter = None
+    if not math.isfinite(args.grid_table_z) or not math.isfinite(args.grid_cell_size) or not 20 <= args.grid_cell_size <= 200:
+        parser.error("--grid-table-z must be finite; --grid-cell-size must be 20..200 mm")
+    interpreter = DisabledIntentClient()
     if args.llm or args.check_llm:
         try:
             interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url)
@@ -441,37 +535,46 @@ def main(argv=None):
         model, weights = load_model()
         detector = Detector(model, calibration, camera.intrinsics(), args.conf)
         store = CaptureStore(args.output)
-        captures = CaptureService(camera, detector, store, weights)
+        grid = PlacingGrid(args.placing_grid)
+        captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
+                                  grid_table_z=args.grid_table_z, grid_cell_size=args.grid_cell_size)
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
         session = CupSession(captures.capture, store.save, RobotClient(api, headers, dry_run=args.dry_run),
                              calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                              max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                             recovery=recovery)
-        language = LanguageController(session, interpreter, audit_dir=store.folder / "language") if args.llm else None
+                             recovery=recovery, placing_grid=grid)
+        from named_cups import NamedCupStore
+        from cup_visual_matcher import OllamaCupMatcher
+        library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
+        matcher = OllamaCupMatcher(model=args.llm_model, url=args.ollama_url) if args.llm else None
+        language = LanguageController(session, interpreter, audit_dir=store.folder / "language",
+                                      named_cups=library, cup_matcher=matcher)
     except (OSError, ValueError, KeyError, CameraError) as error:
         log(f"Startup failed: {error}")
         return 1
     log(f"Ready. Saving to: {store.folder}")
     log(f"Gateway: {api}; terminal movement speed: {args.speed:g} mm/s")
+    log(f"Placement grid: {args.placing_grid}; cup turning: {min(args.speed, FLIP_SPEED):g} mm/s, 30% acceleration")
     log("DRY RUN: all RWS moves, gripper and home requests will only be printed." if args.dry_run else
         "LIVE: goto picks, hands over, places and homes BOTH arms. hover only approaches; scan only saves detections.")
     log(HELP)
-    if language is not None:
+    if args.llm:
         log(f"LOCAL LLM: {args.llm_model} via {args.ollama_url}")
         log(LANGUAGE_HELP)
     if session.motion_uncertain:
         log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset and scan.")
+    terminal = TerminalController(session, language,
+                                  lambda line: handle_input(session, line, language), output=log)
+    interrupted = False
     try:
         while True:
-            try:
-                if not handle_input(session, input("cups> ").strip(), language):
-                    break
-            except (SelectionError, CameraError, RobotCommandError, OSError, ValueError) as error:
-                log(f"Blocked: {error}")
-                if session.motion_uncertain:
-                    log("The sequence was interrupted or a command was not confirmed. Check both arms and the cup before reset; no automatic retry or return home.")
+            if not terminal.submit(input("cups> ").strip()):
+                break
     except (KeyboardInterrupt, EOFError):
-        log("\nExiting. This does not cancel a movement already dispatched to the robot.")
+        interrupted = True
+        log("\nExiting; an active command will receive a software stop request. No automatic home or resume.")
+    finally:
+        terminal.close(interrupt=interrupted)
     return 0
 
 

@@ -1,8 +1,9 @@
 """Sequential RWS arm and gripper jobs with control-lease renewal.
 
 Importing this module never contacts the gateway. A failed or timed-out command
-is never retried: it may already have reached the physical controller. Stopping
-this client only prevents further commands; it is not a robot emergency stop.
+is never retried: it may already have reached the physical controller. Closing
+this client does not stop physical motion. request_stop sends a separate RAPID
+software stop; it is not a hardware emergency stop.
 """
 
 from __future__ import annotations
@@ -44,6 +45,183 @@ class RobotClient:
         self._lease_deadline: Optional[float] = None
         self._renew_after = 1.0
         self._execution_lock = threading.Lock()
+        self._lease_lock = threading.RLock()
+        self._stop_call_lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._stop_finished = threading.Event()
+        self._stop_finished.set()
+
+    @property
+    def stop_requested(self):
+        return self._stop_event.is_set()
+
+    def latch_stop(self):
+        """Inhibit further jobs immediately; no HTTP or motion lock is needed."""
+        if not self._stop_event.is_set():
+            self._stop_finished.clear()
+        self._stop_event.set()
+
+    def _check_stop(self):
+        if self.stop_requested:
+            raise RobotCommandError("Software stop requested. Inspect the robot before recovery; no further jobs will be sent.")
+
+    def clear_stop(self):
+        """Only called after an operator acknowledges recovery while idle."""
+        if not self._execution_lock.acquire(blocking=False):
+            raise RobotCommandError("Wait for the active command to finish unwinding before recovery.")
+        try:
+            if not self._stop_call_lock.acquire(blocking=False):
+                raise RobotCommandError("Wait for the software stop request to finish before recovery.")
+            try:
+                if self.stop_requested and not self._stop_finished.is_set():
+                    raise RobotCommandError("Wait for the pending software stop request before recovery.")
+                self._stop_event.clear()
+                self._stop_finished.set()
+            finally:
+                self._stop_call_lock.release()
+        finally:
+            self._execution_lock.release()
+
+    def request_stop(self):
+        """Send a software RAPID stop independently of any waiting move.
+
+        A failed response is unconfirmed, never retried. An active execution's
+        lease is retained until this request finishes; an idle request acquires
+        its own lease. Dry runs perform no HTTP.
+        """
+        self.latch_stop()
+        if not self._stop_call_lock.acquire(blocking=False):
+            raise RobotCommandError("A software stop request is already in progress.")
+        try:
+            if self.dry_run:
+                return {"dry_run": True, "stopped": False,
+                        "message": "Dry run: software stop latched; no robot command sent."}
+            with self._lease_lock:
+                try:
+                    if not self._release_needed:
+                        self._take_control()
+                    reply, _ = self._post("/robot/rapid/stop")
+                    if reply.get("execution_state") != "stopped":
+                        raise RobotCommandError("Software stop was not confirmed by RAPID. Inspect the controller; no retry was sent.")
+                    return {"dry_run": False, "stopped": True,
+                            "message": "RAPID reported stopped. Inspect both arms and the cup before acknowledging recovery."}
+                finally:
+                    self._stop_finished.set()
+                    if self._release_needed:
+                        self._release_control()
+        finally:
+            self._stop_finished.set()
+            self._stop_call_lock.release()
+
+    def _get_object(self, endpoint):
+        response = None
+        try:
+            response = requests.get(f"{self.api}{endpoint}", headers=self.headers,
+                                    timeout=self.CONTROL_TIMEOUT)
+            response.raise_for_status()
+            reply = response.json()
+            if not isinstance(reply, dict):
+                raise RobotCommandError(f"Gateway {endpoint} returned invalid status.")
+            return reply
+        except (requests.RequestException, ValueError) as exc:
+            raise RobotCommandError(f"Gateway {endpoint} status failed: {exc}{self._response_detail(response)}") from exc
+        finally:
+            if response is not None:
+                response.close()
+
+    @staticmethod
+    def _control_status_fields(reply):
+        fields = ("execution_state", "controller_state", "operation_mode")
+        if any(not isinstance(reply.get(name), str) or not reply[name] for name in fields):
+            raise RobotCommandError("Gateway returned incomplete controller status.")
+        return {name: reply[name] for name in fields}
+
+    def read_control_status(self):
+        """Read current controller state; dry-run/demo never contacts hardware."""
+        if self.dry_run:
+            return {"execution_state": "simulated", "controller_state": "simulated",
+                    "operation_mode": "simulated", "collision_state": None,
+                    "read_at": datetime.now(timezone.utc).isoformat(), "dry_run": True}
+        result = self._control_status_fields(self._get_object("/robot/rapid"))
+        result["collision_state"] = None
+        try:
+            state = self._get_object("/robot/rapid/collision").get("collision_state")
+            if not isinstance(state, str) or state not in {"INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"}:
+                raise RobotCommandError("Controller returned an unknown collision state.")
+            result["collision_state"] = state
+        except RobotCommandError as exc:
+            result["collision_error"] = str(exc)
+        result["read_at"] = datetime.now(timezone.utc).isoformat()
+        return result
+
+    def control_action(self, action):
+        """Explicit program/collision controls; never motor-on, resume or home.
+
+        rapid_start uses fresh initialization, never an interrupted program
+        pointer. Main may initialize/calibrate grippers. Collision acknowledgement
+        may be rejected by ABB's Local Client privilege requirement.
+        """
+        if not isinstance(action, str) or action not in {"rapid_reset", "rapid_start", "collision_ack"}:
+            raise RobotCommandError("Unknown robot control action.")
+        self._check_stop()
+        if not self._execution_lock.acquire(blocking=False):
+            raise RobotCommandError("This client is already executing a command sequence.")
+        stop = threading.Event()
+        renewal = None
+        try:
+            if self.dry_run:
+                return {"dry_run": True, "message": f"Dry run: {action}; no robot command sent.",
+                        "status": self.read_control_status()}
+            with self._lease_lock:
+                self._check_stop()
+                self._lease_error = None
+                self._release_needed = False
+                self._take_control()
+            renewal = threading.Thread(target=self._renew_loop, args=(stop,), daemon=True)
+            renewal.start()
+            # A server-issued stop generation binds initialization to this
+            # observation. Stop can post immediately while this HTTP call is
+            # pending; a late-arriving reset cannot start after that Stop.
+            endpoint = "/robot/rapid/collision/ack" if action == "collision_ack" else "/robot/rapid/reset"
+            body = {}
+            if action != "collision_ack":
+                generation = self._get_object("/robot/rapid").get("stop_generation")
+                if type(generation) is not int or generation < 0:
+                    raise RobotCommandError("Gateway does not support cancellable initialization. Update the Pi gateway before using RAPID reset/start.")
+                body = {"start": action == "rapid_start", "stop_generation": generation}
+            self._check_stop()
+            self._check_lease()
+            reply, _ = self._post(endpoint, move=body)
+            self._check_stop()
+            self._check_lease()
+            if action == "collision_ack":
+                state = reply.get("collision_state")
+                if not isinstance(state, str) or state not in {"INIT", "CONFIRMED"}:
+                    raise RobotCommandError("Controller collision acknowledgement was not confirmed; no home was sent.")
+                status = self.read_control_status()
+                if status.get("collision_state") not in {"INIT", "CONFIRMED"}:
+                    raise RobotCommandError("Collision acknowledgement readback failed; no further command was sent.")
+                message = "Controller collision acknowledgement confirmed. No start or home command sent."
+            else:
+                status = self._control_status_fields(reply)
+                expected = "running" if action == "rapid_start" else "stopped"
+                if status["execution_state"] != expected:
+                    raise RobotCommandError(f"RAPID did not confirm {expected}; inspect the controller.")
+                status.update(read_at=datetime.now(timezone.utc).isoformat(), collision_state=None)
+                message = ("RAPID initialized from main and reported running; gripper initialization may occur."
+                           if action == "rapid_start" else "Pending jobs cleared; RAPID reset to main and left stopped.")
+            self._check_stop()
+            self._check_lease()
+            return {"dry_run": False, "message": message, "status": status}
+        finally:
+            stop.set()
+            try:
+                if renewal is not None:
+                    renewal.join()
+                if self._release_needed:
+                    self._release_control()
+            finally:
+                self._execution_lock.release()
 
     def _post(self, endpoint: str, *, move: Optional[dict] = None,
               allow_conflict: bool = False):
@@ -63,10 +241,22 @@ class RobotClient:
         except (requests.RequestException, ValueError) as exc:
             detail = (" Robot completion is unknown; the command was not retried."
                       if move is not None else " No further commands will be sent.")
-            raise RobotCommandError(f"Gateway {endpoint} failed: {exc}.{detail}") from exc
+            raise RobotCommandError(f"Gateway {endpoint} failed: {exc}{self._response_detail(response)}.{detail}") from exc
         finally:
             if response is not None:
                 response.close()
+
+    @staticmethod
+    def _response_detail(response):
+        """Preserve the gateway's bounded refusal reason, e.g. Local Client privileges."""
+        if response is None:
+            return ""
+        try:
+            value = response.json()
+        except (ValueError, requests.RequestException):
+            return ""
+        detail = value.get("detail") if isinstance(value, dict) else None
+        return f" ({detail[:500]})" if isinstance(detail, str) else ""
 
     def _record_lease(self, reply: dict, response_headers: Mapping[str, str]) -> None:
         lease = reply.get("lease")
@@ -97,6 +287,10 @@ class RobotClient:
         self._owned_lease = True
 
     def _take_control(self) -> None:
+        with self._lease_lock:
+            self._take_control_locked()
+
+    def _take_control_locked(self) -> None:
         # Only reuse a lease this instance previously acquired. A fresh client
         # never guesses ownership from a shared token or from a 409 response.
         if self._owned_lease:
@@ -114,6 +308,16 @@ class RobotClient:
         self._record_lease(reply, response)
 
     def _release_control(self) -> None:
+        with self._lease_lock:
+            # Stop may have been latched by the UI before its separate worker
+            # reaches request_stop. Transfer cleanup responsibility to it.
+            if self.stop_requested and not self._stop_finished.is_set():
+                return
+            if not self._release_needed:
+                return
+            self._release_control_locked()
+
+    def _release_control_locked(self) -> None:
         try:
             reply, _ = self._post("/control/release")
             if reply.get("success") is not True:
@@ -130,8 +334,11 @@ class RobotClient:
     def _renew_loop(self, stop: threading.Event) -> None:
         while not stop.wait(self._renew_after):
             try:
-                reply, response = self._post("/control/renew")
-                self._record_lease(reply, response)
+                with self._lease_lock:
+                    if self.stop_requested:
+                        return
+                    reply, response = self._post("/control/renew")
+                    self._record_lease(reply, response)
             except RobotCommandError as exc:
                 self._owned_lease = False
                 self._lease_error = RobotCommandError(
@@ -300,6 +507,7 @@ class RobotClient:
         jobs = [self._validate_job(job) for job in jobs]
         if not jobs:
             return
+        self._check_stop()
         if not self._execution_lock.acquire(blocking=False):
             raise RobotCommandError("This client is already executing a command sequence.")
         stop = threading.Event()
@@ -307,15 +515,21 @@ class RobotClient:
         try:
             if self.dry_run:
                 for job in jobs:
+                    self._check_stop()
                     print(f"DRY RUN: POST {job['endpoint']} "
                           f"{json.dumps(job['body'], sort_keys=True)} ({job['name']})")
+                self._check_stop()
                 return
-            self._lease_error = None
-            self._release_needed = False
-            self._take_control()
+            with self._lease_lock:
+                self._check_stop()
+                self._lease_error = None
+                self._release_needed = False
+                self._take_control()
+            self._check_stop()
             renewal = threading.Thread(target=self._renew_loop, args=(stop,), daemon=True)
             renewal.start()
             for index, job in enumerate(jobs):
+                self._check_stop()
                 self._check_lease()
                 if before_send is not None:
                     try:
@@ -325,7 +539,9 @@ class RobotClient:
                     except Exception as exc:
                         raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
                 self._check_lease()
+                self._check_stop()
                 reply, _ = self._post(job["endpoint"], move=job["body"])
+                self._check_stop()
                 print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
                       f" -> {reply} ({job['name']})")
                 if reply.get("accepted") is not True or reply.get("message") != "DONE":
@@ -335,6 +551,7 @@ class RobotClient:
                     )
                 if job["endpoint"] == self.HOME_ENDPOINT:
                     self._verify_home(job["body"]["arm"])
+                self._check_stop()
                 if after_done is not None:
                     try:
                         after_done(index, self._copy_job(job))
@@ -344,6 +561,7 @@ class RobotClient:
                             "No further commands will be sent."
                         ) from exc
                 self._check_lease()
+                self._check_stop()
         finally:
             stop.set()
             try:

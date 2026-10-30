@@ -1,8 +1,10 @@
 import html
 import re
+import secrets
 import threading
+import time
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import requests
 from requests.auth import HTTPDigestAuth
@@ -88,6 +90,10 @@ class RwsClient:
         self._session.auth = HTTPDigestAuth(user, password)
 
         self._lock = threading.RLock()
+        self._start_stop_lock = threading.Lock()
+        self._program_lock = threading.Lock()
+        self._stop_generation_lock = threading.Lock()
+        self._stop_generation = secrets.randbits(48)
 
     # ============================================================
     # HTTP
@@ -251,6 +257,91 @@ class RwsClient:
     ) -> str:
         return self.get_state("/rw/rapid/execution", timeout=timeout)[0]["ctrlexecstate"]
 
+    def collision_state(self) -> str:
+        entry = self.get_state("/rw/panel/coldetstate")[0]
+        value = next((value for key, value in entry.items() if key.strip() == "coldetstate"), None)
+        if not isinstance(value, str) or value not in {"INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"}:
+            raise RwsError(409, "Controller returned an unknown collision state")
+        return value
+
+    def acknowledge_collision(self, check_authorization: Callable[[], None] | None = None) -> str:
+        """ABB requires Local Client privileges; a rejection is never bypassed.
+
+        This acknowledges collision detection only, without motors-on or start.
+        https://developercenter.robotstudio.com/api/rwsApi/panel_ack_set_page.html
+        """
+        if self.execution_state() != "stopped":
+            raise RwsError(409, "Stop RAPID before acknowledging collision detection")
+        state = self.collision_state()
+        if state in {"INIT", "CONFIRMED"}:
+            return state
+        if check_authorization is not None:
+            check_authorization()
+        self.post("/rw/panel/opmode", params={"action": "acknowledge"}, data={"opmode": "coldet"})
+        state = self.collision_state()
+        if state not in {"INIT", "CONFIRMED"}:
+            raise RwsError(409, "Collision acknowledgement is not confirmed; inspect the FlexPendant. No start or home was sent")
+        return state
+
+    def stop_generation(self) -> int:
+        with self._stop_generation_lock:
+            return self._stop_generation
+
+    def check_stop_generation(self, generation: int) -> None:
+        if self.stop_generation() != generation:
+            raise RwsError(409, "A software stop interrupted program initialization; RAPID will not be started")
+
+    def stop_for_reset(self) -> None:
+        """Internal stop, without cancelling this reset's explicit start request."""
+        self.post("/rw/rapid/execution", params={"action": "stop"}, data={"stopmode": "stop"})
+        deadline = time.monotonic() + 10
+        while (self.execution_state() != "stopped" or any(
+                task.get("type") == "norm" and task.get("excstate") == "star"
+                for task in self.tasks())):
+            if time.monotonic() >= deadline:
+                raise RwsError(409, "RAPID tasks did not stop within 10 seconds")
+            time.sleep(0.05)
+
+    def reset_program_pointer(self) -> None:
+        with self.mastership():
+            self.post("/rw/rapid/execution", params={"action": "resetpp"})
+
+    @contextmanager
+    def program_change(self) -> Iterator[None]:
+        if not self._program_lock.acquire(blocking=False):
+            raise RwsError(409, "Another RAPID initialization is already in progress")
+        try:
+            yield
+        finally:
+            self._program_lock.release()
+
+    def start_fresh(self, generation: int, deadline: float,
+                    check_authorization: Callable[[], None] | None = None) -> None:
+        # A concurrent stop announces itself before waiting for this lock. If
+        # start was already dispatched, that stop is posted after it completes.
+        with self._start_stop_lock:
+            self.check_stop_generation(generation)
+            if self.operation_mode() != "AUTO" or self.controller_state() != "motoron":
+                raise RwsError(409, "Fresh start requires AUTO mode and motors already on; use the controller controls")
+            if self.collision_state() not in {"INIT", "CONFIRMED"}:
+                raise RwsError(409, "Acknowledge the controller collision before starting RAPID")
+            # Check after taking the HTTP lock: another read/mastership call
+            # may have delayed dispatch while a Stop or lease expiry arrived.
+            with self._lock:
+                self.check_stop_generation(generation)
+                if time.monotonic() >= deadline:
+                    raise RwsError(409, "Program initialization exceeded its deadline; RAPID was not started")
+                if check_authorization is not None:
+                    check_authorization()
+                self.post("/rw/rapid/execution", params={"action": "start"}, data=START_ARGUMENTS)
+            self.check_stop_generation(generation)
+            deadline = time.monotonic() + 3
+            while self.execution_state() != "running":
+                self.check_stop_generation(generation)
+                if time.monotonic() >= deadline:
+                    raise RwsError(409, "RAPID start was not confirmed; inspect the controller event log")
+                time.sleep(0.05)
+
     def tasks(self) -> list[dict[str, Any]]:
         return self.get_state("/rw/rapid/tasks")
 
@@ -350,7 +441,9 @@ class RwsClient:
         self,
         reset_program_pointer: bool,
     ) -> None:
-        with self._lock:
+        generation = self.stop_generation()
+        with self.program_change(), self._start_stop_lock, self._lock:
+            self.check_stop_generation(generation)
             if reset_program_pointer:
                 with self.mastership():
                     self.post(
@@ -358,6 +451,7 @@ class RwsClient:
                         params={"action": "resetpp"},
                     )
 
+            self.check_stop_generation(generation)
             self.post(
                 "/rw/rapid/execution",
                 params={"action": "start"},
@@ -365,11 +459,14 @@ class RwsClient:
             )
 
     def stop(self) -> None:
-        self.post(
-            "/rw/rapid/execution",
-            params={"action": "stop"},
-            data={"stopmode": "stop"},
-        )
+        with self._stop_generation_lock:
+            self._stop_generation += 1
+        with self._start_stop_lock:
+            self.post(
+                "/rw/rapid/execution",
+                params={"action": "stop"},
+                data={"stopmode": "stop"},
+            )
 
 
 def _connection_problem(
