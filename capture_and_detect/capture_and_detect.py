@@ -77,9 +77,10 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 1200               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 400               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
+HOME_SPEED = 1000          # mm/s for going home (grippers empty then), faster than SPEED
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
 FLIP_ACCELERATION = 30     # %
 
@@ -93,6 +94,8 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
 PICK_Z = 75                # TCP height when gripping a cup
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
+Z_MIN = 170                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
+                           # except going down to grip (pick) or to put the cup down (place)
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
 Y_MIN, Y_MAX = -230, 420
 
@@ -101,13 +104,16 @@ Y_MIN, Y_MAX = -230, 420
 # swings the hand into the table), picks the cup and holds it at HANDOVER_L. The right arm
 # waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
 # R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
-# must stay within the gateway's z <= 600), the right goes down again, turns the cup over
+# must stay within the gateway's z limit), the right goes down again, turns the cup over
 # PLACE_ABOVE mm above the first free spot in placing_grid.json and puts it down there.
 LEFT_READY = (400, 100, 450)
-HANDOVER_L = (400, -100, 549)
+GATEWAY_Z_MAX = 700        # flange z limit set on the Pi (GATEWAY_RWS_SAFE_ZONE_MAX)
 LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
+LEFT_TOP = 690             # highest the left arm reaches at x 400, y -100 (tested: 690 DONE, 700 ERR move failed)
+# Meeting point as high as possible: the lift after letting go ends exactly at LEFT_TOP
+HANDOVER_L = (400, -100, LEFT_TOP - LEFT_LIFT)
 R_VIA = (200, -250, 200)
-R_TAKE = (380, -115, 210)
+R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)   # same offset as the tested pair
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
 PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
@@ -247,9 +253,12 @@ class Arm:
         if not self.gateway.robot_job(self.name, path, body):
             raise RobotError(f"{self.name} {path} failed")
 
-    def move(self, flange, rotation, speed=SPEED, acceleration=ACCELERATION):
-        """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees."""
+    def move(self, flange, rotation, speed=SPEED, acceleration=ACCELERATION, pick=False):
+        """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees.
+        Refused outside z Z_MIN..GATEWAY_Z_MAX; pick=True allows lower (gripping / putting down)."""
         (x, y, z), (rx, ry, rz) = flange, rotation
+        if z > GATEWAY_Z_MAX or (z < Z_MIN and not pick):
+            raise RobotError(f"{self.name} move to z {z} refused: outside z {Z_MIN}..{GATEWAY_Z_MAX}")
         self.job("move", {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz,
                           "speed": speed, "acceleration": acceleration, "ramp": RAMP})
 
@@ -257,14 +266,14 @@ class Arm:
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
         at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
         ox, oy, _ = self.offset
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN)
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN, pick=(z == PICK_Z))
 
     def gripper(self, action):
         """action: "open" or "grip"."""
         self.job("gripper", {"action": action})
 
     def home(self):
-        self.job("home", {"speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
+        self.job("home", {"speed": HOME_SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
 
 
 class Handover:
@@ -317,6 +326,7 @@ class Handover:
         arm.goto(cup["x"], cup["y"], PICK_Z)       # put it back where it stood
         arm.gripper("open")
         arm.goto(cup["x"], cup["y"], TRAVEL_Z)
+        arm.move(LEFT_READY, LEFT_DOWN)            # high over the tray before the home move
         arm.home()
 
     def _left_job(self, cup):
@@ -330,6 +340,7 @@ class Handover:
         arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
         self.left_clear.set()                      # -> right: you can pull it down
         self._wait_for(self.right_away)            # the way home could cross the right arm
+        arm.move(LEFT_READY, LEFT_DOWN)            # high over the tray before the home move
         arm.home()                                 # out of the camera view for the next capture
 
     def _right_job(self, place):
@@ -352,7 +363,7 @@ class Handover:
         arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
         arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
         self.right_away.set()                      # -> left: you can go home
-        arm.move(spot, RIGHT_DOWN)
+        arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
         arm.gripper("open")
         arm.move(above, RIGHT_DOWN)
         arm.home()                                 # out of the picking area for the next cup

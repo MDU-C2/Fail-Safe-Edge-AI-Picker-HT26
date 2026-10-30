@@ -7,8 +7,8 @@
     {"id": 5, "x": 400, "y": -280, "z": 230, "occupied": true},
     {"id": 6, "x": 480, "y": -280, "z": 230, "occupied": true},
     {"id": 7, "x": 560, "y": -280, "z": 230, "occupied": true},
-    {"id": 8, "x": 640, "y": -280, "z": 230, "occupied": true},
-    {"id": 9, "x": 400, "y": -360, "z": 230, "occupied": true},
+    {"id": 8, "x": 640, "y": -280, "z": 230, "occupied": false},
+    {"id": 9, "x": 400, "y": -360, "z": 230, "occupied": false},
     {"id": 10, "x": 480, "y": -360, "z": 230, "occupied": false},
     {"id": 11, "x": 560, "y": -360, "z": 230, "occupied": false},
     {"id": 12, "x": 640, "y": -360, "z": 230, "occupied": false}
