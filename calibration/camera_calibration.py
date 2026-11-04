@@ -6,8 +6,7 @@ What it does, in one run:
   2. Takes control, moves the arm HOME, then to each pose in POSES with the gripper in
      CALIB_ROT. Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
-     the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
-     stale depth frame from before the move is never used.
+     the AprilTag on the gripper and reads its depth.
   4. Saves every image and the pose it belongs to in calibration_runs/session_<time>/,
      so images and poses can never get out of step.
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
@@ -64,7 +63,7 @@ POSES = [
 TAG_ID = 0
 TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
+FRAMES = 3                       # frames per pose, combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -181,9 +180,9 @@ def goto(tcp, rot):
 # Measurement
 
 def find_tag(rgb):
-    """Tag corners in pixels, or None unless exactly one tag with TAG_ID is visible."""
+    """Tag corners in pixels, or None if no tag with TAG_ID is visible."""
     corners, ids, _ = detector.detectMarkers(cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY))
-    if ids is None or list(ids.ravel()).count(TAG_ID) != 1:
+    if ids is None or TAG_ID not in ids.ravel():
         return None
     return corners[list(ids.ravel()).index(TAG_ID)][0]
 
@@ -211,13 +210,11 @@ def to_camera(u, v, z, k):
 
 
 def measure(folder, n):
-    """Grab FRAMES frames, drop the first, combine the rest. Saves the last pair as image n."""
+    """Grab FRAMES frames and combine them. Saves the last pair as image n."""
     rgb = depth = None
     found = []
-    for i in range(FRAMES):
+    for _ in range(FRAMES):
         rgb, depth = capture()
-        if i == 0:
-            continue                       # may still be from before the move
         c = find_tag(rgb)
         z = tag_depth(c, depth) if c is not None else None
         if z is not None:
@@ -326,7 +323,7 @@ def run(auto):
         time.sleep(SETTLE)
         tag = measure(folder, n)
         print(f"  pose {n}: " + (f"tag at ({tag['u']:.0f}, {tag['v']:.0f}) px, depth {tag['z']:.0f} mm, "
-                                 f"{tag['frames']}/{FRAMES - 1} frames" if tag else "tag or depth NOT found"))
+                                 f"{tag['frames']}/{FRAMES} frames" if tag else "tag or depth NOT found"))
         session["samples"].append({"image": n, "pose": list(pose), "tag": tag})
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
