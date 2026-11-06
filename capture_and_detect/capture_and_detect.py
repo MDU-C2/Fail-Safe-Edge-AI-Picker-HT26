@@ -77,7 +77,7 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 350               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
@@ -94,7 +94,7 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 115                # TCP height when gripping a cup
+PICK_Z = 75                # TCP height when gripping a cup (75 for without tray, 115 with tray)
 GRIP_MARGIN = 10           # the left gripper opens to the cup base diameter + this (mm)
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
