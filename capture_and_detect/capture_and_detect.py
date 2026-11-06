@@ -98,8 +98,10 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 50                # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
+PICK_Z = 120             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
+GRIP_MARGIN = 20           # left jaws open to the cup base diameter + this (mm)
+LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
                            # except going down to grip (pick) or to put the cup down (place)
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
@@ -282,6 +284,14 @@ class Arm:
         """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
         self.job("gripper", {"action": action})
 
+    def open_left_to(self, aperture):
+        """Left jaws to a gap of aperture mm (limited to what they can do); None = fully open."""
+        if aperture is None:
+            self.gripper("open")
+            return
+        position = min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25)
+        self.job("gripper", {"action": "move", "position": round(position, 1)})
+
     def grip_level(self):
         """Where the fingers are now, mm on the SmartGripper's scale (0 closed .. 25 open);
         right after a grip that is how far it closed on the cup. None if the gateway
@@ -361,9 +371,10 @@ class Handover:
     def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
-        arm.gripper("open")
+        arm.gripper("grip")                        # closed while it travels
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
         arm.goto(x, y, TRAVEL_Z)
+        arm.open_left_to(cup.get("aperture"))      # only here, right above the cup
         arm.goto(x, y, PICK_Z)
         arm.gripper("grip")
         cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
@@ -375,6 +386,7 @@ class Handover:
         arm.goto(cup["x"], cup["y"], PICK_Z)       # put it back where it stood
         arm.gripper("open")
         arm.goto(cup["x"], cup["y"], TRAVEL_Z)
+        arm.gripper("grip")                        # closed on the way home
         arm.home()                                 # up first, then home
 
     def _left_job(self, cup):
@@ -388,17 +400,19 @@ class Handover:
         arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
         self.left_clear.set()                      # -> right: you can pull it down
         self._wait_for(self.right_away)            # the way home could cross the right arm
-        arm.home()                                 # out of the camera view for the next capture
+        arm.gripper("grip")                        # closed on the way home
+        arm.home()                               # out of the camera view for the next capture
 
     def _right_job(self, place):
         arm = self.right
         spot = (place["x"], place["y"], place["z"])
         above = (place["x"], place["y"], place["z"] + PLACE_ABOVE)
-        arm.gripper("open")
+        arm.gripper("grip")                        # closed while it travels
         self._wait_for(self.left_has_cup)          # stay home, out of the picking area
         arm.move(R_VIA, RIGHT_UP)
         arm.move(R_BESIDE, RIGHT_UP)               # beside the hand-over, just under the rim height
         self._wait_for(self.at_handover)
+        arm.gripper("open")                        # only here, just before it takes the cup
         arm.move(R_BELOW, RIGHT_UP)                # slide in under the cup
         arm.move(R_TAKE, RIGHT_UP)                 # the last bit straight up
         arm.gripper("grip")
@@ -414,7 +428,8 @@ class Handover:
         arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
         arm.gripper("open")
         arm.move(above, RIGHT_DOWN)
-        arm.home()                                 # out of the picking area for the next cup
+        arm.gripper("grip")                        # closed on the way home
+        arm.home()                               # out of the picking area for the next cup
 
     def _wait_for(self, event):
         """Wait for the other arm, but stop if it failed."""
@@ -558,8 +573,10 @@ def find_cups(objects):
             continue
         x, y = o["robot_x_mm"], o["robot_y_mm"]
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
+        diameter = o["diameter_mm"]
         cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "diameter": o["diameter_mm"],
+                     "z": o["robot_z_mm"], "diameter": diameter,
+                     "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
                      "status": "waiting" if reachable else "out of reach"})
     return cups
 
