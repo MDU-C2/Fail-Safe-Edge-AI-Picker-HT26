@@ -36,10 +36,10 @@ settings = get_settings()
 #
 # Load the registered clients now so that a missing or invalid
 # auth clients file stops the gateway at startup instead of
-# failing on the first request.
+# failing on the first request. Both modes use it: strict mode
+# for the tokens, development mode for the client ids.
 #
-if settings.security_mode == "strict":
-    get_client_registry()
+get_client_registry()
 
 
 # ================================================================

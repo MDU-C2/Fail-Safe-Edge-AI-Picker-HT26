@@ -107,6 +107,46 @@ def test_module_upload_is_validated_before_contacting_controller(
         expect(admin.put(path, json={"source": source}), 422)
 
 
+@pytest.mark.parametrize(
+    "client_id",
+    ["primary", "secondary", "tertiary"],
+)
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("PUT", "/robot/rapid/tasks/T_ROB_L/modules/GatewayTest"),
+        ("DELETE", "/robot/rapid/tasks/T_ROB_L/modules/GatewayTest"),
+    ],
+)
+def test_only_admin_changes_the_rapid_program(
+    gateway: Gateway,
+    client_id: str,
+    method: str,
+    path: str,
+) -> None:
+    body = {"source": MODULE_SOURCE} if method == "PUT" else None
+
+    model = gateway.client(client_id)
+
+    with model.control():
+        expect(model.request(method, path, json=body), 403)
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    ["primary", "secondary", "tertiary"],
+)
+def test_models_start_and_stop_rapid(
+    gateway: Gateway,
+    client_id: str,
+) -> None:
+    model = gateway.client(client_id)
+
+    with model.control():
+        expect(model.post("/robot/rapid/stop"), 503)
+        expect(model.post("/robot/rapid/start", json={"reset_program_pointer": True}), 503)
+
+
 def test_control_with_lease_reaches_controller(
     gateway: Gateway,
 ) -> None:

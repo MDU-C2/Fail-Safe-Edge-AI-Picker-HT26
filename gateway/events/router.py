@@ -11,7 +11,7 @@ from gateway.config import get_settings
 from gateway.events.manager import event_manager
 from gateway.events.permissions import get_event_permission
 from gateway.security.authentication import (
-    DEVELOPMENT_IDENTITIES,
+    get_development_identity,
 )
 
 router = APIRouter(
@@ -26,13 +26,8 @@ async def events(
     settings = get_settings()
 
     if settings.security_mode == "development":
-        client_id = websocket.query_params.get(
-            "client",
-            "admin",
-        )
-
-        identity = DEVELOPMENT_IDENTITIES.get(
-            client_id
+        identity = get_development_identity(
+            websocket.query_params.get("client")
         )
 
         if identity is None:

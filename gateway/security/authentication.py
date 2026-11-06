@@ -17,64 +17,6 @@ from gateway.security.client_registry import ClientRegistry
 from gateway.security.identity import Identity
 
 
-#
-# Same clients, permissions and priorities as gateway/auth_clients.json.
-#
-DEVELOPMENT_IDENTITIES = {
-    "admin": Identity(
-        client_id="admin",
-        authenticated=False,
-        permissions=frozenset({
-            "*",
-        }),
-        control_priority=1000,
-    ),
-
-    "primary": Identity(
-        client_id="primary",
-        authenticated=False,
-        permissions=frozenset({
-            "robot.read",
-            "robot.control",
-            "camera.read",
-        }),
-        control_priority=300,
-    ),
-
-    "secondary": Identity(
-        client_id="secondary",
-        authenticated=False,
-        permissions=frozenset({
-            "robot.read",
-            "robot.control",
-            "camera.read",
-        }),
-        control_priority=200,
-    ),
-
-    "tertiary": Identity(
-        client_id="tertiary",
-        authenticated=False,
-        permissions=frozenset({
-            "robot.read",
-            "robot.control",
-            "camera.read",
-        }),
-        control_priority=100,
-    ),
-
-    "diagnostics": Identity(
-        client_id="diagnostics",
-        authenticated=False,
-        permissions=frozenset({
-            "robot.read",
-            "camera.read",
-        }),
-        control_priority=10,
-    ),
-}
-
-
 bearer_scheme = HTTPBearer(
     auto_error=False
 )
@@ -84,6 +26,23 @@ bearer_scheme = HTTPBearer(
 def get_client_registry() -> ClientRegistry:
     return ClientRegistry(
         get_settings().auth_clients_file
+    )
+
+
+def get_development_identity(
+    client_id: str | None,
+) -> Identity | None:
+    """
+    Development mode: the client named by id in the auth clients
+    file, without a token. No id means the client with the highest
+    control priority.
+    """
+
+    registry = get_client_registry()
+
+    return registry.identity(
+        client_id or registry.default_client_id,
+        authenticated=False,
     )
 
 
@@ -110,10 +69,8 @@ def get_identity(
     # ------------------------------------------------------------
 
     if settings.security_mode == "development":
-        client_id = x_dev_client or "admin"
-
-        identity = DEVELOPMENT_IDENTITIES.get(
-            client_id
+        identity = get_development_identity(
+            x_dev_client
         )
 
         if identity is None:
