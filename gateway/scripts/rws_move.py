@@ -6,6 +6,8 @@ result: a move, home, or the gripper.
     python gateway/scripts/rws_move.py --arm right --x 420 --y -150 --z 310 --rx 180 --ry 0 --rz 0
     python gateway/scripts/rws_move.py --home
     python gateway/scripts/rws_move.py --grip          # or --open
+    python gateway/scripts/rws_move.py --grip --force 5        # gentler grip, 5 N (default 20)
+    python gateway/scripts/rws_move.py --gripper-to 15         # open or close to 15 mm between the fingers
     python gateway/scripts/rws_move.py --x 540 --y 306 --z 338 --no-wait
     python gateway/scripts/rws_move.py --rz 90                 # turn in place
     python gateway/scripts/rws_move.py --rx 180 --ry 0 --rz 180  # point down, in place
@@ -26,6 +28,10 @@ clients of the team's CommServer do.
 --acc and --ramp the acceleration and its ramp in % of the maximum
 (RAPID AccSet, 20..100 and 10..100). They apply to moves and home;
 left out, the gateway's defaults are used (50 mm/s, 100 %, 100 %).
+
+--gripper-to MM sets the opening between the fingers (0 closed .. 25
+fully open, SmartGripper g_MoveTo) without holding force; --force N
+(0 < N <= 20, default 20) is the holding force of --grip.
 
 The robot that moves is the one the gateway at --url controls; the
 default is the gateway on the Raspberry Pi, i.e. the real YuMi.
@@ -118,7 +124,9 @@ def main() -> None:
 
     parser.add_argument("--home", action="store_true", help="Move the arm home")
     parser.add_argument("--grip", action="store_true", help="Close the gripper")
-    parser.add_argument("--open", action="store_true", help="Open the gripper")
+    parser.add_argument("--open", action="store_true", help="Open the gripper fully")
+    parser.add_argument("--gripper-to", type=float, metavar="MM", help="Open or close the gripper to MM between the fingers (0..25)")
+    parser.add_argument("--force", type=float, help="Holding force in N for --grip (0 < N <= 20, default 20)")
     parser.add_argument("--no-wait", action="store_true", help="Answer STARTED at once and poll /robot/rws/status")
 
     parser.add_argument("--speed", type=float, help="TCP speed in mm/s for a move or home (gateway default 50)")
@@ -145,6 +153,9 @@ def main() -> None:
     elif args.grip or args.open:
         path, body = "/robot/rws/gripper", {"action": "grip" if args.grip else "open"}
 
+    elif args.gripper_to is not None:
+        path, body = "/robot/rws/gripper", {"action": "move", "position": args.gripper_to}
+
     elif any(value is not None for value in position + rotation):
         #
         # Whatever is not given stays as it is now.
@@ -163,7 +174,13 @@ def main() -> None:
             )
 
     else:
-        parser.error("give --x/--y/--z and/or --rx/--ry/--rz, --home, --grip or --open")
+        parser.error("give --x/--y/--z and/or --rx/--ry/--rz, --home, --grip, --open or --gripper-to")
+
+    if args.force is not None:
+        if not args.grip:
+            parser.error("--force is for --grip")
+
+        body["force"] = args.force
 
     speed = {
         name: value

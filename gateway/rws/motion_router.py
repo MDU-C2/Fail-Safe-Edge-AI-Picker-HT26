@@ -196,7 +196,19 @@ async def home(
 @router.post(
     "/gripper",
     response_model=CommandResponse,
-    summary="Close (grip) or open an arm's gripper over Robot Web Services",
+    summary="Close, open or set the opening of an arm's gripper over Robot Web Services",
+    description=(
+        "action grip closes until the fingers hold something, with "
+        "optional force in N (0 < force <= 20, default 20, the "
+        "SmartGripper's maximum); open opens fully; move goes to "
+        "position, the opening between the fingers in mm (0 closed "
+        "to 25 fully open), from either side and without holding "
+        "force. position only with move, force only with grip (422 "
+        "otherwise). 409 if the RAPID program predates move or "
+        "force (upload rapid/ again). wait as for /move. The last "
+        "force also applies to later legacy GRIP commands of that "
+        "arm."
+    ),
 )
 async def gripper(
     request: RwsGripperRequest,
@@ -210,6 +222,8 @@ async def gripper(
         request.arm,
         request.action,
         request.wait,
+        request.position,
+        request.force,
     )
 
 

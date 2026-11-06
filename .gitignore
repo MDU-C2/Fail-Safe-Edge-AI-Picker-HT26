@@ -13,3 +13,4 @@ capture_and_detect/data
 /rapid/backups/
 /calibration/calibration_runs
 /client_tokens.json
+/.idea

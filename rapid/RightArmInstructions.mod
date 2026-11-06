@@ -24,11 +24,15 @@ MODULE RightArm
         GoHomeRight;
         move_ok_right := AtHome();
       ELSEIF grip_cmd_right = "GRIP" THEN
-        g_GripIn;
+        g_GripIn \holdForce:=grip_force_right;
         grip_cmd_right := "";
         move_ok_right := TRUE;
       ELSEIF grip_cmd_right = "OPEN" THEN
         g_GripOut;
+        grip_cmd_right := "";
+        move_ok_right := TRUE;
+      ELSEIF grip_cmd_right = "MOVE" THEN
+        g_MoveTo grip_pos_right;
         grip_cmd_right := "";
         move_ok_right := TRUE;
       ELSE

@@ -70,6 +70,16 @@ def test_rapid_runs_the_gateway_program(
     assert not any("GripperStub" in names for names in modules.values()), modules
 
 
+def test_gripper_positions_are_read(
+    real_robot: RemoteGateway,
+) -> None:
+    for arm in ARMS:
+        state = expect(real_robot.client().get(f"/robot/arms/{arm}/gripper"), 200)
+
+        assert state["arm"] == arm
+        assert 0 <= state["position"] <= 25, state
+
+
 def test_legacy_command_status_still_answers(
     admin: Client,
 ) -> None:
@@ -213,3 +223,13 @@ def test_gripper_closes_and_opens(
         )
 
         assert result == DONE, action
+
+        position = expect(operator.get(f"/robot/arms/{arm}/gripper"), 200)["position"]
+
+        #
+        # Nothing in the gripper: closed is near 0, open near 25.
+        #
+        if action == "grip":
+            assert position < 5, position
+        else:
+            assert position > 20, position
