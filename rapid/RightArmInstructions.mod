@@ -32,7 +32,12 @@ MODULE RightArm
         grip_cmd_right := "";
         move_ok_right := TRUE;
       ELSEIF grip_cmd_right = "OPEN" THEN
-        g_GripOut;
+        IF grip_aperture_right > 0 THEN
+          g_MoveTo grip_aperture_right;             ! open only this far (mm)
+        ELSE
+          g_GripOut;                             ! fully open
+        ENDIF
+        grip_aperture_right := 0;
         GripLoad load0;                        ! no cup any more
         grip_cmd_right := "";
         move_ok_right := TRUE;

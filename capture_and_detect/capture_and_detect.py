@@ -94,7 +94,7 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 115                # TCP height when gripping a cup
+PICK_Z = 80                # TCP height when gripping a cup
 GRIP_MARGIN = 10           # the left gripper opens to the cup base diameter + this (mm)
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
@@ -275,11 +275,11 @@ class Arm:
         ox, oy, _ = self.offset
         self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN, pick=(z == PICK_Z))
 
-    def gripper(self, action, width=None):
-        """action: "open" or "grip". width: opening in mm (sent along; the gateway does not use it yet)."""
+    def gripper(self, action, aperture=None):
+        """action: "open" or "grip". aperture: how far to open in mm (sent along; the gateway does not use it yet)."""
         body = {"action": action}
-        if width is not None:
-            body["width"] = width
+        if aperture is not None:
+            body["aperture"] = aperture
         self.job("gripper", body)
 
     def home(self):
@@ -339,8 +339,9 @@ class Handover:
     def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
-        width = None if cup.get("diameter") is None else round(cup["diameter"] + GRIP_MARGIN, 1)
-        arm.gripper("open", width)               # just wider than the cup base
+        aperture = cup["aperture"]
+        log(f"    left: aperture {aperture} mm (cup base + {GRIP_MARGIN} mm)")
+        arm.gripper("open", aperture)              # None (no diameter) = fully open
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
         arm.goto(x, y, TRAVEL_Z)
         arm.goto(x, y, PICK_Z)
@@ -534,9 +535,12 @@ def find_cups(objects):
                 f"around it, no handle next to it, not at cup height - ignored (false detection?)")
             continue
         x, y = o["robot_x_mm"], o["robot_y_mm"]
+        diameter = o["diameter_mm"]
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
         cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "diameter": o["diameter_mm"], "status": "waiting" if reachable else "out of reach"})
+                     "z": o["robot_z_mm"], "diameter": diameter,
+                     "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
+                     "status": "waiting" if reachable else "out of reach"})
     return cups
 
 

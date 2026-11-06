@@ -104,6 +104,23 @@ class RwsArmRequest(BaseModel):
 class RwsGripperRequest(RwsArmRequest):
     action: Literal["grip", "open"]
 
+    #
+    # Only with "open": open to this SmartGripper finger position
+    # (mm, RAPID g_MoveTo) instead of fully (g_GripOut).
+    #
+    aperture: FiniteFloat | None = Field(
+        default=None,
+        gt=0,
+        le=25,
+    )
+
+    @model_validator(mode="after")
+    def width_only_with_open(self) -> Self:
+        if self.aperture is not None and self.action != "open":
+            raise ValueError("aperture is only allowed with action open")
+
+        return self
+
 
 class RwsMotionRequest(RwsArmRequest):
     """A job that moves the arm (move or home).

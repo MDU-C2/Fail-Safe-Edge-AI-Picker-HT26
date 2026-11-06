@@ -31,7 +31,12 @@ MODULE LeftArm
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSEIF grip_cmd_left = "OPEN" THEN
-        g_GripOut;
+        IF grip_aperture_left > 0 THEN
+          g_MoveTo grip_aperture_left;              ! open only this far (mm)
+        ELSE
+          g_GripOut;                             ! fully open
+        ENDIF
+        grip_aperture_left := 0;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSE

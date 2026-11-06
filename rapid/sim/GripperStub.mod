@@ -24,4 +24,8 @@ MODULE GripperStub
     WaitTime 0.2;
   ENDPROC
 
+  PROC g_MoveTo(num PosVal)
+    WaitTime 0.2;
+  ENDPROC
+
 ENDMODULE

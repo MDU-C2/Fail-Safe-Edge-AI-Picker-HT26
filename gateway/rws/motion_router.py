@@ -210,6 +210,7 @@ async def gripper(
         request.arm,
         request.action,
         request.wait,
+        request.aperture,
     )
 
 
