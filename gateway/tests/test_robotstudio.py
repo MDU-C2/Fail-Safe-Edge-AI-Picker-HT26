@@ -543,6 +543,73 @@ def test_rws_gripper(
         assert expect(result, 200) == DONE
 
 
+def stub_gripper(
+    controller: "Controller",
+    arm: str,
+) -> tuple[float, float]:
+    """Opening (mm) and force (N) the arm's last SmartGripper call
+    asked for, as rapid/sim/GripperStub.mod keeps them."""
+
+    task = "T_ROB_L" if arm == "left" else "T_ROB_R"
+
+    return (
+        float(controller.read_symbol(f"{task}/GripperStub", "stub_pos")),
+        float(controller.read_symbol(f"{task}/GripperStub", "stub_force")),
+    )
+
+
+def test_rws_gripper_position_and_force(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+    controller = Controller()
+
+    def gripper(
+        **body,
+    ) -> dict:
+        return expect(operator.post("/robot/rws/gripper", json=body), 200)
+
+    #
+    # move reaches g_MoveTo with the opening, in both directions.
+    #
+    assert gripper(arm="left", action="move", position=12.5) == DONE
+    assert stub_gripper(controller, "left")[0] == pytest.approx(12.5)
+
+    assert gripper(arm="left", action="move", position=3) == DONE
+    assert stub_gripper(controller, "left")[0] == pytest.approx(3)
+
+    assert gripper(arm="left", action="move", position=25) == DONE
+    assert stub_gripper(controller, "left")[0] == pytest.approx(25)
+
+    #
+    # grip reaches g_GripIn with the force; without one, 20 N.
+    #
+    assert gripper(arm="left", action="grip", force=4.5) == DONE
+    assert stub_gripper(controller, "left") == (pytest.approx(0), pytest.approx(4.5))
+    assert float(controller.read_symbol("T_ROB_L", "grip_force_left")) == pytest.approx(4.5)
+
+    assert gripper(arm="left", action="grip") == DONE
+    assert stub_gripper(controller, "left")[1] == pytest.approx(20)
+
+    #
+    # The right arm has its own; the left one is not touched.
+    #
+    assert gripper(arm="right", action="move", position=18, wait=False)["message"] == "STARTED"
+
+    assert wait_for_status(operator, "right") == DONE
+    assert stub_gripper(controller, "right")[0] == pytest.approx(18)
+    assert stub_gripper(controller, "left")[0] == pytest.approx(0)
+
+    #
+    # The gripper does not move the arm.
+    #
+    before = arm_pose(operator)
+
+    assert gripper(arm="left", action="move", position=10) == DONE
+
+    assert_position(arm_pose(operator), tuple(before[axis] for axis in "xyz"))
+
+
 def timed_move(
     client: Client,
     position: tuple[float, float, float],

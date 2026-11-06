@@ -102,7 +102,38 @@ class RwsArmRequest(BaseModel):
 
 
 class RwsGripperRequest(RwsArmRequest):
-    action: Literal["grip", "open"]
+    """One gripper job.
+
+    grip closes until the fingers hold something (or are closed),
+    with force N (default 20, the SmartGripper's maximum); open
+    opens fully; move goes to position, the opening between the
+    fingers in mm (0 closed .. 25 fully open), in either direction
+    and without holding force (SmartGripper g_MoveTo).
+    """
+
+    action: Literal["grip", "open", "move"]
+
+    position: FiniteFloat | None = Field(
+        default=None,
+        ge=0,
+        le=25,
+    )
+
+    force: FiniteFloat | None = Field(
+        default=None,
+        gt=0,
+        le=20,
+    )
+
+    @model_validator(mode="after")
+    def check_parameters(self) -> Self:
+        if (self.action == "move") != (self.position is not None):
+            raise ValueError("position is required for move and only for move")
+
+        if self.force is not None and self.action != "grip":
+            raise ValueError("force is only for grip")
+
+        return self
 
 
 class RwsMotionRequest(RwsArmRequest):
