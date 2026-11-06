@@ -19,6 +19,7 @@ Without --real-robot the real robot is never used: every robot
 address the suite's own gateways get is 127.0.0.1.
 """
 
+import os
 from typing import Iterator
 
 import pytest
@@ -75,8 +76,8 @@ def pytest_addoption(
 
     parser.addoption(
         "--real-robot-token",
-        default="BAD_TOKEN_OPERATOR",
-        help="Bearer token of a client with robot.control on that gateway",
+        default=os.environ.get("GATEWAY_TOKEN", ""),
+        help="Bearer token of a client with robot.control on that gateway (default: GATEWAY_TOKEN)",
     )
 
 

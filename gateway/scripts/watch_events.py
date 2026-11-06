@@ -38,7 +38,7 @@ def main() -> None:
     )
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Events WebSocket URL")
-    parser.add_argument("--client", default="autonomy", help="Development client id")
+    parser.add_argument("--client", default="primary", help="Development client id")
     parser.add_argument("--events", nargs="+", default=DEFAULT_EVENTS, help="Event names or prefixes")
 
     args = parser.parse_args()

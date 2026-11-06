@@ -17,29 +17,50 @@ from gateway.security.client_registry import ClientRegistry
 from gateway.security.identity import Identity
 
 
+#
+# Same clients, permissions and priorities as gateway/auth_clients.json.
+#
 DEVELOPMENT_IDENTITIES = {
-    "operator": Identity(
-        client_id="operator",
+    "admin": Identity(
+        client_id="admin",
         authenticated=False,
         permissions=frozenset({
-            "robot.read",
-            "robot.control",
-            "camera.read",
-            "camera.control",
+            "*",
         }),
-        control_priority=100,
+        control_priority=1000,
     ),
 
-    "autonomy": Identity(
-        client_id="autonomy",
+    "primary": Identity(
+        client_id="primary",
         authenticated=False,
         permissions=frozenset({
             "robot.read",
             "robot.control",
             "camera.read",
-            "camera.control",
         }),
-        control_priority=50,
+        control_priority=300,
+    ),
+
+    "secondary": Identity(
+        client_id="secondary",
+        authenticated=False,
+        permissions=frozenset({
+            "robot.read",
+            "robot.control",
+            "camera.read",
+        }),
+        control_priority=200,
+    ),
+
+    "tertiary": Identity(
+        client_id="tertiary",
+        authenticated=False,
+        permissions=frozenset({
+            "robot.read",
+            "robot.control",
+            "camera.read",
+        }),
+        control_priority=100,
     ),
 
     "diagnostics": Identity(
@@ -89,7 +110,7 @@ def get_identity(
     # ------------------------------------------------------------
 
     if settings.security_mode == "development":
-        client_id = x_dev_client or "operator"
+        client_id = x_dev_client or "admin"
 
         identity = DEVELOPMENT_IDENTITIES.get(
             client_id

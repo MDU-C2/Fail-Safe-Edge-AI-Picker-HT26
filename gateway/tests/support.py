@@ -49,23 +49,35 @@ RENEW_INTERVAL_SECONDS = 0.5
 # tokens known to the tests.
 #
 CLIENTS = {
-    "operator": {
+    "admin": {
+        "permissions": [
+            "*",
+        ],
+        "control_priority": 1000,
+    },
+    "primary": {
         "permissions": [
             "robot.read",
             "robot.control",
             "camera.read",
-            "camera.control",
+        ],
+        "control_priority": 300,
+    },
+    "secondary": {
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
+        ],
+        "control_priority": 200,
+    },
+    "tertiary": {
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
         ],
         "control_priority": 100,
-    },
-    "autonomy": {
-        "permissions": [
-            "robot.read",
-            "robot.control",
-            "camera.read",
-            "camera.control",
-        ],
-        "control_priority": 50,
     },
     "diagnostics": {
         "permissions": [
@@ -340,7 +352,7 @@ class Gateway:
 
     def client(
         self,
-        client_id: str | None = "operator",
+        client_id: str | None = "admin",
     ) -> Client:
         return Client(self, client_id)
 

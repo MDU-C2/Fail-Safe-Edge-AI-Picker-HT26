@@ -28,7 +28,7 @@ async def events(
     if settings.security_mode == "development":
         client_id = websocket.query_params.get(
             "client",
-            "operator",
+            "admin",
         )
 
         identity = DEVELOPMENT_IDENTITIES.get(

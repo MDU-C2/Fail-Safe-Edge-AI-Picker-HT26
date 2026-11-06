@@ -110,12 +110,12 @@ def loaded(
 
 
 @pytest.fixture()
-def operator(
+def admin(
     robotstudio_gateway: Gateway,
 ) -> Iterator[Client]:
-    """The operator, holding control, with RAPID stopped."""
+    """The admin, holding control, with RAPID stopped."""
 
-    client = robotstudio_gateway.client("operator")
+    client = robotstudio_gateway.client("admin")
 
     with client.control():
         expect(client.post("/robot/rapid/stop"), 200)
@@ -217,32 +217,32 @@ def test_rapid_status(
 # ================================================================
 
 def test_load_replace_and_unload_module(
-    operator: Client,
+    admin: Client,
 ) -> None:
     path = f"/robot/rapid/tasks/{TEST_TASK}/modules/{TEST_MODULE}"
 
     try:
-        rapid = expect(operator.put(path, json={"source": TEST_SOURCE}), 200)
+        rapid = expect(admin.put(path, json={"source": TEST_SOURCE}), 200)
 
         assert TEST_MODULE in loaded(rapid, TEST_TASK)
 
-        rapid = expect(operator.put(path, json={"source": TEST_SOURCE}), 200)
+        rapid = expect(admin.put(path, json={"source": TEST_SOURCE}), 200)
 
         assert loaded(rapid, TEST_TASK).count(TEST_MODULE) == 1
 
     finally:
-        rapid = expect(operator.delete(path), 200)
+        rapid = expect(admin.delete(path), 200)
 
     assert TEST_MODULE not in loaded(rapid, TEST_TASK)
 
-    expect(operator.delete(path), 404)
+    expect(admin.delete(path), 404)
 
 
 def test_unknown_task(
-    operator: Client,
+    admin: Client,
 ) -> None:
     expect(
-        operator.put(
+        admin.put(
             f"/robot/rapid/tasks/T_NOPE/modules/{TEST_MODULE}",
             json={"source": TEST_SOURCE},
         ),
@@ -251,21 +251,21 @@ def test_unknown_task(
 
 
 def test_modules_cannot_change_while_running(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    rapid = expect(operator.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
+    rapid = expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
 
     assert rapid["execution_state"] == "running"
 
     expect(
-        operator.put(
+        admin.put(
             f"/robot/rapid/tasks/{TEST_TASK}/modules/{TEST_MODULE}",
             json={"source": TEST_SOURCE},
         ),
         409,
     )
 
-    rapid = expect(operator.post("/robot/rapid/stop"), 200)
+    rapid = expect(admin.post("/robot/rapid/stop"), 200)
 
     assert rapid["execution_state"] == "stopped"
     assert TEST_MODULE not in loaded(rapid, TEST_TASK)
@@ -355,13 +355,13 @@ LoadProgram = Callable[[dict[str, list[Path]]], Client]
 
 @pytest.fixture()
 def load_program(
-    operator: Client,
+    admin: Client,
 ) -> Iterator[LoadProgram]:
     """Load and start a program; restore the saved one afterwards."""
 
     controller = Controller()
 
-    rapid = expect(operator.get("/robot/rapid"), 200)
+    rapid = expect(admin.get("/robot/rapid"), 200)
 
     backup = {
         task: {
@@ -374,15 +374,15 @@ def load_program(
     def replace_program(
         program: dict[str, dict[str, str]],
     ) -> None:
-        rapid = expect(operator.get("/robot/rapid"), 200)
+        rapid = expect(admin.get("/robot/rapid"), 200)
 
         for task in TASKS:
             for module in loaded(rapid, task):
-                expect(operator.delete(f"/robot/rapid/tasks/{task}/modules/{module}"), 200)
+                expect(admin.delete(f"/robot/rapid/tasks/{task}/modules/{module}"), 200)
 
             for module, source in program[task].items():
                 expect(
-                    operator.put(f"/robot/rapid/tasks/{task}/modules/{module}", json={"source": source}),
+                    admin.put(f"/robot/rapid/tasks/{task}/modules/{module}", json={"source": source}),
                     200,
                 )
 
@@ -396,15 +396,15 @@ def load_program(
             }
         )
 
-        expect(operator.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
+        expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
 
-        return operator
+        return admin
 
     try:
         yield load
 
     finally:
-        operator.post("/robot/rapid/stop")
+        admin.post("/robot/rapid/stop")
 
         replace_program(backup)
 
@@ -474,16 +474,16 @@ OUTSIDE_SAFE_ZONE = {"accepted": False, "message": "ERR outside safe zone"}
 def test_rws_moves_the_virtual_robot(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
     #
     # Without a body /home homes the left arm.
     #
-    assert expect(operator.post("/robot/rws/home"), 200) == DONE
+    assert expect(admin.post("/robot/rws/home"), 200) == DONE
 
-    assert rws_move(operator, TARGET, TARGET_ROTATION) == DONE
+    assert rws_move(admin, TARGET, TARGET_ROTATION) == DONE
 
-    pose = arm_pose(operator)
+    pose = arm_pose(admin)
 
     assert_position(pose, TARGET)
 
@@ -496,9 +496,9 @@ def test_rws_moves_the_virtual_robot(
     #
     second = (300.0, 150.0, 280.0)
 
-    assert rws_move(operator, second) == DONE
+    assert rws_move(admin, second) == DONE
 
-    moved = arm_pose(operator)
+    moved = arm_pose(admin)
 
     assert_position(moved, second)
     assert same_orientation(moved, tuple(pose[q] for q in ("q1", "q2", "q3", "q4"))), moved
@@ -507,38 +507,38 @@ def test_rws_moves_the_virtual_robot(
     # The arm program refuses what it cannot reach; the gateway
     # refuses what is outside its safe zone without sending it.
     #
-    assert rws_move(operator, UNREACHABLE) == MOVE_FAILED
+    assert rws_move(admin, UNREACHABLE) == MOVE_FAILED
 
-    assert rws_move(operator, (1500.0, 0.0, 300.0)) == OUTSIDE_SAFE_ZONE
+    assert rws_move(admin, (1500.0, 0.0, 300.0)) == OUTSIDE_SAFE_ZONE
 
-    assert_position(arm_pose(operator), second)
+    assert_position(arm_pose(admin), second)
 
 
 def test_rws_moves_the_right_arm(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
-    left_before = arm_pose(operator)
+    left_before = arm_pose(admin)
 
-    assert rws_home(operator, "right") == DONE
-    assert rws_move(operator, RIGHT_TARGET, arm="right") == DONE
+    assert rws_home(admin, "right") == DONE
+    assert rws_move(admin, RIGHT_TARGET, arm="right") == DONE
 
-    assert_position(arm_pose(operator, "right"), RIGHT_TARGET)
+    assert_position(arm_pose(admin, "right"), RIGHT_TARGET)
 
     #
     # The left arm was not touched.
     #
-    assert_position(arm_pose(operator), tuple(left_before[axis] for axis in "xyz"))
+    assert_position(arm_pose(admin), tuple(left_before[axis] for axis in "xyz"))
 
 
 def test_rws_gripper(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
     for action in ("grip", "open"):
-        result = operator.post("/robot/rws/gripper", json={"arm": "left", "action": action})
+        result = admin.post("/robot/rws/gripper", json={"arm": "left", "action": action})
 
         assert expect(result, 200) == DONE
 
@@ -560,27 +560,27 @@ def timed_move(
 def test_rws_move_speed_and_acceleration(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
     controller = Controller()
 
     low = TARGET
     high = (TARGET[0], TARGET[1], TARGET[2] + 60.0)
 
-    assert rws_move(operator, low) == DONE
+    assert rws_move(admin, low) == DONE
 
     #
     # 60 mm: about 3 s at 20 mm/s, well under 1 s at 400 mm/s.
     #
-    slow = timed_move(operator, high, speed=20)
+    slow = timed_move(admin, high, speed=20)
 
     assert controller.read_symbol("T_ROB_L", "move_speed_left").startswith("[20,")
 
-    fast = timed_move(operator, low, speed=400, acceleration=50, ramp=40)
+    fast = timed_move(admin, low, speed=400, acceleration=50, ramp=40)
 
     assert slow > 2.5, slow
     assert fast < slow / 2, (slow, fast)
 
-    assert_position(arm_pose(operator), low)
+    assert_position(arm_pose(admin), low)
 
     assert controller.read_symbol("T_ROB_L", "move_speed_left").startswith("[400,")
     assert float(controller.read_symbol("T_ROB_L", "move_acc_left")) == 50
@@ -589,7 +589,7 @@ def test_rws_move_speed_and_acceleration(
     #
     # Without a speed: the default, v50 and full acceleration.
     #
-    assert rws_home(operator) == DONE
+    assert rws_home(admin) == DONE
 
     assert controller.read_symbol("T_ROB_L", "move_speed_left") == "[50,500,5000,1000]"
     assert float(controller.read_symbol("T_ROB_L", "move_acc_left")) == 100
@@ -604,14 +604,14 @@ def test_rws_move_speed_and_acceleration(
 def test_rws_refuses_a_second_job_on_a_busy_arm(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
-    assert rws_move(operator, TARGET) == DONE
+    assert rws_move(admin, TARGET) == DONE
 
     responses = {}
 
     homing = threading.Thread(
-        target=lambda: responses.update(home=operator.post("/robot/rws/home")),
+        target=lambda: responses.update(home=admin.post("/robot/rws/home")),
     )
 
     homing.start()
@@ -622,12 +622,12 @@ def test_rws_refuses_a_second_job_on_a_busy_arm(
     #
     time.sleep(0.5)
 
-    response = operator.post("/robot/rws/move", json=dict(zip(("x", "y", "z"), TARGET)))
+    response = admin.post("/robot/rws/move", json=dict(zip(("x", "y", "z"), TARGET)))
 
     #
     # The other arm is independent.
     #
-    right = rws_home(operator, "right")
+    right = rws_home(admin, "right")
 
     homing.join()
 
@@ -653,10 +653,10 @@ def wait_for_status(
 def test_rws_jobs_without_waiting_like_commserver(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
-    assert rws_home(operator) == DONE
-    assert rws_home(operator, "right") == DONE
+    assert rws_home(admin) == DONE
+    assert rws_home(admin, "right") == DONE
 
     #
     # Both arms started at once, then polled, as
@@ -666,42 +666,42 @@ def test_rws_jobs_without_waiting_like_commserver(
 
     body = {"arm": "left", "wait": False, **dict(zip(("x", "y", "z"), TARGET))}
 
-    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+    assert expect(admin.post("/robot/rws/move", json=body), 200) == started
 
     body = {"arm": "right", "wait": False, **dict(zip(("x", "y", "z"), RIGHT_TARGET))}
 
-    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+    assert expect(admin.post("/robot/rws/move", json=body), 200) == started
 
-    assert expect(operator.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
+    assert expect(admin.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
 
     #
     # A new job for a busy arm is refused (CommServer: ERR busy).
     #
-    response = operator.post("/robot/rws/gripper", json={"arm": "left", "action": "grip", "wait": False})
+    response = admin.post("/robot/rws/gripper", json={"arm": "left", "action": "grip", "wait": False})
 
     assert expect(response, 409)["detail"] == "The left arm is busy with an earlier job"
 
-    assert wait_for_status(operator, "left") == DONE
-    assert wait_for_status(operator, "right") == DONE
+    assert wait_for_status(admin, "left") == DONE
+    assert wait_for_status(admin, "right") == DONE
 
-    assert_position(arm_pose(operator), TARGET)
-    assert_position(arm_pose(operator, "right"), RIGHT_TARGET)
+    assert_position(arm_pose(admin), TARGET)
+    assert_position(arm_pose(admin, "right"), RIGHT_TARGET)
 
     body = {"arm": "left", "wait": False, **dict(zip(("x", "y", "z"), UNREACHABLE))}
 
-    assert expect(operator.post("/robot/rws/move", json=body), 200) == started
+    assert expect(admin.post("/robot/rws/move", json=body), 200) == started
 
-    assert wait_for_status(operator, "left") == MOVE_FAILED
+    assert wait_for_status(admin, "left") == MOVE_FAILED
 
 
 def test_rws_move_needs_running_rapid(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(RWS_PROGRAM)
+    admin = load_program(RWS_PROGRAM)
 
-    expect(operator.post("/robot/rapid/stop"), 200)
+    expect(admin.post("/robot/rapid/stop"), 200)
 
-    detail = expect(operator.post("/robot/rws/home"), 409)["detail"]
+    detail = expect(admin.post("/robot/rws/home"), 409)["detail"]
 
     assert detail == "RAPID is not running"
 
@@ -737,7 +737,7 @@ def run_command(
 def test_legacy_tcp_commands_move_the_virtual_robot(
     load_program: LoadProgram,
 ) -> None:
-    operator = load_program(TCP_PROGRAM)
+    admin = load_program(TCP_PROGRAM)
 
     #
     # The socket server needs a moment after start to listen.
@@ -745,7 +745,7 @@ def test_legacy_tcp_commands_move_the_virtual_robot(
     deadline = time.monotonic() + 15
 
     while True:
-        result = send_command(operator, "HOME")
+        result = send_command(admin, "HOME")
 
         if result["accepted"] or time.monotonic() > deadline:
             break
@@ -756,17 +756,17 @@ def test_legacy_tcp_commands_move_the_virtual_robot(
 
     assert result == {"accepted": True, "message": "STARTED"}
 
-    while (status := send_command(operator, "STATUS"))["message"] == "BUSY":
+    while (status := send_command(admin, "STATUS"))["message"] == "BUSY":
         time.sleep(0.1)
 
     assert status == DONE
 
-    assert run_command(operator, TARGET_COMMAND) == DONE
+    assert run_command(admin, TARGET_COMMAND) == DONE
 
-    assert_position(arm_pose(operator), TARGET)
+    assert_position(arm_pose(admin), TARGET)
 
-    assert run_command(operator, "1,2") == {"accepted": False, "message": "ERR bad format"}
+    assert run_command(admin, "1,2") == {"accepted": False, "message": "ERR bad format"}
 
-    assert run_command(operator, "900,0,300") == MOVE_FAILED
+    assert run_command(admin, "900,0,300") == MOVE_FAILED
 
-    assert_position(arm_pose(operator), TARGET)
+    assert_position(arm_pose(admin), TARGET)

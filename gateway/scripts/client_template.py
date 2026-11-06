@@ -91,6 +91,7 @@ The old POST /robot/command (raw CommServer text such as
 deprecated; use the calls above in new clients.
 """
 
+import os
 import threading
 import time
 
@@ -99,7 +100,7 @@ import requests
 
 
 URL = "http://127.0.0.1:8000/api/v1"
-TOKEN = "BAD_TOKEN_OPERATOR"
+TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # this device's token, never commit it
 
 RENEW_INTERVAL_SECONDS = 2.0
 LOOP_INTERVAL_SECONDS = 1.0

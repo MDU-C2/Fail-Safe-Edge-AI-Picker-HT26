@@ -173,14 +173,14 @@ def test_job_starts_and_status_reports_done(
     tcp_gateway: Gateway,
     comm_server: FakeCommServer,
 ) -> None:
-    operator = tcp_gateway.client("operator")
+    admin = tcp_gateway.client("admin")
 
-    with operator.control():
-        assert send(operator, "400,150,300") == {"accepted": True, "message": "STARTED"}
+    with admin.control():
+        assert send(admin, "400,150,300") == {"accepted": True, "message": "STARTED"}
 
-        assert send(operator, "STATUS") == {"accepted": True, "message": "BUSY"}
+        assert send(admin, "STATUS") == {"accepted": True, "message": "BUSY"}
 
-        assert wait_until_done(operator) == {"accepted": True, "message": "DONE"}
+        assert wait_until_done(admin) == {"accepted": True, "message": "DONE"}
 
     assert "400,150,300" in comm_server.received
 
@@ -188,38 +188,38 @@ def test_job_starts_and_status_reports_done(
 def test_refusals_are_not_accepted(
     tcp_gateway: Gateway,
 ) -> None:
-    operator = tcp_gateway.client("operator")
+    admin = tcp_gateway.client("admin")
 
-    with operator.control():
-        assert send(operator, "HOME")["message"] == "STARTED"
+    with admin.control():
+        assert send(admin, "HOME")["message"] == "STARTED"
 
-        assert send(operator, "GRIP") == {"accepted": False, "message": "ERR busy"}
+        assert send(admin, "GRIP") == {"accepted": False, "message": "ERR busy"}
 
-        wait_until_done(operator)
+        wait_until_done(admin)
 
-        assert send(operator, "1,2") == {"accepted": False, "message": "ERR bad format"}
+        assert send(admin, "1,2") == {"accepted": False, "message": "ERR bad format"}
 
-        assert send(operator, "1000,0,0")["message"] == "STARTED"
+        assert send(admin, "1000,0,0")["message"] == "STARTED"
 
-        assert wait_until_done(operator) == {"accepted": False, "message": "ERR move failed"}
+        assert wait_until_done(admin) == {"accepted": False, "message": "ERR move failed"}
 
 
 def test_right_arm_prefix_is_passed_through(
     tcp_gateway: Gateway,
     comm_server: FakeCommServer,
 ) -> None:
-    operator = tcp_gateway.client("operator")
+    admin = tcp_gateway.client("admin")
 
-    with operator.control():
+    with admin.control():
         #
         # The arms are independent: the left one can start while
         # the right one moves.
         #
-        assert send(operator, "R,420,-150,300,180,0,0")["message"] == "STARTED"
-        assert send(operator, "OPEN")["message"] == "STARTED"
+        assert send(admin, "R,420,-150,300,180,0,0")["message"] == "STARTED"
+        assert send(admin, "OPEN")["message"] == "STARTED"
 
-        assert wait_until_done(operator, "R,")["message"] == "DONE"
-        assert wait_until_done(operator)["message"] == "DONE"
+        assert wait_until_done(admin, "R,")["message"] == "DONE"
+        assert wait_until_done(admin)["message"] == "DONE"
 
     assert "R,420,-150,300,180,0,0" in comm_server.received
 
@@ -240,10 +240,10 @@ def test_unreachable_server_is_reported(
     gateway.start()
 
     try:
-        operator = gateway.client("operator")
+        admin = gateway.client("admin")
 
-        with operator.control():
-            result = send(operator, "STATUS")
+        with admin.control():
+            result = send(admin, "STATUS")
 
     finally:
         gateway.stop()

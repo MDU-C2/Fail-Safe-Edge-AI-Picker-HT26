@@ -82,7 +82,7 @@ def test_rapid_control_needs_permission_and_lease(
     body = {"source": MODULE_SOURCE} if method == "PUT" else None
 
     expect(gateway.client("diagnostics").request(method, path, json=body), 403)
-    expect(gateway.client("operator").request(method, path, json=body), 409)
+    expect(gateway.client("admin").request(method, path, json=body), 409)
 
 
 @pytest.mark.parametrize(
@@ -101,19 +101,19 @@ def test_module_upload_is_validated_before_contacting_controller(
     path: str,
     source: str,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.put(path, json={"source": source}), 422)
+    with admin.control():
+        expect(admin.put(path, json={"source": source}), 422)
 
 
 def test_control_with_lease_reaches_controller(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/rapid/stop"), 503)
+    with admin.control():
+        expect(admin.post("/robot/rapid/stop"), 503)
 
 
 # ================================================================
@@ -137,12 +137,12 @@ def test_rws_moves_need_permission_and_lease(
     body: dict | None,
 ) -> None:
     expect(gateway.client("diagnostics").post(path, json=body), 403)
-    expect(gateway.client("operator").post(path, json=body), 409)
+    expect(gateway.client("admin").post(path, json=body), 409)
 
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        detail = expect(operator.post(path, json=body), 503)["detail"]
+    with admin.control():
+        detail = expect(admin.post(path, json=body), 503)["detail"]
 
     assert detail.startswith("Robot controller unreachable")
 
@@ -167,10 +167,10 @@ def test_rws_move_is_validated(
     gateway: Gateway,
     body: dict,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/rws/move", json=body), 422)
+    with admin.control():
+        expect(admin.post("/robot/rws/move", json=body), 422)
 
 
 def test_rws_status_needs_read_permission_only(
@@ -205,10 +205,10 @@ def test_rws_home_and_gripper_are_validated(
     path: str,
     body: dict,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post(path, json=body), 422)
+    with admin.control():
+        expect(admin.post(path, json=body), 422)
 
 
 @pytest.mark.parametrize(

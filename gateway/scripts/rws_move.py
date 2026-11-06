@@ -35,6 +35,7 @@ Needs: requests
 
 import argparse
 import math
+import os
 import sys
 import threading
 import time
@@ -43,7 +44,7 @@ import requests
 
 
 DEFAULT_URL = "http://169.254.125.202:8000/api/v1"
-DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+DEFAULT_TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # see client_tokens.json (local only)
 
 #
 # Longer than the gateway's own move timeout (60 s).
@@ -105,7 +106,7 @@ def main() -> None:
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Gateway API base URL")
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (strict mode)")
-    parser.add_argument("--client", default="operator", help="Client id (development mode)")
+    parser.add_argument("--client", default="admin", help="Client id (development mode)")
     parser.add_argument("--arm", choices=("left", "right"), default="left")
 
     parser.add_argument("--x", type=float)

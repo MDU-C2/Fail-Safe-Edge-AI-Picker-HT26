@@ -18,7 +18,7 @@ def test_command_needs_lease(
     gateway: Gateway,
 ) -> None:
     expect(
-        gateway.client("operator").post("/robot/command", json={"command": "start"}),
+        gateway.client("admin").post("/robot/command", json={"command": "start"}),
         409,
     )
 
@@ -35,37 +35,37 @@ def test_command_needs_control_permission(
 def test_command_with_lease(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        result = expect(operator.post("/robot/command", json={"command": "start"}), 200)
+    with admin.control():
+        result = expect(admin.post("/robot/command", json={"command": "start"}), 200)
 
         assert result["accepted"]
-        assert expect(operator.get("/robot/status"), 200)["state"] == "running"
+        assert expect(admin.get("/robot/status"), 200)["state"] == "running"
 
-        expect(operator.post("/robot/command", json={"command": "stop"}), 200)
+        expect(admin.post("/robot/command", json={"command": "stop"}), 200)
 
-        assert expect(operator.get("/robot/status"), 200)["state"] == "idle"
+        assert expect(admin.get("/robot/status"), 200)["state"] == "idle"
 
 
 def test_command_validation(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/command", json={"command": ""}), 422)
-        expect(operator.post("/robot/command", json={"command": "x" * 65}), 422)
-        expect(operator.post("/robot/command", json={}), 422)
+    with admin.control():
+        expect(admin.post("/robot/command", json={"command": ""}), 422)
+        expect(admin.post("/robot/command", json={"command": "x" * 65}), 422)
+        expect(admin.post("/robot/command", json={}), 422)
 
 
 def test_command_is_deprecated_but_works(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        response = operator.post("/robot/command", json={"command": "stop"})
+    with admin.control():
+        response = admin.post("/robot/command", json={"command": "stop"})
 
         assert expect(response, 200)["accepted"]
 

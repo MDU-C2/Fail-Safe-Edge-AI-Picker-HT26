@@ -63,17 +63,17 @@ def test_subscribe_and_receive_by_prefix(
             "data": {"events": ["control"]},
         }
 
-        operator = development_gateway.client("operator")
+        admin = development_gateway.client("admin")
 
-        expect(operator.post("/control/acquire"), 200)
+        expect(admin.post("/control/acquire"), 200)
 
         event = wait_for(websocket, "control.acquired")
 
-        assert event["data"]["client_id"] == "operator"
+        assert event["data"]["client_id"] == "admin"
 
-        expect(operator.post("/control/release"), 200)
+        expect(admin.post("/control/release"), 200)
 
-        assert wait_for(websocket, "control.released")["data"]["client_id"] == "operator"
+        assert wait_for(websocket, "control.released")["data"]["client_id"] == "admin"
 
 
 def test_unsubscribe(
@@ -134,13 +134,13 @@ def test_malformed_requests(
 def test_preempted_client_is_told_without_subscribing(
     development_gateway: Gateway,
 ) -> None:
-    with open_events(development_gateway, "autonomy") as websocket:
-        expect(development_gateway.client("autonomy").post("/control/acquire"), 200)
-        expect(development_gateway.client("operator").post("/control/acquire"), 200)
+    with open_events(development_gateway, "primary") as websocket:
+        expect(development_gateway.client("primary").post("/control/acquire"), 200)
+        expect(development_gateway.client("admin").post("/control/acquire"), 200)
 
         event = wait_for(websocket, "control.revoked")
 
-        assert event["data"] == {"reason": "preempted", "new_controller": "operator"}
+        assert event["data"] == {"reason": "preempted", "new_controller": "admin"}
 
 
 def test_calibration_event(
@@ -149,12 +149,12 @@ def test_calibration_event(
     with open_events(development_gateway, "diagnostics") as websocket:
         request(websocket, "subscribe", ["calibration"])
 
-        operator = development_gateway.client("operator")
+        admin = development_gateway.client("admin")
 
-        with operator.control():
-            expect(operator.post("/calibration", json={"units": "mm"}), 200)
+        with admin.control():
+            expect(admin.post("/calibration", json={"units": "mm"}), 200)
 
-        assert wait_for(websocket, "calibration.updated")["data"]["updated_by"] == "operator"
+        assert wait_for(websocket, "calibration.updated")["data"]["updated_by"] == "admin"
 
 
 def test_unknown_development_client_is_refused(
@@ -173,5 +173,5 @@ def test_strict_mode_refuses_websocket(
     # strict mode closes every connection.
     #
     with pytest.raises((InvalidStatus, ConnectionClosed)):
-        with open_events(strict_gateway, "operator") as websocket:
+        with open_events(strict_gateway, "admin") as websocket:
             websocket.recv(timeout=RECEIVE_TIMEOUT_SECONDS)

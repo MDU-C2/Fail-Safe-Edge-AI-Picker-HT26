@@ -17,13 +17,13 @@ CALIBRATION = {
 def test_upload_and_read_back(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        stored = expect(operator.post("/calibration", json=CALIBRATION), 200)
+    with admin.control():
+        stored = expect(admin.post("/calibration", json=CALIBRATION), 200)
 
     assert stored["calibration"] == CALIBRATION
-    assert stored["updated_by"] == "operator"
+    assert stored["updated_by"] == "admin"
 
     #
     # Any client with camera.read can read it.
@@ -34,14 +34,14 @@ def test_upload_and_read_back(
 def test_upload_needs_lease(
     gateway: Gateway,
 ) -> None:
-    expect(gateway.client("operator").post("/calibration", json=CALIBRATION), 409)
+    expect(gateway.client("admin").post("/calibration", json=CALIBRATION), 409)
 
 
 def test_upload_needs_lease_of_this_client(
     gateway: Gateway,
 ) -> None:
-    with gateway.client("operator").control():
-        expect(gateway.client("autonomy").post("/calibration", json=CALIBRATION), 409)
+    with gateway.client("admin").control():
+        expect(gateway.client("primary").post("/calibration", json=CALIBRATION), 409)
 
 
 def test_read_only_client_cannot_upload(
@@ -53,19 +53,19 @@ def test_read_only_client_cannot_upload(
 def test_upload_must_be_json_object(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/calibration", json=[1, 2, 3]), 422)
+    with admin.control():
+        expect(admin.post("/calibration", json=[1, 2, 3]), 422)
 
 
 def test_upload_size_limit(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/calibration", json={"blob": "x" * 1_000_001}), 413)
+    with admin.control():
+        expect(admin.post("/calibration", json={"blob": "x" * 1_000_001}), 413)
 
 
 def test_calibration_needs_token(
