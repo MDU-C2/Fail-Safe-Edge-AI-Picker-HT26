@@ -203,6 +203,19 @@ def test_joints(
         assert len(joints["joints"]) == 6
 
 
+def test_gripper_position_without_smartgripper(
+    robotstudio_gateway: Gateway,
+) -> None:
+    #
+    # The virtual controller has no SmartGripper, so no position
+    # signal (the real YuMi has hand_ActualPosition_L/_R).
+    #
+    for arm in ("left", "right"):
+        detail = expect(robotstudio_gateway.client("diagnostics").get(f"/robot/arms/{arm}/gripper"), 404)["detail"]
+
+        assert detail == f"The controller has no SmartGripper on the {arm} arm"
+
+
 def test_rapid_status(
     robotstudio_gateway: Gateway,
 ) -> None:

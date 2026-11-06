@@ -33,6 +33,7 @@ ENDMODULE
         "/robot/arms",
         "/robot/arms/left/pose",
         "/robot/arms/right/joints",
+        "/robot/arms/left/gripper",
         "/robot/rapid",
     ],
 )
@@ -52,6 +53,7 @@ def test_unreachable_controller_gives_503(
     [
         ("/robot/arms/middle/pose", {}),
         ("/robot/arms/middle/joints", {}),
+        ("/robot/arms/middle/gripper", {}),
         ("/robot/arms/left/pose", {"coordinate": "World"}),
         ("/robot/arms/left/pose", {"tool": "../tool0"}),
         ("/robot/arms/left/pose", {"wobj": "a" * 33}),

@@ -14,6 +14,8 @@ Every time you press Enter:
            detections_<stamp>.json and latest.json   all objects of this capture
            detections.csv                            one row per object, all captures
            cups_<stamp>.json and cups.json           the cups and what happened to them
+           grips.csv                                 per moved cup: base diameter and where
+                                                     each gripper closed on it (grip level)
     5. every reachable cup is moved, most certain first, each to the next free spot in
        placing_grid.json; it stops at the first failure (the hand-over of rapid/tests/handover.py):
            left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
@@ -75,6 +77,8 @@ CUP_Z_MIN, CUP_Z_MAX = 10, 150   # robot Z (mm) of a CUP BASE on a cup standing 
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px"]
 
+GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm", "status"]
+
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
 SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
@@ -95,7 +99,6 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
 PICK_Z = 80                # TCP height when gripping a cup
-GRIP_MARGIN = 10           # the left gripper opens to the cup base diameter + this (mm)
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
                            # except going down to grip (pick) or to put the cup down (place)
@@ -275,12 +278,26 @@ class Arm:
         ox, oy, _ = self.offset
         self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN, pick=(z == PICK_Z))
 
-    def gripper(self, action, aperture=None):
-        """action: "open" or "grip". aperture: how far to open in mm (sent along; the gateway does not use it yet)."""
-        body = {"action": action}
-        if aperture is not None:
-            body["aperture"] = aperture
-        self.job("gripper", body)
+    def gripper(self, action):
+        """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
+        self.job("gripper", {"action": action})
+
+    def grip_level(self):
+        """Where the fingers are now, mm on the SmartGripper's scale (0 closed .. 25 open);
+        right after a grip that is how far it closed on the cup. None if the gateway
+        cannot tell (no SmartGripper, older gateway); the job goes on either way."""
+        try:
+            r = requests.get(f"{self.gateway.api}/robot/arms/{self.name}/gripper",
+                             headers=self.gateway.headers, timeout=10)
+        except requests.RequestException as e:
+            log(f"    {self.name}: grip level unknown ({e})")
+            return None
+        if r.status_code != 200:
+            log(f"    {self.name}: grip level unknown (HTTP {r.status_code}: {r.text})")
+            return None
+        level = r.json()["position"]
+        log(f"    {self.name}: grip level {level} mm")
+        return level
 
     def home(self):
         """Straight up as high as the arm reaches there (HOME_UP_Z, else 50 mm lower each try;
@@ -318,9 +335,13 @@ class Handover:
     def run(self, cup, left_only=False, place=None):
         """True if the cup was placed. Ctrl+C stops both arms after their current job.
         left_only: the left arm picks the cup, lifts it and puts it back, no hand-over.
-        place: the place spot from placing_grid.json (needed for the hand-over)."""
+        place: the place spot from placing_grid.json (needed for the hand-over).
+        Sets cup["grip_left_mm"] and cup["grip_right_mm"]: where each gripper closed
+        on the cup (None if it did not get that far or the gateway cannot tell)."""
         for event in self.events:
             event.clear()
+        cup["grip_left_mm"] = None
+        self.grip_right_mm = None
         jobs = [(self._pick_only_job, (cup,))] if left_only else \
                [(self._left_job, (cup,)), (self._right_job, (place,))]
         arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
@@ -334,18 +355,18 @@ class Handover:
             log("\nStopped (Ctrl+C). An arm that is moving finishes its current move.")
             self.abort.set()
             raise
+        cup["grip_right_mm"] = self.grip_right_mm
         return not self.abort.is_set()
 
     def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
-        aperture = cup["aperture"]
-        log(f"    left: aperture {aperture} mm (cup base + {GRIP_MARGIN} mm)")
-        arm.gripper("open", aperture)              # None (no diameter) = fully open
+        arm.gripper("open")
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
         arm.goto(x, y, TRAVEL_Z)
         arm.goto(x, y, PICK_Z)
         arm.gripper("grip")
+        cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
         arm.goto(x, y, TRAVEL_Z)
 
     def _pick_only_job(self, cup):
@@ -381,6 +402,7 @@ class Handover:
         arm.move(R_BELOW, RIGHT_UP)                # slide in under the cup
         arm.move(R_TAKE, RIGHT_UP)                 # the last bit straight up
         arm.gripper("grip")
+        self.grip_right_mm = arm.grip_level()      # on the rim; recorded in grips.csv
         self.right_has_cup.set()                   # -> left: let go
         self._wait_for(self.left_clear)
         arm.move(R_BELOW, RIGHT_UP)
@@ -535,11 +557,9 @@ def find_cups(objects):
                 f"around it, no handle next to it, not at cup height - ignored (false detection?)")
             continue
         x, y = o["robot_x_mm"], o["robot_y_mm"]
-        diameter = o["diameter_mm"]
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
         cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "diameter": diameter,
-                     "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
+                     "z": o["robot_z_mm"], "diameter": o["diameter_mm"],
                      "status": "waiting" if reachable else "out of reach"})
     return cups
 
@@ -576,6 +596,19 @@ class CaptureStore:
     def save_cups(self, cups, stamp):
         self._write_json({"capture": stamp, "units": "mm", "cups": cups},
                          f"cups_{stamp}.json", "cups.json")
+
+    def save_grip(self, cup, stamp):
+        """One row per moved cup in grips.csv: its base diameter and where each gripper
+        closed on it, to work out how far to open the grippers for a given cup."""
+        path = self.folder / "grips.csv"
+        new_file = not path.exists()
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=GRIP_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow({"capture": stamp, "cup": cup["id"], "diameter_mm": cup["diameter"],
+                             "grip_left_mm": cup.get("grip_left_mm"),
+                             "grip_right_mm": cup.get("grip_right_mm"), "status": cup["status"]})
 
     def _write_json(self, data, *names):
         for name in names:
@@ -663,6 +696,7 @@ class Picker:
         finally:
             cup["status"] = "placed" if placed else "failed"
             self.store.save_cups(cups, stamp)
+            self.store.save_grip(cup, stamp)
         if placed and place is not None:
             place["occupied"] = True               # the next cup goes to the next free location
             save_places(places)

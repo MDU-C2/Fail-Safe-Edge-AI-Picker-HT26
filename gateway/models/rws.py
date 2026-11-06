@@ -62,6 +62,18 @@ class ArmJoints(BaseModel):
     arm_angle: float
 
 
+class GripperState(BaseModel):
+    """Finger position of one arm's SmartGripper."""
+
+    arm: str
+
+    #
+    # mm on the SmartGripper's scale, as g_MoveTo / g_GetPos use
+    # it: 0 = closed .. 25 = fully open.
+    #
+    position: float
+
+
 class RapidTask(BaseModel):
     name: str
 
