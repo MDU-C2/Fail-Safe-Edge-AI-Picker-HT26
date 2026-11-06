@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f6f5ef">
+  <title>Picker Lab · Cup control</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a href="/" class="brand" aria-label="Picker Lab home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>PICKER<span class="brand-light"> / LAB</span></span></a>
+      <div class="topbar-right"><span class="local-label">LOCAL WORKSPACE</span><span id="connection" class="connection"><span class="status-dot"></span><span id="connection-text">Connecting</span></span></div>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div><p class="eyebrow"><span class="tiny-line"></span> VISION → LANGUAGE → MOVEMENT</p><h1 id="page-title">Your workspace,<br><span>in focus.</span></h1><p class="intro-copy">Choose a cup. Review the action.<br>Your controller takes it from there.</p></div>
+        <aside id="mode-panel" class="mode-panel" aria-label="Control mode"><div class="mode-top"><span id="mode-icon" class="mode-icon" aria-hidden="true">◇</span><span id="mode-badge" class="mode-badge">CONNECTING</span></div><h2 id="mode-title">Getting your workspace ready.</h2><p id="mode-description">Waiting for the local controller.</p><div class="mode-footer"><span class="status-dot"></span><span id="mode-footer">One controller · one action at a time</span></div></aside>
+      </section>
+
+      <div id="connection-alert" class="notice notice-error" role="alert" hidden><strong>Controller disconnected.</strong> The last view may be stale. No new requests will be sent. An already dispatched robot movement may continue.</div>
+      <div id="error-banner" class="notice notice-error" role="alert" hidden></div>
+      <div id="recovery-panel" class="notice recovery-panel" hidden><div><p class="eyebrow">OPERATOR CHECK REQUIRED</p><h2>Inspect before continuing.</h2><p>The previous sequence was interrupted or not confirmed. Check both arms and the cup in person.</p></div><label class="acknowledgement"><input type="checkbox" id="recovery-ack"><span>I inspected both arms and the cup; this only acknowledges recovery and sends no robot command.</span></label><button id="recovery-button" class="button button-warning" type="button" disabled>Acknowledge recovery</button></div>
+
+      <div class="workspace-grid">
+        <section class="panel vision-panel" aria-labelledby="vision-heading">
+          <div class="panel-heading"><div><p class="eyebrow">01 / OBSERVE</p><h2 id="vision-heading">The workspace</h2></div><button id="scan-button" class="button button-primary" type="button" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4M6 10h8"/></svg><span id="scan-button-label">Scan workspace</span></button></div>
+          <div class="image-frame" id="image-frame">
+            <div id="empty-camera" class="empty-camera"><div class="scan-symbol" aria-hidden="true"><svg viewBox="0 0 80 80"><path d="M28 12H12v16m40-16h16v16M12 52v16h16m40-16v16H52"/><path class="cup-symbol" d="M29 30h22l-3 24H32zM51 33h4a6 6 0 0 1-1 12h-4M28 59h24"/></svg></div><h3>A fresh view starts here.</h3><p>Scan your workspace to find and number the cups.</p><span>Camera snapshots · no continuous video</span></div>
+            <div class="image-stage" id="image-stage" hidden><img id="camera-image" alt="Latest workspace scan with numbered cup detections"><svg id="selection-overlay" class="selection-overlay" aria-hidden="true"></svg></div>
+            <span class="image-label" id="image-label"><span></span> LATEST SCAN</span>
+            <span class="image-time" id="image-time"></span>
+          </div>
+          <div class="scan-meta"><span id="scan-summary">No scan captured yet</span><span id="scan-state" class="scan-state">Awaiting scan</span></div>
+          <div class="cup-section"><div class="section-heading"><h3>Detected cups <span id="cup-count" class="count-pill">0</span></h3><span id="cup-helper">IDs belong to the current scan</span></div><div id="cup-list" class="cup-list"><p class="empty-list">Your detected cups will appear here.</p></div></div>
+          <details id="capture-details" class="capture-details" hidden><summary>Scan details</summary><code id="capture-id"></code><p>Cup IDs are assigned left to right in each image. Scan again after movement.</p></details>
+        </section>
+
+        <div class="control-column">
+          <section class="panel command-panel" aria-labelledby="command-heading"><div class="panel-heading"><div><p class="eyebrow">02 / SELECT</p><h2 id="command-heading">Give it a command</h2></div><span class="small-icon" aria-hidden="true">↗</span></div><p class="panel-description">Type naturally, or select a cup from the image.</p><form id="command-form"><label class="sr-only" for="command-input">Command for the robot</label><textarea id="command-input" rows="2" maxlength="2000" placeholder="Pick cup two…" disabled></textarea><div class="command-footer"><span id="model-label"><span class="status-dot"></span> Local controller</span><button class="send-button" id="command-button" type="submit" aria-label="Interpret command" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 15 10-10M5 5h10v10"/></svg></button></div></form><div class="examples" aria-label="Example commands"><span>TRY</span><button type="button" data-example="Which cups are available?">Available cups</button><button type="button" data-example="Hover above the rightmost cup">Hover rightmost</button></div><div id="selection-tools" class="selection-tools" hidden><div class="selected-summary"><span id="selected-label">Cup selected</span><span id="selected-status"></span></div><div class="action-buttons"><button id="hover-button" class="button button-secondary" type="button">Hover above</button><button id="pick-button" class="button button-secondary" type="button">Pick &amp; transfer</button></div><p id="selected-reason" class="selected-reason" hidden></p></div><p id="command-hint" class="fine-print">Every movement starts with an action preview.</p></section>
+
+          <section id="proposal-panel" class="panel proposal-panel" aria-labelledby="proposal-heading" hidden><div class="proposal-top"><p class="eyebrow">03 / REVIEW &amp; CONFIRM</p><span id="proposal-countdown" class="countdown"></span></div><h2 id="proposal-heading">Cup <span id="proposal-cup"></span><span id="proposal-action"></span></h2><p id="proposal-description"></p><p class="proposal-context" id="proposal-context"></p><button id="confirm-button" class="button button-primary button-wide" type="button" disabled>Confirm selection</button><button id="cancel-button" class="cancel-button" type="button">Cancel request</button><p class="fine-print">Cancelling a request does not stop active robot motion.</p></section>
+
+          <section class="panel activity-panel" aria-labelledby="activity-heading"><div class="panel-heading"><div><p class="eyebrow">CONTROLLER STATUS</p><h2 id="activity-heading">Activity</h2></div><span id="activity-indicator" class="activity-indicator"><span class="status-dot"></span><span id="activity-status">Connecting</span></span></div><div id="current-operation" class="current-operation" aria-live="polite"><div class="operation-symbol" id="operation-symbol" aria-hidden="true">○</div><div><h3 id="operation-title">Waiting for the controller</h3><p id="operation-description">Your actions and checks appear here.</p></div></div><div id="progress-section" class="progress-section" hidden><div class="progress-track" role="progressbar" id="progress-bar" aria-label="Sequence progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div><div class="progress-caption"><span id="progress-step"></span><span id="progress-count"></span></div></div><ol id="event-list" class="event-list" aria-label="Recent controller activity"><li class="event-empty">Ready when you are.</li></ol></section>
+        </div>
+      </div>
+      <footer class="page-footer"><span><span class="footer-mark" aria-hidden="true">↳</span> Perception proposes. Your controller verifies.</span><span>Closing this page does not stop the robot. Use its physical safety controls.</span></footer>
+    </main>
+  </div>
+</body>
+</html>

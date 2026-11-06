@@ -14,7 +14,8 @@ Every time you press Enter:
            detections_<stamp>.json and latest.json   all objects of this capture
            detections.csv                            one row per object, all captures
            cups_<stamp>.json and cups.json           the cups and what happened to them
-    5. the most certain reachable cup is moved (the hand-over of rapid/tests/handover.py):
+    5. every reachable cup is moved, most certain first, each to the next free spot in
+       placing_grid.json; it stops at the first failure (the hand-over of rapid/tests/handover.py):
            left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
            right: open ... wait, beside the hand-over ... wait, slide in under the cup, up, grip
                   ... wait, down, turn over, place, open, up, home
@@ -76,19 +77,28 @@ CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 1200               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
+HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
+HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
+LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
+FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
+FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
 RIGHT_DOWN = (180, 0, 0)   # right gripper straight down (as in handover.py)
 RIGHT_UP = (0, 0, 0)       # right gripper pointing up
+RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the cup over
 
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 75                # TCP height when gripping a cup
+PICK_Z = 80                # TCP height when gripping a cup
+GRIP_MARGIN = 10           # the left gripper opens to the cup base diameter + this (mm)
 TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
+Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
+                           # except going down to grip (pick) or to put the cup down (place)
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
 Y_MIN, Y_MAX = -230, 420
 
@@ -97,17 +107,22 @@ Y_MIN, Y_MAX = -230, 420
 # swings the hand into the table), picks the cup and holds it at HANDOVER_L. The right arm
 # waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
 # R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
-# must stay within the gateway's z <= 600), the right goes down again, turns the cup over
-# above R_PLACE and puts it down there.
+# must stay within the gateway's z limit), the right goes down again, turns the cup over
+# PLACE_ABOVE mm above the first free spot in placing_grid.json and puts it down there.
 LEFT_READY = (400, 100, 450)
-HANDOVER_L = (400, -100, 549)
+GATEWAY_Z_MAX = 700        # flange z limit set on the Pi (GATEWAY_RWS_SAFE_ZONE_MAX)
 LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
-R_VIA = (200, -250, 200)
-R_TAKE = (380, -115, 210)
+LEFT_TOP = 690             # highest the left arm reaches at x 400, y -100 (tested: 690 DONE, 700 ERR move failed)
+# Meeting point as high as possible: the lift after letting go ends exactly at LEFT_TOP
+HANDOVER_X = 350           # meeting point distance from the robot (was 400; closer to the body)
+HANDOVER_L = (HANDOVER_X, -100, LEFT_TOP - LEFT_LIFT)
+R_VIA = (300, -300, 250)   # further out, higher and 50 mm right: pulls the elbow away from the tray
+                           # (was (200, -250, 200): elbow hit the tray; (200, -250, 350) hit itself)
+R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)   # same offset as the tested pair
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
-R_PLACE = (420, -200, 230)
-R_PLACE_ABOVE = (R_PLACE[0], R_PLACE[1], R_PLACE[2] + 80)   # the cup is turned over here
+PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
+PLACE_ABOVE = 80                             # mm above the place spot: the cup is turned over here
 
 
 def log(*parts):
@@ -236,6 +251,7 @@ class Arm:
         self.name = name
         self.abort = abort
         self.offset = offset
+        self.last = None             # last move (flange, rotation), for going up before home
 
     def job(self, path, body):
         if self.abort.is_set():
@@ -243,24 +259,47 @@ class Arm:
         if not self.gateway.robot_job(self.name, path, body):
             raise RobotError(f"{self.name} {path} failed")
 
-    def move(self, flange, rotation):
-        """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees."""
+    def move(self, flange, rotation, speed=SPEED, acceleration=ACCELERATION, pick=False):
+        """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees.
+        Refused outside z Z_MIN..GATEWAY_Z_MAX; pick=True allows lower (gripping / putting down)."""
         (x, y, z), (rx, ry, rz) = flange, rotation
+        if z > GATEWAY_Z_MAX or (z < Z_MIN and not pick):
+            raise RobotError(f"{self.name} move to z {z} refused: outside z {Z_MIN}..{GATEWAY_Z_MAX}")
         self.job("move", {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz,
-                          "speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
+                          "speed": speed, "acceleration": acceleration, "ramp": RAMP})
+        self.last = (flange, rotation)
 
     def goto(self, x, y, z):
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
         at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
         ox, oy, _ = self.offset
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN)
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN, pick=(z == PICK_Z))
 
-    def gripper(self, action):
-        """action: "open" or "grip"."""
-        self.job("gripper", {"action": action})
+    def gripper(self, action, aperture=None):
+        """action: "open" or "grip". aperture: how far to open in mm (sent along; the gateway does not use it yet)."""
+        body = {"action": action}
+        if aperture is not None:
+            body["aperture"] = aperture
+        self.job("gripper", body)
 
     def home(self):
-        self.job("home", {"speed": SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
+        """Straight up as high as the arm reaches there (HOME_UP_Z, else 50 mm lower each try;
+        an unreachable target does not move the arm), the left arm then sideways to LEFT_HOME_Y,
+        then home (the home move swings the whole arm)."""
+        if self.last:
+            (x, y, z), rotation = self.last
+            for up in range(HOME_UP_Z, int(z), -50):
+                try:
+                    self.move((x, y, up), rotation)            # up
+                    z = up
+                    break
+                except RobotError:
+                    if self.abort.is_set():
+                        raise
+                    log(f"    {self.name}: z {up} out of reach here, trying lower")
+            if self.name == "left" and y < LEFT_HOME_Y:
+                self.move((x, LEFT_HOME_Y, z), rotation)       # then left, away from the right arm
+        self.job("home", {"speed": HOME_SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
 
 
 class Handover:
@@ -276,13 +315,14 @@ class Handover:
         self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup,
                        self.left_clear, self.right_away)
 
-    def run(self, cup, left_only=False):
+    def run(self, cup, left_only=False, place=None):
         """True if the cup was placed. Ctrl+C stops both arms after their current job.
-        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over."""
+        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over.
+        place: the place spot from placing_grid.json (needed for the hand-over)."""
         for event in self.events:
             event.clear()
         jobs = [(self._pick_only_job, (cup,))] if left_only else \
-               [(self._left_job, (cup,)), (self._right_job, ())]
+               [(self._left_job, (cup,)), (self._right_job, (place,))]
         arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
                 for job, args in jobs]
         for arm in arms:
@@ -299,7 +339,9 @@ class Handover:
     def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
         arm = self.left
-        arm.gripper("open")
+        aperture = cup["aperture"]
+        log(f"    left: aperture {aperture} mm (cup base + {GRIP_MARGIN} mm)")
+        arm.gripper("open", aperture)              # None (no diameter) = fully open
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
         arm.goto(x, y, TRAVEL_Z)
         arm.goto(x, y, PICK_Z)
@@ -312,7 +354,7 @@ class Handover:
         arm.goto(cup["x"], cup["y"], PICK_Z)       # put it back where it stood
         arm.gripper("open")
         arm.goto(cup["x"], cup["y"], TRAVEL_Z)
-        arm.home()
+        arm.home()                                 # up first, then home
 
     def _left_job(self, cup):
         arm = self.left
@@ -327,8 +369,10 @@ class Handover:
         self._wait_for(self.right_away)            # the way home could cross the right arm
         arm.home()                                 # out of the camera view for the next capture
 
-    def _right_job(self):
+    def _right_job(self, place):
         arm = self.right
+        spot = (place["x"], place["y"], place["z"])
+        above = (place["x"], place["y"], place["z"] + PLACE_ABOVE)
         arm.gripper("open")
         self._wait_for(self.left_has_cup)          # stay home, out of the picking area
         arm.move(R_VIA, RIGHT_UP)
@@ -340,11 +384,14 @@ class Handover:
         self.right_has_cup.set()                   # -> left: let go
         self._wait_for(self.left_clear)
         arm.move(R_BELOW, RIGHT_UP)
-        arm.move(R_PLACE_ABOVE, RIGHT_DOWN)        # turn over: cup now upright
+        # turn the cup over slowly and in two steps (the cup is heavy for the right arm)
+        half = tuple((a + b) / 2 for a, b in zip(R_BELOW, above))
+        arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
+        arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
         self.right_away.set()                      # -> left: you can go home
-        arm.move(R_PLACE, RIGHT_DOWN)
+        arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
         arm.gripper("open")
-        arm.move(R_PLACE_ABOVE, RIGHT_DOWN)
+        arm.move(above, RIGHT_DOWN)
         arm.home()                                 # out of the picking area for the next cup
 
     def _wait_for(self, event):
@@ -422,6 +469,7 @@ class Detector:
         """Mask centre (u, v), median depth inside the mask -> camera and robot mm."""
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
+        diameter_px = 2 * np.sqrt(mask.sum() / np.pi)   # of a circle with the mask's area
         vals = depth[mask]
         vals = vals[vals > 0]                      # 0 = no depth there
         z = float(np.median(vals)) if vals.size else None
@@ -432,6 +480,7 @@ class Detector:
             x = (u - self.K["cx"]) * z / self.K["fx"]
             y = (v - self.K["cy"]) * z / self.K["fy"]
             robot = self.calibration.to_robot(x, y, z)
+        diameter = diameter_px * z / self.K["fx"] if z else None   # pixels -> mm at that depth
         return {
             "class": name,
             "confidence": round(confidence, 3),
@@ -444,6 +493,7 @@ class Detector:
             "robot_y_mm": mm(robot[1]),
             "robot_z_mm": mm(robot[2]),
             "mask_area_px": int(mask.sum()),
+            "diameter_mm": mm(diameter),
         }
 
 
@@ -485,9 +535,12 @@ def find_cups(objects):
                 f"around it, no handle next to it, not at cup height - ignored (false detection?)")
             continue
         x, y = o["robot_x_mm"], o["robot_y_mm"]
+        diameter = o["diameter_mm"]
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
         cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "status": "waiting" if reachable else "out of reach"})
+                     "z": o["robot_z_mm"], "diameter": diameter,
+                     "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
+                     "status": "waiting" if reachable else "out of reach"})
     return cups
 
 
@@ -549,7 +602,7 @@ class CaptureStore:
 # ================================================================
 
 class Picker:
-    """Capture, detect, save, then move the most certain reachable cup - once per Enter."""
+    """Capture, detect, save, then move all reachable cups one by one - once per Enter."""
 
     def __init__(self, gateway, detector, handover, store, left_only=False):
         self.gateway, self.detector, self.handover, self.store = gateway, detector, handover, store
@@ -580,27 +633,54 @@ class Picker:
         cups = find_cups(objects)
         self.store.save_cups(cups, stamp)
         log(f"{len(cups)} cup(s) saved to cups.json")
-        self.move_one(cups, stamp)
+        while self.move_one(cups, stamp):          # all cups of this capture, most certain first
+            pass
+        out_of_reach = sum(c["status"] == "out of reach" for c in cups)
+        if out_of_reach:
+            log(f"  {out_of_reach} cup(s) not moved: out of reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
 
     def move_one(self, cups, stamp):
-        """Hand over the first cup that is still "waiting" (the most certain reachable one)."""
+        """Hand over the first cup that is still "waiting" (the most certain reachable one).
+        True if it was placed, False if there was none left or it failed (then stop)."""
         cup = next((c for c in cups if c["status"] == "waiting"), None)
         if cup is None:
-            if cups:
-                log("  no cup within reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
-            return
-        what = "left arm only" if self.left_only else "hand-over"
-        log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} -> {what}")
+            return False
+        places, place = None, None
+        if not self.left_only:
+            places = load_places()
+            place = next((p for p in places["locations"] if not p["occupied"]), None)
+            if place is None:
+                log(f"  all place locations are occupied - empty them and set occupied to false in {PLACE_FILE.name}")
+                return False
+        what = "left arm only" if self.left_only else f"hand-over, place at location {place['id']}"
+        log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} base Ø{cup['diameter']} mm -> {what}")
         cup["status"] = "moving"
         self.store.save_cups(cups, stamp)
         placed = False
         try:
             with self.gateway.control():           # keep robot control for the whole sequence
-                placed = self.handover.run(cup, self.left_only)
+                placed = self.handover.run(cup, self.left_only, place)
         finally:
             cup["status"] = "placed" if placed else "failed"
             self.store.save_cups(cups, stamp)
+        if placed and place is not None:
+            place["occupied"] = True               # the next cup goes to the next free location
+            save_places(places)
+            log(f"  location {place['id']} is now occupied")
         log(f"  cup {cup['id']}: {cup['status']}")
+        return placed
+
+
+def load_places():
+    with open(PLACE_FILE) as f:
+        return json.load(f)
+
+
+def save_places(places):
+    """Same layout as the file: one location per line."""
+    lines = ",\n".join("    " + json.dumps(p) for p in places["locations"])
+    with open(PLACE_FILE, "w") as f:
+        f.write(f'{{\n  "locations": [\n{lines}\n  ]\n}}\n')
 
 
 def main():
