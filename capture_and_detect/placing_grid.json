@@ -1,9 +1,9 @@
 {
   "locations": [
     {"id": 1, "x": 350, "y": -200, "z": 230, "occupied": true},
-    {"id": 2, "x": 430, "y": -200, "z": 230, "occupied": false},
-    {"id": 3, "x": 510, "y": -200, "z": 230, "occupied": false},
-    {"id": 4, "x": 590, "y": -200, "z": 230, "occupied": false},
+    {"id": 2, "x": 430, "y": -200, "z": 230, "occupied": true},
+    {"id": 3, "x": 510, "y": -200, "z": 230, "occupied": true},
+    {"id": 4, "x": 590, "y": -200, "z": 230, "occupied": true},
     {"id": 5, "x": 350, "y": -280, "z": 230, "occupied": false},
     {"id": 6, "x": 430, "y": -280, "z": 230, "occupied": false},
     {"id": 7, "x": 510, "y": -280, "z": 230, "occupied": false},
