@@ -56,9 +56,11 @@ add_library(
     src/control/manager.cpp
     src/control/routes.cpp
     src/events/bus.cpp
+    src/events/routes.cpp
     src/health.cpp
     src/http/router.cpp
     src/http/server.cpp
+    src/http/websocket_session.cpp
     src/robot/routes.cpp
     src/robot/service.cpp
     src/rws/client.cpp
@@ -84,7 +86,6 @@ target_compile_definitions(
     PUBLIC
     GATEWAY_VERSION="${PROJECT_VERSION}"
     BOOST_ASIO_NO_DEPRECATED
-    BOOST_BEAST_USE_STD_STRING_VIEW
 )
 
 target_link_libraries(

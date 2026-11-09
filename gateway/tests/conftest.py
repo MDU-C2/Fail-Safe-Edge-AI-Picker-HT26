@@ -58,7 +58,6 @@ PYTHON_ONLY = {
 # line once its tests pass with --impl cpp.
 #
 NOT_PORTED_TO_CPP = {
-    "test_events.py": "M3 (events WebSocket)",
     "test_robot.py": "M4 (POST /robot/command)",
     "test_robot_tcp.py": "M4 (POST /robot/command)",
     "test_failover.py": "M4 (its devices send POST /robot/command)",

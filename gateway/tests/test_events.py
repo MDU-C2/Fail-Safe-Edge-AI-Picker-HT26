@@ -157,6 +157,30 @@ def test_calibration_event(
         assert wait_for(websocket, "calibration.updated")["data"]["updated_by"] == "admin"
 
 
+def test_closed_connections_are_released(
+    development_gateway: Gateway,
+) -> None:
+    """More connections than the gateway serves at once, one after
+    the other: each must be freed when it closes."""
+
+    for _ in range(100):
+        with open_events(development_gateway, "diagnostics") as websocket:
+            request(websocket, "subscribe", ["control"])
+
+    admin = development_gateway.client("admin")
+
+    expect(admin.get("/control"), 200)
+
+    with open_events(development_gateway, "diagnostics") as websocket:
+        request(websocket, "subscribe", ["control"])
+
+        expect(admin.post("/control/acquire"), 200)
+
+        assert wait_for(websocket, "control.acquired")["data"]["client_id"] == "admin"
+
+        expect(admin.post("/control/release"), 200)
+
+
 def test_unknown_development_client_is_refused(
     development_gateway: Gateway,
 ) -> None:

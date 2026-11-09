@@ -8,7 +8,9 @@
 #include <boost/asio/write.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket/rfc6455.hpp>
 
+#include "http/websocket_session.hpp"
 #include "util/log.hpp"
 #include "util/text.hpp"
 #include "util/thread.hpp"
@@ -202,6 +204,24 @@ void serve_connection(
                 std::string(field.name_string()),
                 std::string(field.value())
             );
+        }
+
+        //
+        // A WebSocket upgrade takes over the connection (and this
+        // thread) until the WebSocket ends. Unknown WebSocket paths
+        // are refused like refused connections (Starlette: 403).
+        //
+        if (boost::beast::websocket::is_upgrade(message)) {
+            const WebSocketHandler* handler = router.find_websocket(request);
+
+            if (handler == nullptr) {
+                write_response(socket, Response{403, "text/plain; charset=utf-8", {}, "Forbidden", nullptr}, 11, false);
+                return;
+            }
+
+            run_websocket(std::move(socket), std::move(message), std::move(request), *handler, WebSocketOptions{});
+
+            return;
         }
 
         request.body = std::move(message.body());

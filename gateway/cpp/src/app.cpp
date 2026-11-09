@@ -87,6 +87,7 @@ void App::add_routes() {
     add_health_routes(*this, router_);
     add_control_routes(*this, router_);
     add_robot_routes(*this, router_);
+    add_event_routes(*this, router_);
     add_camera_routes(*this, router_);
     add_calibration_routes(*this, router_);
 }

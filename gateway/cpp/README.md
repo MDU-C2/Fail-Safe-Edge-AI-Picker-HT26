@@ -68,7 +68,7 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/http/` | FastAPI/uvicorn: router, `{"detail"}` errors, 422s, server |
 | `src/security/` | `security/` |
 | `src/control/` | `control/` |
-| `src/events/` | `events/` (bus now, WebSocket in M3) |
+| `src/events/` | `events/` (bus, permissions, the `/events` WebSocket) |
 | `src/camera/` | `camera/` |
 | `src/calibration/` | `calibration/` (same file format, so either reads the other's file) |
 | `src/robot/` | `robot/` |
@@ -100,6 +100,12 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
   up to `GATEWAY_RWS_MOVE_TIMEOUT` for the arm) without holding up
   any other connection, so a lease renewal never waits behind a
   move. Threads get a 256 KB stack; connections are capped at 64.
+- **WebSockets never block publishers.** A WebSocket keeps its
+  connection thread but runs on a private event loop there;
+  `publish()` only queues the message. A client that falls 1000
+  messages behind is dropped, and an idle one is pinged and closed
+  after 20 s without an answer, so a vanished client frees its
+  thread. (The Python gateway awaits every client's send.)
 - **The lease runs on the monotonic clock.** Expiry, contention
   window and startup grace cannot be moved by an NTP step on the
   device; the wall clock only gives the reported timestamps.
@@ -118,7 +124,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M0 | CMake, presets, toolchain image, server, settings, `/openapi.json`, `/health` | done |
 | M1 | Clients file, auth, control lease and routes | done: `test_auth`, `test_control`, C++ registry/lease tests |
 | M2 | Camera service, mock, camera routes; calibration | done: `test_camera`, `test_calibration` (incl. a file written by either implementation read by the other), C++ calibration tests |
-| M3 | Events WebSocket | open |
+| M3 | Events WebSocket | done: `test_events` (+ a new test that 100 closed connections are all released) |
 | M4 | `POST /robot/command` (mock + CommServer TCP) | open (also unblocks `test_failover`) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | open (client and error parsing done) |
 | M6 | OAK producer on a minimal depthai-core build, reconnect | open |
@@ -132,5 +138,5 @@ Linux arm64 Docker, 4 clients pulling frames (`tools/measure_gateway.py`):
 |---|---|---|
 | RSS, 640x480 mock | 58 MB | 3.1 MB |
 | RSS, real camera path | 262 MB idle, 303 MB peak (`import depthai`) | M6 |
-| Image | 860 MB | 2.9 MB (`FROM scratch`, one 2 MB static binary) |
+| Image | 860 MB | 2.9 MB at M2 (`FROM scratch`, one static binary: 2.0 MB at M2, 2.4 MB with WebSockets at M3) |
 | `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB |

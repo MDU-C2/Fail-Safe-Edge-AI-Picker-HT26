@@ -84,6 +84,7 @@ void add_health_routes(App& app, http::Router& router);
 void add_control_routes(App& app, http::Router& router);
 void add_camera_routes(App& app, http::Router& router);
 void add_calibration_routes(App& app, http::Router& router);
+void add_event_routes(App& app, http::Router& router);
 void add_robot_routes(App& app, http::Router& router);
 
 }  // namespace gw

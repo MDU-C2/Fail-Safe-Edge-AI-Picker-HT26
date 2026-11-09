@@ -199,19 +199,57 @@ void Router::del(
     add("DELETE", std::move(pattern), std::move(handler));
 }
 
+void Router::websocket(
+    std::string pattern,
+    WebSocketHandler handler
+) {
+    websocket_routes_.push_back(
+        WebSocketRoute{
+            split_path(pattern),
+            std::move(handler),
+        }
+    );
+}
+
+const WebSocketHandler* Router::find_websocket(
+    Request& request
+) const {
+    const auto segments = split_path(request.path);
+
+    for (const WebSocketRoute& route : websocket_routes_) {
+        std::map<std::string, std::string> params;
+
+        if (match_parts(route.parts, segments, params)) {
+            request.params = std::move(params);
+
+            return &route.handler;
+        }
+    }
+
+    return nullptr;
+}
+
 bool Router::match(
     const Route& route,
     const std::vector<std::string>& segments,
     std::map<std::string, std::string>& params
 ) {
-    if (route.parts.size() != segments.size()) {
+    return match_parts(route.parts, segments, params);
+}
+
+bool Router::match_parts(
+    const std::vector<std::string>& parts,
+    const std::vector<std::string>& segments,
+    std::map<std::string, std::string>& params
+) {
+    if (parts.size() != segments.size()) {
         return false;
     }
 
     params.clear();
 
     for (std::size_t i = 0; i < segments.size(); ++i) {
-        const std::string& part = route.parts[i];
+        const std::string& part = parts[i];
 
         if (part.size() > 2 && part.front() == '{' && part.back() == '}') {
             if (segments[i].empty()) {

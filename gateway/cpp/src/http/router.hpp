@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "http/message.hpp"
+#include "http/websocket.hpp"
 
 namespace gw::http {
 
@@ -49,10 +50,26 @@ public:
     );
 
     //
+    // A WebSocket route (GET with an Upgrade: websocket header).
+    //
+    void websocket(
+        std::string pattern,
+        WebSocketHandler handler
+    );
+
+    //
     // Runs the matching handler and turns HttpError and other
     // exceptions into responses; never throws.
     //
     Response handle(
+        Request& request
+    ) const;
+
+    //
+    // The WebSocket route for the request's path (its parameters
+    // filled in), or null.
+    //
+    const WebSocketHandler* find_websocket(
         Request& request
     ) const;
 
@@ -62,6 +79,19 @@ private:
         std::vector<std::string> parts;
         Handler handler;
     };
+
+    struct WebSocketRoute {
+        std::vector<std::string> parts;
+        WebSocketHandler handler;
+    };
+
+    static bool match_parts(
+        const std::vector<std::string>& parts,
+        const std::vector<std::string>& segments,
+        std::map<std::string, std::string>& params
+    );
+
+    std::vector<WebSocketRoute> websocket_routes_;
 
     static bool match(
         const Route& route,
