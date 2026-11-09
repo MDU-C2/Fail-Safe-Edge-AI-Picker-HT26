@@ -16,8 +16,16 @@ priority device that is alive, never hands control to a lower one
 while a higher one is renewing, and refuses commands from every
 device that is not the current holder.
 
+The gateway hands a free lease only to the highest client that
+tried within CONTENTION_SECONDS, so when a lease lapses the next
+tier gets it even if a lower one asks first: holders are checked
+exactly, with no lower tier getting in even for a moment. After
+startup it hands out nothing for a grace period, so the highest
+client reconnecting wins rather than the quickest.
+
 The lease is LEASE_SECONDS (2 s) in the test gateways; devices
-tick every TICK_SECONDS, well inside it.
+tick every TICK_SECONDS, well inside it and inside the contention
+window.
 """
 
 import threading
@@ -27,6 +35,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from gateway.tests.conftest import mock_settings
 from gateway.tests.support import (
     LEASE_SECONDS,
     Client,
@@ -52,12 +61,10 @@ PREEMPT_TIMEOUT_SECONDS = 1.5
 TIERS = ("primary", "secondary", "tertiary")
 
 #
-# When a lease lapses, every waiting device races to acquire it and
-# the first request wins, so a lower tier can get in a moment before
-# the right one preempts it. Such a blip lasts about one tick; a
-# holder that keeps the lease longer than this is a real handover.
+# Startup grace of the gateway in the startup test: long enough for
+# all devices to be trying before it ends.
 #
-BLIP_SECONDS = TICK_SECONDS * 2
+STARTUP_GRACE_SECONDS = 8.0
 
 
 # ================================================================
@@ -301,59 +308,6 @@ class Watcher:
 
         return holders
 
-    def settled_since(
-        self,
-        since: float,
-    ) -> list[str]:
-        """Holders since `since` that kept the lease longer than a
-        blip, without the moments of nobody in control.
-
-        A blip is only allowed when the next holder preempts it,
-        i.e. it was a lower tier that won the race after a lapse;
-        anything else fails here.
-        """
-
-        now = time.monotonic()
-
-        with self._lock:
-            entries = [
-                entry
-                for entry in self.history
-                if entry[0] >= since
-            ]
-
-            before = [
-                entry
-                for entry in self.history
-                if entry[0] < since
-            ]
-
-        if before:
-            entries.insert(0, (since, before[-1][1]))
-
-        settled: list[str] = []
-
-        for index, (at, holder) in enumerate(entries):
-            if holder is None:
-                continue
-
-            last = index == len(entries) - 1
-            until = now if last else entries[index + 1][0]
-            following = None if last else entries[index + 1][1]
-
-            if not last and until - at < BLIP_SECONDS:
-                assert following is not None and rank(following) < rank(holder), (
-                    f"{holder} held the lease for {until - at:.2f} s and "
-                    f"was followed by {following!r}, not preempted by a "
-                    f"higher tier; history: {self.describe()}"
-                )
-                continue
-
-            if not settled or settled[-1] != holder:
-                settled.append(holder)
-
-        return settled
-
     def wait_for(
         self,
         holder: str | None,
@@ -411,14 +365,17 @@ class Watcher:
             )
 
 
-def rank(
-    client_id: str,
-) -> int:
-    """Position in the chain, 0 = highest (admin above the tiers)."""
+def without_gaps(
+    holders: list[str | None],
+) -> list[str]:
+    """Holders without the moments of nobody in control (whether
+    the watcher catches those is down to timing)."""
 
-    order = ("admin", *TIERS)
-
-    return order.index(client_id)
+    return [
+        holder
+        for holder in holders
+        if holder is not None
+    ]
 
 
 @contextmanager
@@ -509,6 +466,76 @@ def test_all_devices_starting_at_once_settle_on_primary(
         watcher.hold_steady("primary", LEASE_SECONDS * 2)
 
 
+def test_after_startup_grace_primary_gets_control_first(
+    tmp_path,
+) -> None:
+    """
+    A gateway (re)starting with every device already trying: the
+    quickest device must not get control, primary must, and nobody
+    holds it during the grace period.
+    """
+
+    gateway = Gateway(
+        tmp_path,
+        "strict",
+        {
+            **mock_settings(),
+            "GATEWAY_CONTROL_STARTUP_GRACE_SECONDS": str(STARTUP_GRACE_SECONDS),
+        },
+    )
+
+    gateway.start()
+
+    try:
+        with fleet(gateway, *TIERS) as (devices, watcher):
+            #
+            # Lowest first, so without the grace tertiary would get
+            # control and then be preempted twice.
+            #
+            devices["tertiary"].start()
+
+            refused = expect_refused_with_retry_after(gateway, "secondary")
+
+            assert 0 < refused <= STARTUP_GRACE_SECONDS
+
+            time.sleep(TICK_SECONDS * 2)
+            devices["secondary"].start()
+            time.sleep(TICK_SECONDS * 2)
+            devices["primary"].start()
+
+            assert watcher.sample() is None
+
+            watcher.wait_for("primary", STARTUP_GRACE_SECONDS + 2.0)
+            watcher.hold_steady("primary", LEASE_SECONDS)
+
+            assert without_gaps(watcher.holders_since(0.0)) == ["primary"], (
+                watcher.describe()
+            )
+
+            assert devices["secondary"].acquired == 0
+            assert devices["tertiary"].acquired == 0
+
+    finally:
+        gateway.stop()
+
+
+def expect_refused_with_retry_after(
+    gateway: Gateway,
+    client_id: str,
+) -> int:
+    response = gateway.client(client_id).post("/control/acquire")
+
+    expect(response, 409)
+
+    #
+    # Only asking: withdraw again so this client does not count as
+    # contending.
+    #
+    gateway.client(client_id).post("/control/release")
+
+    return int(response.headers["Retry-After"])
+
+
 # ================================================================
 # Failover and failback
 # ================================================================
@@ -523,6 +550,12 @@ def test_crashes_cascade_down_the_chain_and_restarts_climb_back(
         watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)
 
         #
+        # Tertiary may have got in at start-up before the others
+        # asked; only what happens from here on counts.
+        #
+        tertiary_acquired = devices["tertiary"].acquired
+
+        #
         # Down: each crash hands control to the next tier once the
         # crashed one's lease has lapsed, never skipping a tier.
         #
@@ -533,6 +566,8 @@ def test_crashes_cascade_down_the_chain_and_restarts_climb_back(
         assert took >= LEASE_SECONDS - 0.5, "took over before the lease lapsed"
         watcher.hold_steady("secondary", LEASE_SECONDS)
 
+        assert devices["tertiary"].acquired == tertiary_acquired
+
         devices["secondary"].crash()
         watcher.wait_for("tertiary", FAILOVER_TIMEOUT_SECONDS)
         watcher.hold_steady("tertiary", LEASE_SECONDS)
@@ -541,7 +576,7 @@ def test_crashes_cascade_down_the_chain_and_restarts_climb_back(
         watcher.wait_for(None, FAILOVER_TIMEOUT_SECONDS)
         watcher.hold_steady(None, LEASE_SECONDS)
 
-        assert watcher.settled_since(since) == [
+        assert without_gaps(watcher.holders_since(since)) == [
             "primary",
             "secondary",
             "tertiary",
@@ -645,17 +680,17 @@ def test_flapping_primary_always_gets_control_back(
 
         watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)
 
+        #
+        # Tertiary may have got in at start-up before the others
+        # asked; only what happens from here on counts.
+        #
+        tertiary_acquired = devices["tertiary"].acquired
+
         since = watcher.mark()
 
         for _ in range(3):
             devices["primary"].crash()
             watcher.wait_for("secondary", FAILOVER_TIMEOUT_SECONDS)
-
-            #
-            # A restart takes a moment; long enough that secondary's
-            # takeover is not mistaken for a blip.
-            #
-            watcher.hold_steady("secondary", BLIP_SECONDS * 2)
 
             devices["primary"].start()
             watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)
@@ -664,11 +699,13 @@ def test_flapping_primary_always_gets_control_back(
 
         #
         # Secondary was always alive to cover for primary, so
-        # tertiary may at most have won a race for a moment.
+        # tertiary never got in, not even for a moment.
         #
-        assert watcher.settled_since(since) == (
+        assert without_gaps(watcher.holders_since(since)) == (
             ["primary", "secondary"] * 3 + ["primary"]
         ), watcher.describe()
+
+        assert devices["tertiary"].acquired == tertiary_acquired
 
 
 def test_clean_shutdown_hands_over_without_waiting_for_the_lease(
@@ -680,9 +717,16 @@ def test_clean_shutdown_hands_over_without_waiting_for_the_lease(
 
         watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)
 
+        #
+        # Tertiary may have got in at start-up before the others
+        # asked; only what happens from here on counts.
+        #
+        tertiary_acquired = devices["tertiary"].acquired
+
         devices["primary"].shutdown()
         took = watcher.wait_for("secondary", PREEMPT_TIMEOUT_SECONDS)
         assert took < LEASE_SECONDS
+        assert devices["tertiary"].acquired == tertiary_acquired
 
         devices["secondary"].shutdown()
         took = watcher.wait_for("tertiary", PREEMPT_TIMEOUT_SECONDS)
@@ -802,6 +846,12 @@ def test_admin_overrides_every_tier_and_hands_back_on_release(
 
         watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)
 
+        #
+        # Tertiary may have got in at start-up before the others
+        # asked; only what happens from here on counts.
+        #
+        tertiary_acquired = devices["tertiary"].acquired
+
         admin = strict_gateway.client("admin")
 
         with admin.control():
@@ -822,6 +872,8 @@ def test_admin_overrides_every_tier_and_hands_back_on_release(
         # straight away, and primary takes it back when it returns.
         #
         watcher.wait_for("secondary", PREEMPT_TIMEOUT_SECONDS)
+
+        assert devices["tertiary"].acquired == tertiary_acquired
 
         devices["primary"].start()
         watcher.wait_for("primary", PREEMPT_TIMEOUT_SECONDS)

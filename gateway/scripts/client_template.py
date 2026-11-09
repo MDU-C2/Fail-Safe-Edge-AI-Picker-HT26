@@ -112,6 +112,12 @@ URL = "http://127.0.0.1:8000/api/v1"
 TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # this device's token, never commit it
 
 RENEW_INTERVAL_SECONDS = 2.0
+
+#
+# How often to ask for control while waiting for it. Must be
+# shorter than GATEWAY_CONTROL_CONTENTION_SECONDS (3 s by default).
+#
+ACQUIRE_RETRY_SECONDS = 1.0
 LOOP_INTERVAL_SECONDS = 1.0
 
 #
@@ -173,14 +179,36 @@ def run_model(
 # ================================================================
 
 def acquire_control() -> None:
-    response = requests.post(
-        f"{URL}/control/acquire",
-        headers=headers,
-    )
+    #
+    # 409 means someone else has control, the gateway has just
+    # started (it hands out nothing for a few seconds so the
+    # highest-priority client wins), or a higher-priority client is
+    # also trying. Keep asking: the gateway only counts a client as
+    # waiting while it keeps trying, so a backup device should
+    # retry every second or so, and Retry-After says when trying
+    # again can help.
+    #
+    while True:
+        response = requests.post(
+            f"{URL}/control/acquire",
+            headers=headers,
+        )
 
-    response.raise_for_status()
+        if response.status_code != 409:
+            response.raise_for_status()
 
-    print("Control acquired")
+            print("Control acquired")
+
+            return
+
+        print(f"Waiting for control: {response.json()['detail']}")
+
+        time.sleep(
+            min(
+                ACQUIRE_RETRY_SECONDS,
+                float(response.headers.get("Retry-After", ACQUIRE_RETRY_SECONDS)),
+            )
+        )
 
 
 def renew_lease() -> None:

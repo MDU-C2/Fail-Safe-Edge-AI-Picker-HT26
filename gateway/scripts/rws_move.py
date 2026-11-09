@@ -197,10 +197,27 @@ def main() -> None:
 
     body.update(arm=args.arm, wait=not args.no_wait, **speed)
 
-    response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
+    #
+    # Right after the gateway starts, or while a higher-priority
+    # client is also trying, acquire answers 409 with Retry-After.
+    #
+    deadline = time.monotonic() + 15.0
 
-    if not response.ok:
-        sys.exit(f"Could not take control: {response.status_code} {response.text}")
+    while True:
+        response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
+
+        if response.ok:
+            break
+
+        if (
+            response.status_code != 409
+            or "Retry-After" not in response.headers
+            or time.monotonic() > deadline
+        ):
+            sys.exit(f"Could not take control: {response.status_code} {response.text}")
+
+        print(f"Waiting for control: {response.json()['detail']}")
+        time.sleep(1.0)
 
     #
     # The lease (5 s by default) must outlive the job, so it is

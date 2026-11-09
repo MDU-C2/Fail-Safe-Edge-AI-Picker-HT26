@@ -93,6 +93,8 @@ app = FastAPI(
 
 configure_control_manager(
     lease_seconds=settings.control_lease_seconds,
+    contention_seconds=settings.control_contention_seconds,
+    startup_grace_seconds=settings.control_startup_grace_seconds,
 )
 
 

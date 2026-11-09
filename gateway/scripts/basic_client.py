@@ -163,8 +163,25 @@ def run_model(
 
 def acquire_control(
     gateway: Gateway,
+    wait_seconds: float = 15.0,
 ) -> None:
-    gateway.request("POST", "/control/acquire")
+    #
+    # Right after the gateway starts, or while a higher-priority
+    # client is also trying, acquire answers 409 with Retry-After.
+    #
+    deadline = time.monotonic() + wait_seconds
+
+    while True:
+        try:
+            gateway.request("POST", "/control/acquire")
+            break
+
+        except RuntimeError as error:
+            if "-> 409" not in str(error) or time.monotonic() > deadline:
+                raise
+
+            print(f"Waiting for control: {error}")
+            time.sleep(1.0)
 
     print("Control acquired")
 

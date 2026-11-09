@@ -45,6 +45,15 @@ LEASE_SECONDS = 2.0
 RENEW_INTERVAL_SECONDS = 0.5
 
 #
+# A free lease goes to the highest client that tried within this
+# window. Shorter than the lease, longer than the failover tests'
+# device tick. No startup grace by default, so tests can take
+# control as soon as a gateway is up; test_failover.py starts its
+# own gateway with one.
+#
+CONTENTION_SECONDS = 1.0
+
+#
 # Same clients and permissions as gateway/auth_clients.json, with
 # tokens known to the tests.
 #
@@ -284,6 +293,8 @@ class Gateway:
             "GATEWAY_AUTH_CLIENTS_FILE": str(auth_clients),
             "GATEWAY_CALIBRATION_FILE": str(directory / "calibration.json"),
             "GATEWAY_CONTROL_LEASE_SECONDS": str(LEASE_SECONDS),
+            "GATEWAY_CONTROL_CONTENTION_SECONDS": str(CONTENTION_SECONDS),
+            "GATEWAY_CONTROL_STARTUP_GRACE_SECONDS": "0",
             **settings,
         }
 
