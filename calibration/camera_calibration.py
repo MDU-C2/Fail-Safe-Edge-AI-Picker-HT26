@@ -6,11 +6,14 @@ What it does, in one run:
   2. Takes control, moves the arm HOME, then to each pose in POSES with the gripper in
      CALIB_ROT. Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
-     the AprilTag on the gripper and reads its depth.
+     the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
+     stale depth frame from before the move is never used.
   4. Saves every image and the pose it belongs to in calibration_runs/session_<time>/,
      so images and poses can never get out of step.
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
      fit and on poses left out of it ("unseen"), then saves calibration.json.
+  6. If some poses are flagged (unseen error over twice the median), fits once more
+     without them and saves that as calibration.json instead.
 
 The robot is moved through the gateway's RWS API (POST /robot/rws/home and
 /robot/rws/move, see gateway/scripts/client_template.py), so the RAPID program in
@@ -63,7 +66,7 @@ POSES = [
 TAG_ID = 0
 TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 3                       # frames per pose, combined
+FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -210,11 +213,13 @@ def to_camera(u, v, z, k):
 
 
 def measure(folder, n):
-    """Grab FRAMES frames and combine them. Saves the last pair as image n."""
+    """Grab FRAMES frames, drop the first, combine the rest. Saves the last pair as image n."""
     rgb = depth = None
     found = []
-    for _ in range(FRAMES):
+    for i in range(FRAMES):
         rgb, depth = capture()
+        if i == 0:
+            continue                       # may still be from before the move
         c = find_tag(rgb)
         z = tag_depth(c, depth) if c is not None else None
         if z is not None:
@@ -265,6 +270,7 @@ def solve(folder, exclude=()):
         unseen_xyz.append(si * Ri @ cam[i] + ti - rob[i])
     unseen_xyz = np.array(unseen_xyz)          # predicted minus real, mm, robot frame
     unseen = np.linalg.norm(unseen_xyz, axis=1)
+    flagged = [s["image"] for s, u in zip(samples, unseen) if u > 2 * np.median(unseen)]
 
     print(f"\n{'image':>5}  {'pose':>18}  {'fit':>8}  {'unseen':>8}  {'dx':>6}  {'dy':>6}  {'dz':>6}  {'depth':>7}")
     for s, e, u, d, p in zip(samples, err, unseen, unseen_xyz, cam):
@@ -290,6 +296,15 @@ def solve(folder, exclude=()):
     print(f"Saved calibration.json (in the session folder and next to this script)")
     if TAG_OFFSET == (0.0, 0.0, 0.0):
         print("TAG_OFFSET is (0, 0, 0): positions are off by the tag-to-TCP distance until it is measured.")
+    return flagged
+
+
+def solve_clean(folder, exclude=()):
+    """Fit, then fit again without the flagged poses. The second fit is the one saved."""
+    flagged = solve(folder, exclude)
+    if flagged:
+        print(f"\nRefitting without the flagged poses {flagged}:")
+        solve(folder, set(exclude) | set(flagged))
 
 
 # Robot run
@@ -323,14 +338,14 @@ def run(auto):
         time.sleep(SETTLE)
         tag = measure(folder, n)
         print(f"  pose {n}: " + (f"tag at ({tag['u']:.0f}, {tag['v']:.0f}) px, depth {tag['z']:.0f} mm, "
-                                 f"{tag['frames']}/{FRAMES} frames" if tag else "tag or depth NOT found"))
+                                 f"{tag['frames']}/{FRAMES - 1} frames" if tag else "tag or depth NOT found"))
         session["samples"].append({"image": n, "pose": list(pose), "tag": tag})
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
-    solve(folder)
+    solve_clean(folder)
 
 
 if __name__ == "__main__":
@@ -344,6 +359,6 @@ if __name__ == "__main__":
         ROBOT_URL = args.robot_url.rstrip("/")
 
     if args.fit:
-        solve(args.fit, set(args.exclude))
+        solve_clean(args.fit, set(args.exclude))
     else:
         run(args.auto)
