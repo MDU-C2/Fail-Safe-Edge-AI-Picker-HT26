@@ -1,0 +1,63 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}"
+        },
+        {
+            "name": "dev",
+            "displayName": "Development (debug info, tests)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "release-size",
+            "displayName": "Release for the devices: smallest static binary",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "MinSizeRel",
+                "GATEWAY_SIZE": "ON",
+                "GATEWAY_STATIC": "ON"
+            }
+        },
+        {
+            "name": "asan",
+            "displayName": "AddressSanitizer + UndefinedBehaviorSanitizer",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+                "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+            }
+        },
+        {
+            "name": "tsan",
+            "displayName": "ThreadSanitizer",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread",
+                "CMAKE_C_FLAGS": "-fsanitize=thread",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "dev", "configurePreset": "dev" },
+        { "name": "release-size", "configurePreset": "release-size" },
+        { "name": "asan", "configurePreset": "asan" },
+        { "name": "tsan", "configurePreset": "tsan" }
+    ],
+    "testPresets": [
+        { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
+        { "name": "release-size", "configurePreset": "release-size", "output": { "outputOnFailure": true } },
+        { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
+        { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } }
+    ]
+}

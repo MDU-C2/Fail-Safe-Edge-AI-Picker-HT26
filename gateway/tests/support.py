@@ -28,6 +28,18 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 API_PREFIX = "/api/v1"
 
+#
+# Which gateway the tests start: "python" (uvicorn gateway.main:app)
+# or "cpp" (the C++ binary at CPP_BINARY, relative to the repository
+# root). Set with --impl / GATEWAY_IMPL and --cpp-binary /
+# GATEWAY_CPP_BINARY; conftest.py fills these in.
+#
+IMPLEMENTATIONS = ("python", "cpp")
+
+implementation = os.environ.get("GATEWAY_IMPL", "python")
+
+cpp_binary = os.environ.get("GATEWAY_CPP_BINARY", "gateway/cpp/build/dev/gateway")
+
 STARTUP_TIMEOUT_SECONDS = 90.0
 
 #
@@ -300,20 +312,34 @@ class Gateway:
 
         self._process: subprocess.Popen | None = None
 
-    def start(self) -> None:
-        self._log = self.log_path.open("w", encoding="utf-8")
+    def command(self) -> list[str]:
+        """The command line of the selected implementation."""
 
-        self._process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "gateway.main:app",
+        if implementation == "cpp":
+            return [
+                str(REPOSITORY_ROOT / cpp_binary),
                 "--host",
                 "127.0.0.1",
                 "--port",
                 str(self.port),
-            ],
+            ]
+
+        return [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "gateway.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self.port),
+        ]
+
+    def start(self) -> None:
+        self._log = self.log_path.open("w", encoding="utf-8")
+
+        self._process = subprocess.Popen(
+            self.command(),
             cwd=REPOSITORY_ROOT,
             env=self.environment,
             stdout=self._log,

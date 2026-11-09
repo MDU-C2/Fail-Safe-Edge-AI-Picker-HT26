@@ -53,6 +53,10 @@ python -m pytest gateway/tests/test_control.py -k preempt
 
 When changing gateway behaviour, add or update tests and run the suite (plus `--robotstudio` for RWS changes) before reporting it done.
 
+### C++ gateway (in progress)
+
+[gateway/cpp/](gateway/cpp/) is a C++ port of the gateway for the memory- and storage-limited Westermo Lynx (Linux only; built and tested in Docker in WSL). Its [README](gateway/cpp/README.md) has the build commands, layout, design decisions, migration milestones (M0–M7) and measurements. Everything goes through `gateway/cpp/dev.sh` (toolchain container; from Windows `wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh build|test|pytest|image`). The pytest suite picks the implementation with `--impl python|cpp` (default python; `gateway/tests/implementation.py`, loaded from `pytest.ini`) and `--cpp-binary`; with `--impl cpp` the modules testing Python internals and those of routes not ported yet (`NOT_PORTED_TO_CPP` in `conftest.py`) are skipped. When a milestone lands, remove its line there and run the suite with `--impl cpp`. `gateway/cpp/openapi/openapi.json` is FastAPI's schema, re-exported with `python gateway/cpp/tools/export_openapi.py` after changing Python routes or models. Keep the two implementations' behaviour identical; a behaviour change goes into both.
+
 Client tools in [gateway/scripts/](gateway/scripts/) take `--url`, `--token` (strict) and `--client` (development):
 
 | Script | Purpose |
