@@ -27,16 +27,15 @@ MODULE LeftArm
         GoHomeLeft;
         move_ok_left := AtHome();
       ELSEIF grip_cmd_left = "GRIP" THEN
-        g_GripIn;
+        g_GripIn \holdForce:=grip_force_left;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSEIF grip_cmd_left = "OPEN" THEN
-        IF grip_aperture_left > 0 THEN
-          g_MoveTo grip_aperture_left;              ! open only this far (mm)
-        ELSE
-          g_GripOut;                             ! fully open
-        ENDIF
-        grip_aperture_left := 0;
+        g_GripOut;
+        grip_cmd_left := "";
+        move_ok_left := TRUE;
+      ELSEIF grip_cmd_left = "MOVE" THEN
+        g_MoveTo grip_pos_left;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSE

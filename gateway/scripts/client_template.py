@@ -42,6 +42,8 @@ Jobs (each one for one arm, "left" by default):
     POST /robot/rws/home      {"arm": "right"}            (body optional)
                               {"x": 300, "y": 150, "z": 280, "speed": 200}
     POST /robot/rws/gripper   {"arm": "left", "action": "grip" | "open"}
+                              {"action": "grip", "force": 5}
+                              {"action": "move", "position": 15}
 
     x, y, z     tool0 position in wobj0 (the robot base), millimetres
     rx, ry, rz  orientation in degrees, RAPID OrientZYX(rz, ry, rx);
@@ -52,6 +54,13 @@ Jobs (each one for one arm, "left" by default):
     "acceleration", "ramp"
                 move and home only: % of the maximum acceleration,
                 20..100, and how fast it builds up, 10..100 (default 100)
+    "action"    gripper: "grip" closes until it holds something,
+                "open" opens fully, "move" goes to "position"
+    "position"  gripper move only (required): opening between the
+                fingers in mm, 0 (closed) .. 25 (fully open), no
+                holding force
+    "force"     gripper grip only: holding force in N, 0 < force <= 20
+                (default 20)
 
 Replies (HTTP 200):
 
@@ -146,10 +155,10 @@ def run_model(
     Returns the jobs to run, in order, each carried out by run_job():
 
         [
-            {"gripper": "open"},
+            {"gripper": "move", "position": 20},
             {"x": 300, "y": 150, "z": 280},
             {"x": 300, "y": 150, "z": 250, "rx": 90, "ry": 0, "rz": 90},
-            {"gripper": "grip"},
+            {"gripper": "grip", "force": 5},
             {"home": True},
             {"arm": "right", "x": 420, "y": -150, "z": 300},
         ]
@@ -341,10 +350,21 @@ def gripper(
     action: str,
     arm: str = "left",
     wait: bool = True,
+    position: float | None = None,
+    force: float | None = None,
 ) -> tuple[bool, str]:
-    """Close ("grip") or open ("open") the gripper of one arm."""
+    """Close ("grip", optional force in N), open ("open") or set the
+    opening ("move", position in mm) of the gripper of one arm."""
 
-    return robot_job("gripper", {"arm": arm, "action": action, "wait": wait})
+    body = {"arm": arm, "action": action, "wait": wait}
+
+    if position is not None:
+        body["position"] = position
+
+    if force is not None:
+        body["force"] = force
+
+    return robot_job("gripper", body)
 
 
 def job_status(
@@ -426,7 +446,12 @@ def run_job(
         accepted, message = home(arm)
 
     elif "gripper" in job:
-        accepted, message = gripper(job["gripper"], arm)
+        accepted, message = gripper(
+            job["gripper"],
+            arm,
+            position=job.get("position"),
+            force=job.get("force"),
+        )
 
     else:
         rotation = None

@@ -4,12 +4,15 @@ from typing import Annotated, Any, Literal
 from fastapi import (
     APIRouter,
     Depends,
+    HTTPException,
     Query,
+    status,
 )
 
 from gateway.models.rws import (
     ArmJoints,
     ArmPose,
+    GripperState,
 )
 from gateway.rws.client import RwsError, rws_client
 from gateway.rws.errors import to_http_exception
@@ -23,6 +26,14 @@ from gateway.security.identity import Identity
 ARM_UNITS = {
     "left": "ROB_L",
     "right": "ROB_R",
+}
+
+#
+# Suffix of each arm's SmartGripper signals.
+#
+GRIPPER_SIDES = {
+    "left": "L",
+    "right": "R",
 }
 
 #
@@ -197,3 +208,43 @@ async def get_arm_joints(
 
     except RwsError as error:
         raise to_http_exception(error) from error
+
+
+@router.get(
+    "/{arm}/gripper",
+    response_model=GripperState,
+    summary="Get the finger position of one arm's gripper",
+    description=(
+        "position in mm on the SmartGripper's scale (0 closed .. 25 "
+        "fully open, as POST /robot/rws/gripper move uses it), read "
+        "from the gripper's own position signal; after a grip it is "
+        "where the fingers stopped on the object. 404 on a "
+        "controller without the SmartGripper (RobotStudio)."
+    ),
+)
+async def get_gripper(
+    arm: Arm,
+    _: Annotated[
+        Identity,
+        Depends(require_permission("robot.read")),
+    ],
+) -> GripperState:
+    try:
+        position = await asyncio.to_thread(
+            rws_client.gripper_position,
+            GRIPPER_SIDES[arm],
+        )
+
+    except RwsError as error:
+        if error.status_code == 404:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"The controller has no SmartGripper on the {arm} arm",
+            ) from error
+
+        raise to_http_exception(error) from error
+
+    return GripperState(
+        arm=arm,
+        position=position,
+    )
