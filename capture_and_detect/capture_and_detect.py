@@ -88,6 +88,7 @@ HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster th
 HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
 LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
+PICK_SPEED = 100           # mm/s: left arm down to the cup, up with it, and to the hand-over
 FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
@@ -275,11 +276,13 @@ class Arm:
                           "speed": speed, "acceleration": acceleration, "ramp": RAMP})
         self.last = (flange, rotation)
 
-    def goto(self, x, y, z, rz=LEFT_DOWN[2]):
+    def goto(self, x, y, z, rz=LEFT_DOWN[2], speed=SPEED):
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
-        at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
+        at height z (robot mm), gripper down and turned to rz degrees about the vertical:
+        the flange is GRIPPER_TCP_Z above the TCP."""
         ox, oy, _ = self.offset
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), (LEFT_DOWN[0], LEFT_DOWN[1], rz), pick=(z == PICK_Z))
+        rotation = (LEFT_DOWN[0], LEFT_DOWN[1], rz)
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), rotation, speed, pick=(z == PICK_Z))
 
     def gripper(self, action):
         """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
@@ -375,12 +378,12 @@ class Handover:
         arm = self.left
         arm.gripper("grip")                        # closed while it travels
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
-        arm.goto(x, y, TRAVEL_Z, rz)
+        arm.goto(x, y, TRAVEL_Z, rz)               # above the cup, jaws turned to the handle
         arm.open_left_to(cup.get("aperture"))      # only here, right above the cup
-        arm.goto(x, y, PICK_Z, rz)
+        arm.goto(x, y, PICK_Z, rz, PICK_SPEED)     # slow down to the cup
         arm.gripper("grip")
         cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
-        arm.goto(x, y, TRAVEL_Z, rz)
+        arm.goto(x, y, TRAVEL_Z, rz, PICK_SPEED)   # slow up with the cup
 
     def _pick_only_job(self, cup):
         arm = self.left
@@ -395,7 +398,7 @@ class Handover:
         arm = self.left
         self._pick(cup)
         self.left_has_cup.set()                    # -> right: come to the hand-over
-        arm.move(HANDOVER_L, LEFT_DOWN)
+        arm.move(HANDOVER_L, LEFT_DOWN, PICK_SPEED)   # slow to the hand-over, holding the cup
         self.at_handover.set()                     # -> right: come and take it
         self._wait_for(self.right_has_cup)
         arm.gripper("open")
