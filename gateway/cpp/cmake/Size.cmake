@@ -17,7 +17,7 @@ if(GATEWAY_SIZE)
         -ffunction-sections
         -fdata-sections
         -fvisibility=hidden
-        -fvisibility-inlines-hidden
+        $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
     )
 
     add_link_options(

@@ -9,7 +9,16 @@
         },
         {
             "name": "dev",
-            "displayName": "Development (debug info, tests)",
+            "displayName": "Development (debug info, tests, OAK camera)",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "GATEWAY_WITH_DEPTHAI": "ON"
+            }
+        },
+        {
+            "name": "dev-mock",
+            "displayName": "Development without depthai-core (mock camera only, fast)",
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
@@ -17,12 +26,13 @@
         },
         {
             "name": "release-size",
-            "displayName": "Release for the devices: smallest static binary",
+            "displayName": "Release for the devices: smallest static binary, OAK camera",
             "inherits": "base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "MinSizeRel",
                 "GATEWAY_SIZE": "ON",
-                "GATEWAY_STATIC": "ON"
+                "GATEWAY_STATIC": "ON",
+                "GATEWAY_WITH_DEPTHAI": "ON"
             }
         },
         {
@@ -50,12 +60,14 @@
     ],
     "buildPresets": [
         { "name": "dev", "configurePreset": "dev" },
+        { "name": "dev-mock", "configurePreset": "dev-mock" },
         { "name": "release-size", "configurePreset": "release-size" },
         { "name": "asan", "configurePreset": "asan" },
         { "name": "tsan", "configurePreset": "tsan" }
     ],
     "testPresets": [
         { "name": "dev", "configurePreset": "dev", "output": { "outputOnFailure": true } },
+        { "name": "dev-mock", "configurePreset": "dev-mock", "output": { "outputOnFailure": true } },
         { "name": "release-size", "configurePreset": "release-size", "output": { "outputOnFailure": true } },
         { "name": "asan", "configurePreset": "asan", "output": { "outputOnFailure": true } },
         { "name": "tsan", "configurePreset": "tsan", "output": { "outputOnFailure": true } }

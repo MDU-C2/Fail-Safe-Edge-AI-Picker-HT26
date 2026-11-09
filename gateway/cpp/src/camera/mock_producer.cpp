@@ -124,8 +124,8 @@ void MockCameraProducer::run() {
         lock.unlock();
 
         camera_.publish_frame_set(
-            FrameInput{rgb_, WIDTH, HEIGHT, "BGR888p"},
-            FrameInput{depth_, WIDTH, HEIGHT, "RAW16"}
+            FrameInput{http::SharedBytes::from(rgb_), WIDTH, HEIGHT, "BGR888p"},
+            FrameInput{http::SharedBytes::from(depth_), WIDTH, HEIGHT, "RAW16"}
         );
 
         lock.lock();

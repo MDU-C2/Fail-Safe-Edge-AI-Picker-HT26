@@ -40,6 +40,20 @@ networkingMode=mirrored
 
 then `wsl --shutdown`.
 
+For `--oak` from WSL the camera must be reachable: with mirrored
+networking WSL sends to the link-local camera from the laptop's
+192.168.125.x address, which the camera (link-local only) cannot
+answer. Until WSL restarts, fix the source address as root in WSL:
+
+```sh
+ip route replace 169.254.0.0/16 dev eth4 src 169.254.125.10 metric 281
+```
+
+(`eth4` and `169.254.125.10` are the laptop's lab adapter and its
+link-local address; check with `ip -brief addr`.) Only one process
+can hold the camera, so the gateway on the Raspberry Pi must be
+stopped meanwhile.
+
 Presets (`CMakePresets.json`): `dev`, `release-size` (`-Os`, LTO,
 section GC, stripped, static), `asan` (address + UB sanitizer),
 `tsan` (thread sanitizer). Build trees live in the Docker volume
@@ -103,7 +117,7 @@ Change a Python route or model, then re-export the schema:
 | JSON | nlohmann/json 3.11.3 | |
 | SHA-256 | own, `src/util/sha256.cpp` | checked against hashlib |
 | Tests | GoogleTest 1.15.2 | |
-| OAK camera | depthai-core 3.10.0 (M6) | built from source with the optional parts off |
+| OAK camera | depthai-core 3.10.0 | built from source, static, with the optional parts off (`docker/Dockerfile`, stage `depthai`; 41 MB installed, ~10 MB of it the camera firmware); its vcpkg dependencies are kept in `/opt/depthai/vcpkg` and looked up by our CMake, since a static depthai-core does not find them itself |
 
 Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 
@@ -140,7 +154,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M3 | Events WebSocket | done: `test_events` (+ a new test that 100 closed connections are all released) |
 | M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests, `--robotstudio` (18 passed against the virtual YuMi) |
-| M6 | OAK producer on a minimal depthai-core build, reconnect | open |
+| M6 | OAK producer on a minimal depthai-core build, reconnect | works with the real camera: same intrinsics and depth as the Python gateway on the same scene (valid depth 71 → 95 % over the first 5 s, median 851 mm), `test_camera_contract` passes; C++ port of `test_oak_reconnect`. Open: `test_depth_has_valid_pixels` failed once (it reads the very first frame, before stereo settles); the camera reported a crash dump when the C++ gateway closed it; RAM (below) |
 | M7 | arm64/armv7 images, `.wmopkg`, WeOS seccomp check | open |
 
 ## Measurements
@@ -150,6 +164,8 @@ Linux arm64 Docker, 4 clients pulling frames (`tools/measure_gateway.py`):
 | | Python | C++ |
 |---|---|---|
 | RSS, 640x480 mock | 58 MB | 3.1 MB |
-| RSS, real camera path | 262 MB idle, 303 MB peak (`import depthai`) | M6 |
+| RSS, real camera path | 262 MB idle, 303 MB peak (`import depthai`, laptop) | – |
+| RSS, real OAK at 1080p / 4 fps, 4 clients pulling frames | **531 MB** (550 MB peak) in production on the Pi, 33 threads | **198 MB** (12 threads); 176 MB with `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=1048576:glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=1048576`. Mostly a few large DepthAI blocks (77 MB, 38 MB, ...), the same idle and under load: next thing to shrink |
 | Image | 860 MB | 2.9 MB at M2 (`FROM scratch`, one static binary: 2.0 MB at M2, 2.4 MB with WebSockets at M3) |
-| `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB |
+| `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB without the camera |
+| Static release binary with depthai-core (OAK) | – (depthai's libraries alone 226 MB) | 15.4 MB (12.4 MB gzipped) |

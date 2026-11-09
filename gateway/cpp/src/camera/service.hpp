@@ -26,7 +26,7 @@ class EventBus;
 //
 
 struct CameraFrame {
-    std::shared_ptr<const http::Bytes> data;
+    http::SharedBytes data;
 
     std::string content_type;
 
@@ -69,7 +69,7 @@ struct CameraIntrinsics {
 };
 
 struct FrameInput {
-    std::shared_ptr<const http::Bytes> data;
+    http::SharedBytes data;
 
     int width = 0;
     int height = 0;

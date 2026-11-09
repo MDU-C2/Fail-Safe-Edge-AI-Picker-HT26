@@ -215,7 +215,13 @@ void serve_connection(
             const WebSocketHandler* handler = router.find_websocket(request);
 
             if (handler == nullptr) {
-                write_response(socket, Response{403, "text/plain; charset=utf-8", {}, "Forbidden", nullptr}, 11, false);
+                Response forbidden;
+
+                forbidden.status = 403;
+                forbidden.content_type = "text/plain; charset=utf-8";
+                forbidden.body = "Forbidden";
+
+                write_response(socket, forbidden, 11, false);
                 return;
             }
 

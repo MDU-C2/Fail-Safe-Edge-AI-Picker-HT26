@@ -61,11 +61,11 @@ Response Response::json(
 }
 
 std::size_t Response::body_size() const {
-    return shared_body ? shared_body->size() : body.size();
+    return shared_body ? shared_body.size : body.size();
 }
 
 const void* Response::body_data() const {
-    return shared_body ? static_cast<const void*>(shared_body->data()) : body.data();
+    return shared_body ? static_cast<const void*>(shared_body.data) : body.data();
 }
 
 HttpError::HttpError(

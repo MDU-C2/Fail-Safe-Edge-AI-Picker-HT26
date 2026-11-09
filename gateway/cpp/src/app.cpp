@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "camera/mock_producer.hpp"
+#include "camera/oak_producer.hpp"
 
 namespace gw::embedded {
 
@@ -22,8 +23,28 @@ std::unique_ptr<CameraProducer> create_camera_producer(
         return std::make_unique<MockCameraProducer>(camera);
     }
 
-    throw std::runtime_error(
-        "Camera provider 'oak' is not available in this build yet; use GATEWAY_CAMERA_PROVIDER=mock"
+    OakConfig config;
+
+    config.ip = settings.camera_ip;
+    config.fps = settings.camera_fps;
+    config.width = static_cast<int>(settings.camera_rgb_width);
+    config.height = static_cast<int>(settings.camera_rgb_height);
+
+    auto connector = create_depthai_connector(config);
+
+    if (!connector) {
+        throw std::runtime_error(
+            "Camera provider 'oak' needs a gateway built with depthai-core (GATEWAY_WITH_DEPTHAI); "
+            "use GATEWAY_CAMERA_PROVIDER=mock"
+        );
+    }
+
+    return std::make_unique<OakCameraProducer>(
+        camera,
+        std::move(connector),
+        config.fps,
+        config.width,
+        config.height
     );
 }
 

@@ -107,6 +107,12 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=20)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--cmd", default=None)
+    parser.add_argument(
+        "--camera-provider",
+        default="mock",
+        choices=("mock", "oak"),
+        help="oak: the real camera at GATEWAY_CAMERA_IP (from the environment or gateway/.env)",
+    )
     args = parser.parse_args()
 
     port = free_port()
@@ -119,7 +125,7 @@ def main() -> None:
         "GATEWAY_SECURITY_MODE": "strict",
         "GATEWAY_AUTH_CLIENTS_FILE": str(auth),
         "GATEWAY_CALIBRATION_FILE": str(directory / "calibration.json"),
-        "GATEWAY_CAMERA_PROVIDER": "mock",
+        "GATEWAY_CAMERA_PROVIDER": args.camera_provider,
         "GATEWAY_ROBOT_PROVIDER": "mock",
         "GATEWAY_ROBOT_HOST": "127.0.0.1",
         "GATEWAY_RWS_PORT": str(free_port()),

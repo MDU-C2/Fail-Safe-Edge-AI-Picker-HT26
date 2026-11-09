@@ -5,7 +5,7 @@
 #
 # Run in WSL (or any Linux with Docker), from anywhere:
 #
-#   gateway/cpp/dev.sh toolchain            build the toolchain image (once)
+#   gateway/cpp/dev.sh toolchain            build the toolchain image (once; builds depthai-core)
 #   gateway/cpp/dev.sh build [PRESET]       configure + build (default: dev)
 #   gateway/cpp/dev.sh test [PRESET]        C++ unit tests (ctest)
 #   gateway/cpp/dev.sh pytest [ARGS...]     Python suite against the C++ binary
@@ -47,8 +47,12 @@ command=${1:-build}
 
 case "$command" in
     toolchain)
+        #
+        # Includes depthai-core, built from source the first time
+        # (long; cached by Docker afterwards).
+        #
         cd "$REPO"
-        docker build -f "$DOCKERFILE" --target toolchain -t "$IMAGE" .
+        docker build -f "$DOCKERFILE" --target toolchain-oak -t "$IMAGE" .
         ;;
 
     build)

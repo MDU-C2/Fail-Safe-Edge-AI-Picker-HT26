@@ -33,6 +33,29 @@ std::string to_text(
 
 using Bytes = std::vector<std::uint8_t>;
 
+//
+// Bytes owned by someone else and kept alive by owner: a shared
+// vector, or a camera driver's frame, sent without copying.
+//
+struct SharedBytes {
+    std::shared_ptr<const void> owner;
+
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+
+    static SharedBytes from(
+        std::shared_ptr<const Bytes> bytes
+    ) {
+        const Bytes& view = *bytes;
+
+        return SharedBytes{bytes, view.data(), view.size()};
+    }
+
+    explicit operator bool() const {
+        return owner != nullptr;
+    }
+};
+
 using Headers = std::vector<std::pair<std::string, std::string>>;
 
 // ================================================================
@@ -91,7 +114,7 @@ struct Response {
     // Large bodies (camera frames) are sent from a shared buffer
     // without copying; when set, it is sent instead of body.
     //
-    std::shared_ptr<const Bytes> shared_body;
+    SharedBytes shared_body;
 
     static Response json(
         const Json& value,

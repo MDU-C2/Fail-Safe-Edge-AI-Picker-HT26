@@ -49,7 +49,7 @@ from gateway.tests.support import (
 PYTHON_ONLY = {
     "test_client_registry.py": "gateway/cpp/tests/test_client_registry.cpp",
     "test_control_manager.py": "gateway/cpp/tests/test_control_manager.cpp",
-    "test_oak_reconnect.py": "the C++ OAK producer test (not ported yet)",
+    "test_oak_reconnect.py": "gateway/cpp/tests/test_oak_reconnect.cpp",
 }
 
 #
@@ -67,9 +67,7 @@ LEGACY_ONLY = (
 # migration step that brings them (gateway/cpp/README.md). Remove a
 # line once its tests pass with --impl cpp.
 #
-NOT_PORTED_TO_CPP = {
-    "test_oak.py": "M6 (OAK camera)",
-}
+NOT_PORTED_TO_CPP: dict[str, str] = {}
 
 GATEWAY_FIXTURES = (
     "strict_gateway",

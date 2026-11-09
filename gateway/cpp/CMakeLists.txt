@@ -13,6 +13,7 @@ project(
 option(GATEWAY_BUILD_TESTS "Build the GoogleTest unit tests" ON)
 option(GATEWAY_STATIC "Link the gateway binary fully statically" OFF)
 option(GATEWAY_SIZE "Optimise for size: -Os, LTO, section GC, strip" OFF)
+option(GATEWAY_WITH_DEPTHAI "Build the OAK camera producer with depthai-core (else mock camera only)" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,6 +50,7 @@ add_library(
     src/calibration/routes.cpp
     src/calibration/service.cpp
     src/camera/mock_producer.cpp
+    src/camera/oak_producer.cpp
     src/camera/routes.cpp
     src/camera/service.cpp
     src/config/dotenv.cpp
@@ -104,6 +106,33 @@ target_link_libraries(
 )
 
 gateway_warnings(gateway_core)
+
+#
+# The OAK camera: the DepthAI implementation, or a stub that makes
+# GATEWAY_CAMERA_PROVIDER=oak refuse to start.
+#
+if(GATEWAY_WITH_DEPTHAI)
+    #
+    # A static depthai-core names its private dependencies in its
+    # link interface but does not look them up itself; they come
+    # from its vcpkg tree (/opt/depthai/vcpkg in the toolchain).
+    #
+    foreach(package fmt yaml-cpp spdlog httplib semver magic_enum lz4 liblzma Eigen3)
+        find_package(${package} CONFIG REQUIRED)
+    endforeach()
+
+    find_package(BZip2 REQUIRED)
+    find_package(ZLIB REQUIRED)
+    find_package(LibArchive REQUIRED)
+
+    find_package(depthai CONFIG REQUIRED)
+
+    target_sources(gateway_core PRIVATE src/camera/depthai_device.cpp)
+    target_link_libraries(gateway_core PUBLIC depthai::core)
+    target_compile_definitions(gateway_core PUBLIC GATEWAY_WITH_DEPTHAI)
+else()
+    target_sources(gateway_core PRIVATE src/camera/no_depthai.cpp)
+endif()
 
 # ================================================================
 # Gateway binary
