@@ -46,6 +46,8 @@ add_library(
     gateway_core
     STATIC
     src/app.cpp
+    src/calibration/routes.cpp
+    src/calibration/service.cpp
     src/camera/mock_producer.cpp
     src/camera/routes.cpp
     src/camera/service.cpp

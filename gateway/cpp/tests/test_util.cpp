@@ -42,6 +42,28 @@ TEST(Time, FormatsLikePydanticAndIsoformat) {
     EXPECT_EQ(format_iso_time(fraction), "2026-01-01T00:00:00.123456+00:00");
 }
 
+TEST(Time, ParsesWhatPydanticWrites) {
+    const WallTime whole{std::chrono::seconds(1'767'225'600)};
+
+    EXPECT_EQ(parse_iso_time("2026-01-01T00:00:00Z"), whole);
+    EXPECT_EQ(parse_iso_time("2026-01-01T00:00:00"), whole);
+    EXPECT_EQ(parse_iso_time("2026-01-01 00:00:00+00:00"), whole);
+    EXPECT_EQ(parse_iso_time("2026-01-01T02:00:00+02:00"), whole);
+    EXPECT_EQ(parse_iso_time("2025-12-31T23:00:00-01:00"), whole);
+    EXPECT_EQ(parse_iso_time("2026-01-01T00:00:00.5Z"), whole + std::chrono::milliseconds(500));
+    EXPECT_EQ(parse_iso_time("2026-01-01T00:00:00.1234569Z"), whole + std::chrono::microseconds(123'456));
+
+    for (const char* bad : {"", "yesterday", "2026-01-01", "2026-13-01T00:00:00Z", "2026-01-01T00:00:00.Z",
+                            "2026-01-01T00:00:00+0200", "2026-01-01T00:00:00Zjunk"}) {
+        EXPECT_FALSE(parse_iso_time(bad).has_value()) << bad;
+    }
+
+    const WallTime now = std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now());
+
+    EXPECT_EQ(parse_iso_time(format_json_time(now)), now);
+    EXPECT_EQ(parse_iso_time(format_iso_time(now)), now);
+}
+
 TEST(Text, Numbers) {
     EXPECT_EQ(parse_double(" 2.5 "), 2.5);
     EXPECT_FALSE(parse_double("2.5x").has_value());

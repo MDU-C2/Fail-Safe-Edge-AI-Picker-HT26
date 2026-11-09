@@ -10,6 +10,7 @@
 #   gateway/cpp/dev.sh test [PRESET]        C++ unit tests (ctest)
 #   gateway/cpp/dev.sh pytest [ARGS...]     Python suite against the C++ binary
 #   gateway/cpp/dev.sh pytest-python [ARGS] Python suite against the Python gateway (Linux)
+#   gateway/cpp/dev.sh sanitize             unit tests + suite under ASan/UBSan and TSan
 #   gateway/cpp/dev.sh image                runtime image, with its sizes
 #   gateway/cpp/dev.sh shell                a shell in the toolchain
 #
@@ -63,6 +64,43 @@ case "$command" in
 
     pytest-python)
         run sh -c "GATEWAY_IMPL=python python -m pytest -p no:cacheprovider $*"
+        ;;
+
+    sanitize)
+        #
+        # Every gateway the suite starts runs sanitized; a report in
+        # any gateway.log fails the run. TSan cannot map its shadow
+        # memory on arm64 with address randomisation, hence setarch -R
+        # (which needs the default seccomp profile lifted).
+        #
+        docker run --rm \
+            --security-opt seccomp=unconfined \
+            -v "$REPO:/src" \
+            -v "$VOLUME:/src/gateway/cpp/build" \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e ASAN_OPTIONS=detect_leaks=0 \
+            -e TSAN_OPTIONS=halt_on_error=0 \
+            -w /src \
+            "$IMAGE" sh -c '
+                status=0
+                for preset in asan tsan; do
+                    echo "===== $preset ====="
+                    cmake --preset $preset -S gateway/cpp > /dev/null &&
+                    cmake --build gateway/cpp/build/$preset > /dev/null || { status=1; continue; }
+                    rm -rf /tmp/pytest-$preset
+                    setarch "$(uname -m)" -R sh -c "
+                        ctest --test-dir gateway/cpp/build/$preset --output-on-failure | tail -3 &&
+                        python -m pytest -p no:cacheprovider -q --impl cpp \
+                            --cpp-binary gateway/cpp/build/$preset/gateway --basetemp /tmp/pytest-$preset | tail -1
+                    " || status=1
+                    if grep -l -E "Sanitizer|runtime error" -r /tmp/pytest-$preset --include gateway.log; then
+                        grep -h -A25 -E "WARNING: ThreadSanitizer|ERROR: AddressSanitizer|runtime error" \
+                            -r /tmp/pytest-$preset --include gateway.log | head -80
+                        status=1
+                    fi
+                done
+                exit $status
+            '
         ;;
 
     image)

@@ -42,6 +42,7 @@ App::App(
       auth(registry, settings.security_mode == "development", control),
       camera(events),
       camera_producer(create_camera_producer(settings, camera)),
+      calibration(settings.calibration_file),
       robot(create_robot_service(settings)),
       rws(
           settings.robot_host,
@@ -87,6 +88,7 @@ void App::add_routes() {
     add_control_routes(*this, router_);
     add_robot_routes(*this, router_);
     add_camera_routes(*this, router_);
+    add_calibration_routes(*this, router_);
 }
 
 }  // namespace gw

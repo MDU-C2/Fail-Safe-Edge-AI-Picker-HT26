@@ -23,6 +23,7 @@ gateway/cpp/dev.sh build              # dev preset -> gateway/cpp/build/dev/gate
 gateway/cpp/dev.sh test               # C++ unit tests (GoogleTest, ctest)
 gateway/cpp/dev.sh pytest             # Python suite against the C++ binary (--impl cpp)
 gateway/cpp/dev.sh pytest-python      # the same suite against the Python gateway, on Linux
+gateway/cpp/dev.sh sanitize           # unit tests + suite under ASan/UBSan and TSan
 gateway/cpp/dev.sh build release-size # the static, size-optimised binary the images ship
 gateway/cpp/dev.sh image              # runtime image gateway-cpp (FROM scratch)
 ```
@@ -69,6 +70,7 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/control/` | `control/` |
 | `src/events/` | `events/` (bus now, WebSocket in M3) |
 | `src/camera/` | `camera/` |
+| `src/calibration/` | `calibration/` (same file format, so either reads the other's file) |
 | `src/robot/` | `robot/` |
 | `src/rws/` | `rws/` |
 | `src/health.cpp` | `health.py` |
@@ -115,7 +117,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 |---|---|---|
 | M0 | CMake, presets, toolchain image, server, settings, `/openapi.json`, `/health` | done |
 | M1 | Clients file, auth, control lease and routes | done: `test_auth`, `test_control`, C++ registry/lease tests |
-| M2 | Camera service, mock, camera routes; calibration | camera done (`test_camera`); calibration open |
+| M2 | Camera service, mock, camera routes; calibration | done: `test_camera`, `test_calibration` (incl. a file written by either implementation read by the other), C++ calibration tests |
 | M3 | Events WebSocket | open |
 | M4 | `POST /robot/command` (mock + CommServer TCP) | open (also unblocks `test_failover`) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | open (client and error parsing done) |

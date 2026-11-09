@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "calibration/service.hpp"
 #include "camera/service.hpp"
 #include "config/settings.hpp"
 #include "control/manager.hpp"
@@ -61,6 +62,8 @@ public:
 
     std::unique_ptr<CameraProducer> camera_producer;
 
+    CalibrationService calibration;
+
     std::unique_ptr<RobotService> robot;
 
     rws::RwsClient rws;
@@ -80,6 +83,7 @@ private:
 void add_health_routes(App& app, http::Router& router);
 void add_control_routes(App& app, http::Router& router);
 void add_camera_routes(App& app, http::Router& router);
+void add_calibration_routes(App& app, http::Router& router);
 void add_robot_routes(App& app, http::Router& router);
 
 }  // namespace gw

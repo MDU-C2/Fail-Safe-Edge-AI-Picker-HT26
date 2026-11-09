@@ -286,9 +286,16 @@ class Gateway:
         directory: Path,
         security_mode: str,
         settings: dict[str, str],
+        implementation: str | None = None,
     ) -> None:
         self.security_mode = security_mode
         self.port = free_port()
+
+        #
+        # The suite's implementation (--impl) unless one is given,
+        # for tests that start both.
+        #
+        self.implementation = implementation
 
         self.url = f"http://127.0.0.1:{self.port}"
         self.api_url = f"{self.url}{API_PREFIX}"
@@ -315,7 +322,7 @@ class Gateway:
     def command(self) -> list[str]:
         """The command line of the selected implementation."""
 
-        if implementation == "cpp":
+        if (self.implementation or implementation) == "cpp":
             return [
                 str(REPOSITORY_ROOT / cpp_binary),
                 "--host",

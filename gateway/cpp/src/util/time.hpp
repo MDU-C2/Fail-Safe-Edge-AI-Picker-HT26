@@ -1,7 +1,9 @@
 #pragma once
 
 #include <chrono>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace gw {
 
@@ -66,6 +68,15 @@ std::string format_json_time(
 //
 std::string format_iso_time(
     WallTime time
+);
+
+//
+// An ISO 8601 date and time as Pydantic accepts it in a stored
+// file: "2026-11-09T12:00:00[.ffffff][Z|+HH:MM|-HH:MM]" ("T" or a
+// space; no zone means UTC; more than six fraction digits are cut).
+//
+std::optional<WallTime> parse_iso_time(
+    std::string_view text
 );
 
 }  // namespace gw

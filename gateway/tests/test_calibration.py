@@ -1,5 +1,11 @@
 """Calibration upload (needs the control lease) and read-back."""
 
+from pathlib import Path
+
+import pytest
+
+from gateway.tests import support
+from gateway.tests.conftest import mock_settings
 from gateway.tests.support import Gateway, expect
 
 
@@ -72,3 +78,71 @@ def test_calibration_needs_token(
     strict_gateway: Gateway,
 ) -> None:
     expect(strict_gateway.client(None).get("/calibration"), 401)
+
+
+# ================================================================
+# The calibration file
+# ================================================================
+
+def upload(
+    directory: Path,
+    implementation: str | None = None,
+) -> dict:
+    """Start a gateway on directory's calibration file, upload, stop."""
+
+    gateway = Gateway(directory, "strict", mock_settings(), implementation)
+
+    gateway.start()
+
+    try:
+        admin = gateway.client("admin")
+
+        with admin.control():
+            return expect(admin.post("/calibration", json=CALIBRATION), 200)
+
+    finally:
+        gateway.stop()
+
+
+def read_back(
+    directory: Path,
+    implementation: str | None = None,
+) -> dict:
+    """Start a gateway on directory's calibration file, read it, stop."""
+
+    gateway = Gateway(directory, "strict", mock_settings(), implementation)
+
+    gateway.start()
+
+    try:
+        return expect(gateway.client("diagnostics").get("/calibration"), 200)
+
+    finally:
+        gateway.stop()
+
+
+def test_calibration_survives_a_restart(
+    tmp_path: Path,
+) -> None:
+    stored = upload(tmp_path)
+
+    assert read_back(tmp_path) == stored
+
+
+def test_python_and_cpp_read_each_others_calibration_file(
+    tmp_path: Path,
+) -> None:
+    """The two implementations share the file format, so switching
+    a device from one to the other keeps its calibration."""
+
+    if support.implementation != "cpp":
+        pytest.skip("needs --impl cpp (and the Python gateway's packages)")
+
+    for writer, reader in (("python", "cpp"), ("cpp", "python")):
+        directory = tmp_path / f"{writer}-to-{reader}"
+
+        directory.mkdir()
+
+        stored = upload(directory, writer)
+
+        assert read_back(directory, reader) == stored, f"{writer} wrote, {reader} read"

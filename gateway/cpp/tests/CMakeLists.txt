@@ -2,6 +2,7 @@ include(GoogleTest)
 
 add_executable(
     gateway_tests
+    test_calibration.cpp
     test_client_registry.cpp
     test_control_manager.cpp
     test_events.cpp
