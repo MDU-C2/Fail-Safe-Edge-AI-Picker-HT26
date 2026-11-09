@@ -60,11 +60,17 @@ add_library(
     src/health.cpp
     src/http/router.cpp
     src/http/server.cpp
+    src/http/validate.cpp
     src/http/websocket_session.cpp
     src/robot/routes.cpp
     src/robot/service.cpp
+    src/rws/arms_routes.cpp
     src/rws/client.cpp
     src/rws/errors.cpp
+    src/rws/motion.cpp
+    src/rws/motion_routes.cpp
+    src/rws/rapid.cpp
+    src/rws/rapid_routes.cpp
     src/security/auth.cpp
     src/security/client_registry.cpp
     src/util/log.cpp

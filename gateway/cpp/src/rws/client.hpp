@@ -4,9 +4,11 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "rws/controller.hpp"
 #include "rws/errors.hpp"
 
 namespace gw::rws {
@@ -33,7 +35,7 @@ struct Reply {
     std::string body;
 };
 
-class RwsClient {
+class RwsClient : public Controller {
 public:
     RwsClient(
         std::string host,
@@ -43,10 +45,14 @@ public:
         double timeout_seconds
     );
 
-    ~RwsClient();
+    ~RwsClient() override;
 
     RwsClient(const RwsClient&) = delete;
     RwsClient& operator=(const RwsClient&) = delete;
+
+    // ------------------------------------------------------------
+    // HTTP
+    // ------------------------------------------------------------
 
     //
     // One request. Throws RwsError when the controller cannot be
@@ -80,35 +86,130 @@ public:
         const Params& data = {}
     );
 
+    //
+    // Holds the controller's mastership (and this client's lock)
+    // for its lifetime, as client.py's mastership() context.
+    //
+    class Mastership {
+    public:
+        explicit Mastership(
+            RwsClient& client
+        );
+
+        ~Mastership() noexcept(false);
+
+        Mastership(const Mastership&) = delete;
+        Mastership& operator=(const Mastership&) = delete;
+
+    private:
+        RwsClient& client_;
+
+        std::lock_guard<std::recursive_mutex> lock_;
+
+        int exceptions_;
+    };
+
     // ------------------------------------------------------------
-    // Controller and RAPID state
+    // Motion system
     // ------------------------------------------------------------
 
+    nlohmann::json mechunit(
+        const std::string& unit
+    );
+
+    nlohmann::json robtarget(
+        const std::string& unit,
+        const std::optional<std::string>& tool,
+        const std::optional<std::string>& wobj,
+        const std::optional<std::string>& coordinate
+    );
+
+    nlohmann::json jointtarget(
+        const std::string& unit
+    );
+
+    //
+    // SmartGripper finger position of side "L" or "R" in mm, from
+    // the gripper's own signal (0.1 mm). A controller without the
+    // SmartGripper (RobotStudio) answers 404.
+    //
+    double gripper_position(
+        const std::string& side
+    );
+
+    // ------------------------------------------------------------
+    // Controller and RAPID state (Controller)
+    // ------------------------------------------------------------
+
+    std::string controller_state() override;
+    std::string operation_mode() override;
+    std::string execution_state() override;
+
     std::string controller_state(
-        const std::optional<Timeout>& timeout = std::nullopt
+        const Timeout& timeout
     );
 
     std::string operation_mode(
-        const std::optional<Timeout>& timeout = std::nullopt
+        const Timeout& timeout
     );
 
     std::string execution_state(
-        const std::optional<Timeout>& timeout = std::nullopt
+        const Timeout& timeout
     );
+
+    nlohmann::json tasks() override;
+
+    std::vector<std::string> program_modules(
+        const std::string& task
+    ) override;
+
+    std::string read_symbol(
+        const std::string& task,
+        const std::string& name
+    ) override;
+
+    void write_symbol(
+        const std::string& task,
+        const std::string& name,
+        const std::string& value
+    ) override;
+
+    // ------------------------------------------------------------
+    // RAPID program control
+    // ------------------------------------------------------------
+
+    //
+    // Writes the source (ISO-8859-1 bytes) to $HOME/<name>.mod on
+    // the controller and loads it, replacing a module of that name.
+    //
+    void load_module(
+        const std::string& task,
+        const std::string& name,
+        const std::string& latin1_source
+    );
+
+    void unload_module(
+        const std::string& task,
+        const std::string& name
+    );
+
+    void start(
+        bool reset_program_pointer
+    );
+
+    void stop();
 
     const std::string& base_url() const {
         return base_;
     }
 
-    //
-    // For multi-call sequences that must not interleave with other
-    // clients' calls (mastership).
-    //
-    std::recursive_mutex& lock() {
-        return mutex_;
-    }
-
 private:
+    std::string state_field(
+        const std::string& path,
+        const char* field,
+        const std::optional<Timeout>& timeout
+    );
+
     std::string base_;
     std::string user_password_;
     double timeout_seconds_;

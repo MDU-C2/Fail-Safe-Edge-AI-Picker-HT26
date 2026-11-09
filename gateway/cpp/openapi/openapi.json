@@ -297,72 +297,6 @@
         }
       }
     },
-    "/api/v1/robot/command": {
-      "post": {
-        "tags": [
-          "robot"
-        ],
-        "summary": "Send a command to the robot (deprecated)",
-        "description": "Deprecated: use POST /robot/rws/move and POST /robot/rws/home, which drive the RAPID program over Robot Web Services instead of a RAPID socket server. This route still works unchanged (it sends the command text to the socket server at GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT) and marks its responses with Deprecation and Link headers.",
-        "operationId": "send_robot_command_api_v1_robot_command_post",
-        "deprecated": true,
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-dev-client",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "X-Dev-Client"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RobotCommand"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CommandResponse"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/camera/status": {
       "get": {
         "tags": [
@@ -2267,26 +2201,6 @@
           "modules"
         ],
         "title": "RapidTask"
-      },
-      "RobotCommand": {
-        "properties": {
-          "command": {
-            "type": "string",
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Command"
-          },
-          "parameters": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Parameters"
-          }
-        },
-        "type": "object",
-        "required": [
-          "command"
-        ],
-        "title": "RobotCommand"
       },
       "RobotControllerHealth": {
         "properties": {

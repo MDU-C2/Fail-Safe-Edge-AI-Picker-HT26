@@ -1,7 +1,14 @@
-"""Robot status and commands against the mock robot."""
+"""Robot status and commands against the mock robot.
 
+POST /robot/command (the legacy CommServer path) exists only in the
+Python gateway; its tests are marked legacy_command and skipped with
+--impl cpp, where test_command_route_is_absent checks it is gone.
+"""
+
+import pytest
 import requests
 
+from gateway.tests import support
 from gateway.tests.support import Gateway, expect
 
 
@@ -14,6 +21,7 @@ def test_status(
     assert status["state"] in ("idle", "running")
 
 
+@pytest.mark.legacy_command
 def test_command_needs_lease(
     gateway: Gateway,
 ) -> None:
@@ -23,6 +31,7 @@ def test_command_needs_lease(
     )
 
 
+@pytest.mark.legacy_command
 def test_command_needs_control_permission(
     gateway: Gateway,
 ) -> None:
@@ -32,6 +41,7 @@ def test_command_needs_control_permission(
     )
 
 
+@pytest.mark.legacy_command
 def test_command_with_lease(
     gateway: Gateway,
 ) -> None:
@@ -48,6 +58,7 @@ def test_command_with_lease(
         assert expect(admin.get("/robot/status"), 200)["state"] == "idle"
 
 
+@pytest.mark.legacy_command
 def test_command_validation(
     gateway: Gateway,
 ) -> None:
@@ -59,6 +70,7 @@ def test_command_validation(
         expect(admin.post("/robot/command", json={}), 422)
 
 
+@pytest.mark.legacy_command
 def test_command_is_deprecated_but_works(
     gateway: Gateway,
 ) -> None:
@@ -82,3 +94,22 @@ def test_command_is_deprecated_but_works(
     openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10).json()
 
     assert openapi["paths"]["/api/v1/robot/command"]["post"]["deprecated"] is True
+
+
+def test_command_route_is_absent(
+    gateway: Gateway,
+) -> None:
+    """The C++ gateway leaves the legacy route out entirely, also
+    from its schema."""
+
+    if support.implementation != "cpp":
+        pytest.skip("the Python gateway keeps the deprecated route")
+
+    admin = gateway.client("admin")
+
+    with admin.control():
+        expect(admin.post("/robot/command", json={"command": "start"}), 404)
+
+    openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10).json()
+
+    assert "/api/v1/robot/command" not in openapi["paths"]

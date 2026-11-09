@@ -814,6 +814,7 @@ def run_command(
     return status
 
 
+@pytest.mark.legacy_command
 def test_legacy_tcp_commands_move_the_virtual_robot(
     load_program: LoadProgram,
 ) -> None:

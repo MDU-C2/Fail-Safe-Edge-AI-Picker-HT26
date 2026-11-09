@@ -3,8 +3,8 @@ Fail-safe chain with several clients running at once.
 
 Each Device below behaves like a model device on the network: a
 background thread that, every tick, renews the lease if it holds
-it and otherwise tries to acquire it, and that sends a robot
-command whenever it believes it is in control. A Watcher polls
+it and otherwise tries to acquire it, and that sends a command
+whenever it believes it is in control. A Watcher polls
 GET /control as the read-only diagnostics client and records who
 held the lease when.
 
@@ -26,6 +26,13 @@ client reconnecting wins rather than the quickest.
 The lease is LEASE_SECONDS (2 s) in the test gateways; devices
 tick every TICK_SECONDS, well inside it and inside the contention
 window.
+
+The "command" is POST /calibration: like every route that acts on
+the robot it is behind require_control (permission and lease), and
+against the mock gateways it answers 200 for the holder and 409 for
+anyone else, in both implementations (the C++ gateway has no
+legacy /robot/command; the RWS moves answer 503 without a
+controller).
 """
 
 import threading
@@ -45,6 +52,11 @@ from gateway.tests.support import (
 
 
 TICK_SECONDS = 0.25
+
+#
+# What a device does while it holds the lease (see the docstring).
+#
+CONTROLLED_PATH = "/calibration"
 
 #
 # A crashed holder's lease lapses after LEASE_SECONDS; the next
@@ -187,8 +199,8 @@ class Device:
 
     def _command(self) -> None:
         response = self.client.post(
-            "/robot/command",
-            json={"command": f"work-{self.client_id}"},
+            CONTROLLED_PATH,
+            json={"work": self.client_id},
             timeout=5,
         )
 
@@ -830,8 +842,8 @@ def test_only_the_holder_gets_commands_through(
         for client_id in ("secondary", "tertiary"):
             expect(
                 devices[client_id].client.post(
-                    "/robot/command",
-                    json={"command": "sneak"},
+                    CONTROLLED_PATH,
+                    json={"work": "sneak"},
                 ),
                 409,
             )

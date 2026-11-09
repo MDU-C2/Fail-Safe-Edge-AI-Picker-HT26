@@ -58,11 +58,7 @@ Json camera_health(
 Json robot_controller_health(
     App& app
 ) {
-    //
-    // RWS moves are not ported yet, so no gateway move can be in
-    // progress.
-    //
-    const bool moving = false;
+    const bool moving = app.motion.is_moving();
 
     try {
         //

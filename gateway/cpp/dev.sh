@@ -27,8 +27,14 @@ IMAGE=gateway-cpp-toolchain
 VOLUME=gateway-cpp-build
 DOCKERFILE=gateway/cpp/docker/Dockerfile
 
+#
+# Host networking: with WSL's mirrored networking (networkingMode=
+# mirrored in %USERPROFILE%\.wslconfig) 127.0.0.1 is then Windows, so
+# pytest --robotstudio reaches the RobotStudio virtual controller.
+#
 run() {
     docker run --rm \
+        --network host \
         -v "$REPO:/src" \
         -v "$VOLUME:/src/gateway/cpp/build" \
         -e PYTHONDONTWRITEBYTECODE=1 \
@@ -74,6 +80,7 @@ case "$command" in
         # (which needs the default seccomp profile lifted).
         #
         docker run --rm \
+            --network host \
             --security-opt seccomp=unconfined \
             -v "$REPO:/src" \
             -v "$VOLUME:/src/gateway/cpp/build" \
@@ -90,8 +97,9 @@ case "$command" in
                     rm -rf /tmp/pytest-$preset
                     setarch "$(uname -m)" -R sh -c "
                         ctest --test-dir gateway/cpp/build/$preset --output-on-failure | tail -3 &&
-                        python -m pytest -p no:cacheprovider -q --impl cpp \
-                            --cpp-binary gateway/cpp/build/$preset/gateway --basetemp /tmp/pytest-$preset | tail -1
+                        python -m pytest -p no:cacheprovider -q -rf --impl cpp \
+                            --cpp-binary gateway/cpp/build/$preset/gateway --basetemp /tmp/pytest-$preset \
+                            | grep -E \"^FAILED|passed|failed\"
                     " || status=1
                     if grep -l -E "Sanitizer|runtime error" -r /tmp/pytest-$preset --include gateway.log; then
                         grep -h -A25 -E "WARNING: ThreadSanitizer|ERROR: AddressSanitizer|runtime error" \

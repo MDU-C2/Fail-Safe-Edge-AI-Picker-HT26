@@ -1,5 +1,7 @@
 #include "rws/client.hpp"
 
+#include <exception>
+
 #include <curl/curl.h>
 
 #include "util/text.hpp"
@@ -7,6 +9,19 @@
 namespace gw::rws {
 
 namespace {
+
+//
+// Arguments for starting RAPID execution, the same as the
+// FlexPendant's start button.
+//
+const Params START_ARGUMENTS = {
+    {"regain", "continue"},
+    {"execmode", "continue"},
+    {"cycle", "forever"},
+    {"condition", "none"},
+    {"stopatbp", "disabled"},
+    {"alltaskbytsp", "false"},
+};
 
 //
 // curl_global_init is not thread-safe; do it once before any client.
@@ -77,6 +92,10 @@ std::string encode_form(
 
     return text;
 }
+
+// ================================================================
+// HTTP
+// ================================================================
 
 RwsClient::RwsClient(
     std::string host,
@@ -221,7 +240,13 @@ nlohmann::json RwsClient::get_state(
 
     const auto json = nlohmann::json::parse(reply.body, nullptr, false);
 
-    if (!json.is_object() || !json.contains("_embedded") || !json["_embedded"].contains("_state")) {
+    if (
+        !json.is_object()
+        || !json.contains("_embedded")
+        || !json["_embedded"].is_object()
+        || !json["_embedded"].contains("_state")
+        || !json["_embedded"]["_state"].is_array()
+    ) {
         throw RwsError(
             static_cast<int>(reply.status),
             "Unexpected answer from the robot controller for " + path
@@ -245,37 +270,270 @@ void RwsClient::post(
     );
 }
 
+RwsClient::Mastership::Mastership(
+    RwsClient& client
+)
+    : client_(client),
+      lock_(client.mutex_),
+      exceptions_(std::uncaught_exceptions()) {
+    client_.post("/rw/mastership", {{"action", "request"}});
+}
+
+RwsClient::Mastership::~Mastership() noexcept(false) {
+    try {
+        client_.post("/rw/mastership", {{"action", "release"}});
+
+    } catch (...) {
+        //
+        // Leaving because of another error: that one is the
+        // interesting one, keep it.
+        //
+        if (std::uncaught_exceptions() > exceptions_) {
+            return;
+        }
+
+        throw;
+    }
+}
+
 namespace {
 
-std::string first_field(
+//
+// The one entry of a _state list, or RwsError.
+//
+const nlohmann::json& first(
     const nlohmann::json& state,
-    const char* field
+    const std::string& path
 ) {
-    if (!state.is_array() || state.empty() || !state[0].contains(field) || !state[0][field].is_string()) {
-        throw RwsError(std::nullopt, std::string("Robot controller answer without ") + field);
+    if (state.empty() || !state[0].is_object()) {
+        throw RwsError(502, "Robot controller sent no state for " + path);
     }
 
-    return state[0][field].get<std::string>();
+    return state[0];
+}
+
+std::string field(
+    const nlohmann::json& object,
+    const char* name
+) {
+    if (!object.contains(name)) {
+        throw RwsError(502, std::string("Robot controller answer without ") + name);
+    }
+
+    const auto& value = object[name];
+
+    return value.is_string() ? value.get<std::string>() : value.dump();
 }
 
 }  // namespace
 
-std::string RwsClient::controller_state(
+// ================================================================
+// Motion system
+// ================================================================
+
+nlohmann::json RwsClient::mechunit(
+    const std::string& unit
+) {
+    const std::string path = "/rw/motionsystem/mechunits/" + unit;
+
+    return first(get_state(path), path);
+}
+
+nlohmann::json RwsClient::robtarget(
+    const std::string& unit,
+    const std::optional<std::string>& tool,
+    const std::optional<std::string>& wobj,
+    const std::optional<std::string>& coordinate
+) {
+    Params params;
+
+    if (tool) {
+        params["tool"] = *tool;
+    }
+
+    if (wobj) {
+        params["wobj"] = *wobj;
+    }
+
+    if (coordinate) {
+        params["coordinate"] = *coordinate;
+    }
+
+    const std::string path = "/rw/motionsystem/mechunits/" + unit + "/robtarget";
+
+    return first(get_state(path, params), path);
+}
+
+nlohmann::json RwsClient::jointtarget(
+    const std::string& unit
+) {
+    const std::string path = "/rw/motionsystem/mechunits/" + unit + "/jointtarget";
+
+    return first(get_state(path), path);
+}
+
+double RwsClient::gripper_position(
+    const std::string& side
+) {
+    const std::string path = "/rw/iosystem/signals/Hand_" + side + "/hand_ActualPosition_" + side;
+
+    const std::string value = field(first(get_state(path), path), "lvalue");
+
+    const auto number = parse_double(value);
+
+    if (!number) {
+        throw RwsError(502, "Robot controller sent a gripper position that is not a number: " + value);
+    }
+
+    return *number / 10;
+}
+
+// ================================================================
+// Controller and RAPID state
+// ================================================================
+
+std::string RwsClient::state_field(
+    const std::string& path,
+    const char* name,
     const std::optional<Timeout>& timeout
 ) {
-    return first_field(get_state("/rw/panel/ctrlstate", {}, timeout), "ctrlstate");
+    return field(first(get_state(path, {}, timeout), path), name);
+}
+
+std::string RwsClient::controller_state() {
+    return state_field("/rw/panel/ctrlstate", "ctrlstate", std::nullopt);
+}
+
+std::string RwsClient::operation_mode() {
+    return state_field("/rw/panel/opmode", "opmode", std::nullopt);
+}
+
+std::string RwsClient::execution_state() {
+    return state_field("/rw/rapid/execution", "ctrlexecstate", std::nullopt);
+}
+
+std::string RwsClient::controller_state(
+    const Timeout& timeout
+) {
+    return state_field("/rw/panel/ctrlstate", "ctrlstate", timeout);
 }
 
 std::string RwsClient::operation_mode(
-    const std::optional<Timeout>& timeout
+    const Timeout& timeout
 ) {
-    return first_field(get_state("/rw/panel/opmode", {}, timeout), "opmode");
+    return state_field("/rw/panel/opmode", "opmode", timeout);
 }
 
 std::string RwsClient::execution_state(
-    const std::optional<Timeout>& timeout
+    const Timeout& timeout
 ) {
-    return first_field(get_state("/rw/rapid/execution", {}, timeout), "ctrlexecstate");
+    return state_field("/rw/rapid/execution", "ctrlexecstate", timeout);
+}
+
+nlohmann::json RwsClient::tasks() {
+    return get_state("/rw/rapid/tasks");
+}
+
+std::vector<std::string> RwsClient::program_modules(
+    const std::string& task
+) {
+    std::vector<std::string> names;
+
+    for (const auto& module : get_state("/rw/rapid/modules", {{"task", task}})) {
+        if (module.is_object() && module.value("type", "") == "ProgMod" && module.contains("name")) {
+            names.push_back(field(module, "name"));
+        }
+    }
+
+    return names;
+}
+
+std::string RwsClient::read_symbol(
+    const std::string& task,
+    const std::string& name
+) {
+    const std::string path = "/rw/rapid/symbol/data/RAPID/" + task + "/" + name;
+
+    return field(first(get_state(path), path), "value");
+}
+
+void RwsClient::write_symbol(
+    const std::string& task,
+    const std::string& name,
+    const std::string& value
+) {
+    //
+    // Works while RAPID runs and needs no mastership; the
+    // controller refuses mastership while RAPID runs anyway.
+    //
+    post(
+        "/rw/rapid/symbol/data/RAPID/" + task + "/" + name,
+        {{"action", "set"}},
+        {{"value", value}}
+    );
+}
+
+// ================================================================
+// RAPID program control
+// ================================================================
+
+void RwsClient::load_module(
+    const std::string& task,
+    const std::string& name,
+    const std::string& latin1_source
+) {
+    //
+    // The file is written to $HOME on the controller and then
+    // loaded from there, replacing a module with the same name.
+    //
+    const std::string path = "$HOME/" + name + ".mod";
+
+    const Mastership mastership(*this);
+
+    request(
+        "PUT",
+        "/fileservice/" + path,
+        {},
+        latin1_source,
+        std::string("text/plain;v=2.0")
+    );
+
+    post(
+        "/rw/rapid/tasks/" + task,
+        {{"action", "loadmod"}},
+        {{"modulepath", path}, {"replace", "true"}}
+    );
+}
+
+void RwsClient::unload_module(
+    const std::string& task,
+    const std::string& name
+) {
+    const Mastership mastership(*this);
+
+    post(
+        "/rw/rapid/tasks/" + task,
+        {{"action", "unloadmod"}},
+        {{"module", name}}
+    );
+}
+
+void RwsClient::start(
+    bool reset_program_pointer
+) {
+    const std::lock_guard lock(mutex_);
+
+    if (reset_program_pointer) {
+        const Mastership mastership(*this);
+
+        post("/rw/rapid/execution", {{"action", "resetpp"}});
+    }
+
+    post("/rw/rapid/execution", {{"action", "start"}}, START_ARGUMENTS);
+}
+
+void RwsClient::stop() {
+    post("/rw/rapid/execution", {{"action", "stop"}}, {{"stopmode", "stop"}});
 }
 
 }  // namespace gw::rws

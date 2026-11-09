@@ -19,6 +19,44 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 
 OUTPUT = REPOSITORY_ROOT / "gateway" / "cpp" / "openapi" / "openapi.json"
 
+#
+# Python routes the C++ gateway leaves out by design.
+#
+LEFT_OUT_PATHS = (
+    "/api/v1/robot/command",
+)
+
+
+def drop_unused_components(
+    schema: dict,
+) -> None:
+    """Remove component schemas no remaining path refers to, even
+    through other components."""
+
+    components = schema.get("components", {}).get("schemas", {})
+
+    def references(value: object) -> set[str]:
+        text = json.dumps(value)
+
+        return {
+            name
+            for name in components
+            if f'"#/components/schemas/{name}"' in text
+        }
+
+    used = references(schema["paths"])
+    pending = list(used)
+
+    while pending:
+        for name in references(components[pending.pop()]):
+            if name not in used:
+                used.add(name)
+                pending.append(name)
+
+    for name in list(components):
+        if name not in used:
+            del components[name]
+
 
 def main() -> None:
     os.chdir(REPOSITORY_ROOT)
@@ -35,6 +73,14 @@ def main() -> None:
     from gateway.main import app
 
     schema = app.openapi()
+
+    #
+    # The C++ gateway has no legacy POST /robot/command.
+    #
+    for path in LEFT_OUT_PATHS:
+        schema["paths"].pop(path, None)
+
+    drop_unused_components(schema)
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 

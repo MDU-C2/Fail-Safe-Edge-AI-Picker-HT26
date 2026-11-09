@@ -71,8 +71,9 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/events/` | `events/` (bus, permissions, the `/events` WebSocket) |
 | `src/camera/` | `camera/` |
 | `src/calibration/` | `calibration/` (same file format, so either reads the other's file) |
-| `src/robot/` | `robot/` |
-| `src/rws/` | `rws/` |
+| `src/robot/` | `robot/` (only `GET /robot/status`; no `/robot/command`) |
+| `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes |
+| `src/http/validate.*` | Pydantic's coercions and FastAPI's 422 for request bodies, query and path |
 | `src/health.cpp` | `health.py` |
 | `openapi/openapi.json` | FastAPI's schema, exported by `tools/export_openapi.py` and served as is |
 | `tests/` | GoogleTest; ports of the Python unit tests plus new ones |
@@ -125,8 +126,8 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M1 | Clients file, auth, control lease and routes | done: `test_auth`, `test_control`, C++ registry/lease tests |
 | M2 | Camera service, mock, camera routes; calibration | done: `test_camera`, `test_calibration` (incl. a file written by either implementation read by the other), C++ calibration tests |
 | M3 | Events WebSocket | done: `test_events` (+ a new test that 100 closed connections are all released) |
-| M4 | `POST /robot/command` (mock + CommServer TCP) | open (also unblocks `test_failover`) |
-| M5 | RWS arms, RAPID, motion routes, safe zone | open (client and error parsing done) |
+| M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
+| M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests; `--robotstudio` against C++ still to run (needs WSL to reach RobotStudio on Windows) |
 | M6 | OAK producer on a minimal depthai-core build, reconnect | open |
 | M7 | arm64/armv7 images, `.wmopkg`, WeOS seccomp check | open |
 

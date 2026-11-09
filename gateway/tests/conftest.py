@@ -53,19 +53,22 @@ PYTHON_ONLY = {
 }
 
 #
+# The C++ gateway has no legacy POST /robot/command (the team's
+# CommServer path) by design: these modules, and the tests marked
+# legacy_command elsewhere, test only that.
+#
+LEGACY_ONLY = (
+    "test_robot_tcp.py",
+    "test_real_robot_legacy.py",
+)
+
+#
 # Modules whose routes the C++ gateway does not have yet, and the
 # migration step that brings them (gateway/cpp/README.md). Remove a
 # line once its tests pass with --impl cpp.
 #
 NOT_PORTED_TO_CPP = {
-    "test_robot.py": "M4 (POST /robot/command)",
-    "test_robot_tcp.py": "M4 (POST /robot/command)",
-    "test_failover.py": "M4 (its devices send POST /robot/command)",
-    "test_rws.py": "M5 (RWS routes)",
-    "test_robotstudio.py": "M5 (RWS routes)",
     "test_oak.py": "M6 (OAK camera)",
-    "test_real_robot.py": "M5 (RWS routes)",
-    "test_real_robot_legacy.py": "M4 (POST /robot/command)",
 }
 
 GATEWAY_FIXTURES = (
@@ -126,6 +129,16 @@ def pytest_collection_modifyitems(
             if module in PYTHON_ONLY:
                 item.add_marker(
                     pytest.mark.skip(reason=f"tests Python internals; C++: {PYTHON_ONLY[module]}")
+                )
+
+            elif "python_internals" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="tests Python internals; C++ counterparts in gateway/cpp/tests")
+                )
+
+            elif module in LEGACY_ONLY or "legacy_command" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="legacy POST /robot/command: not in the C++ gateway by design")
                 )
 
             elif module in NOT_PORTED_TO_CPP:

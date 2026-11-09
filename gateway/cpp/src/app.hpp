@@ -10,6 +10,7 @@
 #include "http/router.hpp"
 #include "robot/service.hpp"
 #include "rws/client.hpp"
+#include "rws/motion.hpp"
 #include "security/auth.hpp"
 #include "security/client_registry.hpp"
 #include "util/time.hpp"
@@ -68,6 +69,8 @@ public:
 
     rws::RwsClient rws;
 
+    rws::RwsMotion motion;
+
     SteadyTime started;
 
 private:
@@ -85,6 +88,9 @@ void add_control_routes(App& app, http::Router& router);
 void add_camera_routes(App& app, http::Router& router);
 void add_calibration_routes(App& app, http::Router& router);
 void add_event_routes(App& app, http::Router& router);
+void add_arm_routes(App& app, http::Router& router);
+void add_rapid_routes(App& app, http::Router& router);
+void add_motion_routes(App& app, http::Router& router);
 void add_robot_routes(App& app, http::Router& router);
 
 }  // namespace gw

@@ -51,6 +51,17 @@ App::App(
           settings.rws_password,
           settings.rws_timeout
       ),
+      motion(
+          rws,
+          settings.rws_move_timeout,
+          settings.rws_safe_zone_min,
+          settings.rws_safe_zone_max,
+          rws::MotionSpeed{
+              settings.rws_default_speed,
+              settings.rws_default_acceleration,
+              settings.rws_default_ramp,
+          }
+      ),
       started(std::chrono::steady_clock::now()) {
     add_routes();
 }
@@ -90,6 +101,9 @@ void App::add_routes() {
     add_event_routes(*this, router_);
     add_camera_routes(*this, router_);
     add_calibration_routes(*this, router_);
+    add_arm_routes(*this, router_);
+    add_rapid_routes(*this, router_);
+    add_motion_routes(*this, router_);
 }
 
 }  // namespace gw

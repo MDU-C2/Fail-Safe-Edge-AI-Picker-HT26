@@ -8,6 +8,8 @@ add_executable(
     test_events.cpp
     test_router.cpp
     test_rws_errors.cpp
+    test_rws_motion.cpp
+    test_validate.cpp
     test_settings.cpp
     test_util.cpp
 )

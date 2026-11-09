@@ -273,6 +273,7 @@ def test_rws_home_and_gripper_are_validated(
         ((60, 20, 30), (0.846279, 0.136873, 0.272703, 0.436703)),
     ],
 )
+@pytest.mark.python_internals
 def test_orient_zyx_matches_rapid(
     angles: tuple[float, float, float],
     expected: tuple[float, float, float, float],
@@ -309,6 +310,7 @@ class FiveTaskController:
         return ["SharedVars"]
 
 
+@pytest.mark.python_internals
 def test_rapid_status_handles_background_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -426,6 +428,7 @@ def motion(
     )
 
 
+@pytest.mark.python_internals
 def test_rws_motion_writes_the_arms_variables() -> None:
     controller = FakeArmTasks()
 
@@ -455,6 +458,7 @@ def test_rws_motion_writes_the_arms_variables() -> None:
     assert written["move_ramp_right"] == ("T_ROB_R", "100.000000")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_writes_the_speed() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -487,6 +491,7 @@ def test_rws_motion_writes_the_speed() -> None:
     assert not any(name.startswith("move_speed") for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_a_program_without_speed_variables() -> None:
     controller = FakeArmTasks()
 
@@ -503,6 +508,7 @@ def test_rws_motion_refuses_a_program_without_speed_variables() -> None:
     assert motion(controller).gripper("left", "open").message == "DONE"
 
 
+@pytest.mark.python_internals
 def test_rws_motion_home_and_gripper() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -518,6 +524,7 @@ def test_rws_motion_home_and_gripper() -> None:
     assert ("T_ROB_R", "grip_cmd_right", '"OPEN"') in controller.writes
 
 
+@pytest.mark.python_internals
 def test_rws_motion_gripper_position_and_force() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -561,6 +568,7 @@ def test_rws_motion_gripper_position_and_force() -> None:
         arms.gripper("left", "open", force=10.0)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_gripper_on_a_program_without_position_and_force() -> None:
     controller = FakeArmTasks()
 
@@ -591,6 +599,7 @@ def test_rws_motion_gripper_on_a_program_without_position_and_force() -> None:
     assert not any(name.startswith("grip_force") for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:
     controller = FakeArmTasks()
 
@@ -601,12 +610,14 @@ def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:
     assert controller.writes == []
 
 
+@pytest.mark.python_internals
 def test_rws_motion_reports_a_failed_move() -> None:
     result = motion(FakeArmTasks()).move("left", (900.0, 0.0, 300.0), None)
 
     assert (result.accepted, result.message) == (False, "ERR move failed")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_arms_are_independent() -> None:
     controller = FakeArmTasks(job_seconds=0.5)
     arms = motion(controller)
@@ -637,6 +648,7 @@ def test_rws_motion_arms_are_independent() -> None:
     assert not arms.is_moving()
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_a_busy_or_missing_program() -> None:
     controller = FakeArmTasks()
 
@@ -658,6 +670,7 @@ def test_rws_motion_refuses_a_busy_or_missing_program() -> None:
         motion(controller).home("right")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_can_start_without_waiting() -> None:
     controller = FakeArmTasks(job_seconds=0.3)
     arms = motion(controller)
@@ -697,6 +710,7 @@ def test_rws_motion_can_start_without_waiting() -> None:
     assert arms.status("right").message == "DONE"
 
 
+@pytest.mark.python_internals
 def test_rws_motion_status_reports_a_failed_job() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
