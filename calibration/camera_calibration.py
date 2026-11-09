@@ -6,7 +6,8 @@ What it does, in one run:
   2. Takes control, moves the arm HOME, then to each pose in POSES with the gripper in
      CALIB_ROT. Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
-     the AprilTag on the gripper and reads its depth.
+     the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
+     stale depth frame from before the move is never used.
   4. Saves every image and the pose it belongs to in calibration_runs/session_<time>/,
      so images and poses can never get out of step.
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
@@ -51,8 +52,8 @@ GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 1
 # Gripper orientation during calibration: horizontal, flat side with the tag up.
 CALIB_ROT = (90, 0, 90)
 
-# Gripper TCP positions, mm, wobj0, table = z 0. The first pose stays high, because the
-# move from HOME turns the gripper into CALIB_ROT.
+# Gripper TCP positions, mm, wobj0, table = z 0. Pose 1 and pose 20 are high (z 200), so the
+# gripper turns into CALIB_ROT, and leaves, well above the table. Each step goes to a neighbouring point.
 POSES = [
     (470, 420, 200), (360, 420, 110), (360, 200, 70), (360, -10, 130), (360, -230, 90),
     (470, -230, 150), (470, -10, 70), (470, 200, 170), (580, 200, 110), (580, 420, 70),
@@ -63,7 +64,7 @@ POSES = [
 TAG_ID = 0
 TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 3                       # frames per pose, combined
+FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -210,11 +211,13 @@ def to_camera(u, v, z, k):
 
 
 def measure(folder, n):
-    """Grab FRAMES frames and combine them. Saves the last pair as image n."""
+    """Grab FRAMES frames, drop the first, combine the rest. Saves the last pair as image n."""
     rgb = depth = None
     found = []
-    for _ in range(FRAMES):
+    for i in range(FRAMES):
         rgb, depth = capture()
+        if i == 0:
+            continue                       # may still be from before the move
         c = find_tag(rgb)
         z = tag_depth(c, depth) if c is not None else None
         if z is not None:
@@ -323,7 +326,7 @@ def run(auto):
         time.sleep(SETTLE)
         tag = measure(folder, n)
         print(f"  pose {n}: " + (f"tag at ({tag['u']:.0f}, {tag['v']:.0f}) px, depth {tag['z']:.0f} mm, "
-                                 f"{tag['frames']}/{FRAMES} frames" if tag else "tag or depth NOT found"))
+                                 f"{tag['frames']}/{FRAMES - 1} frames" if tag else "tag or depth NOT found"))
         session["samples"].append({"image": n, "pose": list(pose), "tag": tag})
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
