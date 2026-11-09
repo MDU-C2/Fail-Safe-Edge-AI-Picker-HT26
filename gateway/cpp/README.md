@@ -28,6 +28,18 @@ gateway/cpp/dev.sh build release-size # the static, size-optimised binary the im
 gateway/cpp/dev.sh image              # runtime image gateway-cpp (FROM scratch)
 ```
 
+`dev.sh pytest --robotstudio` runs the RobotStudio tests against the
+C++ binary. The containers use host networking, and WSL needs
+mirrored networking so that 127.0.0.1 in WSL is Windows (where
+RobotStudio listens): `%USERPROFILE%\.wslconfig` with
+
+```ini
+[wsl2]
+networkingMode=mirrored
+```
+
+then `wsl --shutdown`.
+
 Presets (`CMakePresets.json`): `dev`, `release-size` (`-Os`, LTO,
 section GC, stripped, static), `asan` (address + UB sanitizer),
 `tsan` (thread sanitizer). Build trees live in the Docker volume
@@ -127,7 +139,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M2 | Camera service, mock, camera routes; calibration | done: `test_camera`, `test_calibration` (incl. a file written by either implementation read by the other), C++ calibration tests |
 | M3 | Events WebSocket | done: `test_events` (+ a new test that 100 closed connections are all released) |
 | M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
-| M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests; `--robotstudio` against C++ still to run (needs WSL to reach RobotStudio on Windows) |
+| M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests, `--robotstudio` (18 passed against the virtual YuMi) |
 | M6 | OAK producer on a minimal depthai-core build, reconnect | open |
 | M7 | arm64/armv7 images, `.wmopkg`, WeOS seccomp check | open |
 
