@@ -62,16 +62,16 @@ CALIB_ROT = (90, 0, 90)
 START_POSE = (470, 420, 200)
 END_POSE = (580, -10, 200)
 
-# The 20 measured poses: x 360-800, y -230 to 420, z 70-130. Each step goes to a neighbouring point.
+# The 20 measured poses: x 360-690, y -230 to 420, z 70-130. Each step goes to a neighbouring point.
 POSES = [
-    (470, 420, 110), (360, 420, 90), (360, 200, 70), (360, -10, 130), (360, -230, 90),
+    (470, 420, 110), (360, 420, 90), (360, 200, 70), (360, -10, 130), (410, -230, 90),
     (470, -230, 130), (470, -10, 70), (470, 200, 110), (580, 200, 90), (580, 420, 70),
-    (690, 420, 130), (800, 420, 90), (800, 200, 110), (690, 200, 70), (690, -10, 110),
-    (800, -10, 70), (800, -230, 130), (690, -230, 90), (580, -230, 110), (580, -10, 130),
+    (630, 310, 130), (525, 310, 90), (625, 200, 110), (690, 200, 70), (690, -10, 110),
+    (635, -120, 70), (525, -120, 130), (470, -120, 90), (580, -230, 110), (580, -10, 130),
 ]
 
 TAG_ID = 0
-TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
+TAG_OFFSET = (-122, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT (was -115; -7 from pick tests)
 SETTLE = 1.0                     # s to wait after the robot reports DONE
 FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
 

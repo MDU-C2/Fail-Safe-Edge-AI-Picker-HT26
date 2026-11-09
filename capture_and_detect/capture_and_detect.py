@@ -98,9 +98,9 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 120             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
-TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
-GRIP_MARGIN = 20           # left jaws open to the cup base diameter + this (mm)
+PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
+TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
+GRIP_MARGIN = 40           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
                            # except going down to grip (pick) or to put the cup down (place)
