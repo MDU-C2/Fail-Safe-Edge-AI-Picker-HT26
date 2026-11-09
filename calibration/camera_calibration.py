@@ -3,8 +3,10 @@ Full camera-to-robot calibration for the YuMi left arm, through the gateway API.
 
 What it does, in one run:
   1. Reads the camera intrinsics (and lens distortion, if the gateway gives it).
-  2. Takes control, moves the arm HOME, then to each pose in POSES with the gripper in
-     CALIB_ROT. Step by step (Enter before every move) unless --auto.
+  2. Takes control, moves the arm HOME, then to START_POSE (high, where the gripper turns
+     into CALIB_ROT), then to each pose in POSES, and last to END_POSE (high). START_POSE
+     and END_POSE are only for getting in and out safely: no pictures, not in the fit.
+     Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
      the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
      stale depth frame from before the move is never used.
@@ -54,13 +56,18 @@ GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 1
 # Gripper orientation during calibration: horizontal, flat side with the tag up.
 CALIB_ROT = (90, 0, 90)
 
-# Gripper TCP positions, mm, wobj0, table = z 0. Pose 1 and pose 20 are high (z 200), so the
-# gripper turns into CALIB_ROT, and leaves, well above the table. Each step goes to a neighbouring point.
+# Gripper TCP positions, mm, wobj0, table = z 0.
+# START_POSE and END_POSE are high, right above the first and last pose, so the gripper turns
+# into CALIB_ROT well above the table and leaves straight up. Not measured, not in the fit.
+START_POSE = (470, 420, 200)
+END_POSE = (580, -10, 200)
+
+# The 20 measured poses: x 360-800, y -230 to 420, z 70-130. Each step goes to a neighbouring point.
 POSES = [
-    (470, 420, 200), (360, 420, 110), (360, 200, 70), (360, -10, 130), (360, -230, 90),
-    (470, -230, 150), (470, -10, 70), (470, 200, 170), (580, 200, 110), (580, 420, 70),
-    (690, 420, 150), (800, 420, 90), (800, 200, 170), (690, 200, 70), (690, -10, 130),
-    (800, -10, 70), (800, -230, 130), (690, -230, 90), (580, -230, 170), (580, -10, 200),
+    (470, 420, 110), (360, 420, 90), (360, 200, 70), (360, -10, 130), (360, -230, 90),
+    (470, -230, 130), (470, -10, 70), (470, 200, 110), (580, 200, 90), (580, 420, 70),
+    (690, 420, 130), (800, 420, 90), (800, 200, 110), (690, 200, 70), (690, -10, 110),
+    (800, -10, 70), (800, -230, 130), (690, -230, 90), (580, -230, 110), (580, -10, 130),
 ]
 
 TAG_ID = 0
@@ -328,6 +335,9 @@ def run(auto):
     if not ask("go HOME") or not home():
         release_control(lease)
         raise SystemExit("Stopped before the first pose")
+    if not ask(f"start pose {START_POSE}") or not goto(START_POSE, CALIB_ROT):
+        release_control(lease)
+        raise SystemExit("Stopped before the first pose (start pose not reached)")
 
     for n, pose in enumerate(POSES, 1):
         if not ask(f"pose {n}/{len(POSES)} {pose}"):
@@ -343,6 +353,8 @@ def run(auto):
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
+    print(f"Going to the end pose {END_POSE}")
+    goto(END_POSE, CALIB_ROT)
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
     solve_clean(folder)
