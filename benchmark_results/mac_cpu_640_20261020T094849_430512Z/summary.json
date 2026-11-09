@@ -1,0 +1,360 @@
+{
+  "label": "mac_cpu",
+  "timestamp_utc": "20261020T094849_430512Z",
+  "model_format": "pytorch",
+  "model_files": {
+    "best.pt": "5b7616c21ba0b98fc6280d0706e26595c596907f08add79abc6f53082318631c"
+  },
+  "export_metadata": null,
+  "images": [
+    {
+      "file": "1.jpg",
+      "sha256": "d447352265325dd3e48bbc78219089c2e55a7be11ae211fc6df98e009bb7fa64",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "10.jpg",
+      "sha256": "a4b8783b4517865567075ebaf7433d2ba57d936e4f516a4c90ff2d607846280f",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "11.jpg",
+      "sha256": "025f967947efbb6c0c59cea483251eb257352cfd77dd4c9afdae7c95550dd542",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "12.jpg",
+      "sha256": "2aa97863e4d821ea23bb59d08c89ed7f4201fa46bd251ea81d9d0453d14ee48d",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "13.jpg",
+      "sha256": "8793ddc60f22180a53cc16e4e0c19d5b5290ee68514462445d6fe991c6f1e636",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "14.jpg",
+      "sha256": "a2e5a935071c9ea0a0b490517885bbc10845882b9a1e7f99038039a812156e91",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "15.jpg",
+      "sha256": "e290cd6795ccdf69269ef955411d44a86c3700d27c98a5cf48c31e1c60df0de2",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "16.jpg",
+      "sha256": "b839e70442952cd0924406b784dc8f3aefd96ac6da7a9979b0a3dc0857018b11",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "17.jpg",
+      "sha256": "eac5163211bbb71617a221bcb89e712ef65253cff39730d89ee7d3eef8a58683",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "18.jpg",
+      "sha256": "62e8b3a0cae09c730837f618176a4a7c0a98f643973fb8124700a717ec4b3c96",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "19.jpg",
+      "sha256": "5ce088edc80a4a9990af4b55a4902f000da9f782174bb54d68e4ccc339d419dd",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "2.jpg",
+      "sha256": "ca5668b615698d2e55b460b15d1cc19b4faf3b9fe74dec25911d9cab4d532c7c",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "20.jpg",
+      "sha256": "7133f78e4fb32c8aa1bfe5b6407736e287672b9e86be49751704fdf44885bbe5",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "21.jpg",
+      "sha256": "799612769e4d90fd2b01643106ba25ba270d1865275147799fb020586825a085",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "22.jpg",
+      "sha256": "e30ba4d3a40e11a06cc4d40ff0c5e356992816bf3864c280e1d01e5251a19ec9",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "23.jpg",
+      "sha256": "fc9d9464a2758f6d4ca2e69a917571bb2edc0b30690b229e106c89186135433d",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "24.jpg",
+      "sha256": "c027451eb54282a4c3fa447d68aee0ff7e5defdd80f41e8b81a499dcc241498f",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "3.jpg",
+      "sha256": "8d7d75bda4b71f87ea5b9cb3ddb9d76258037511060dfa7255b481eb49ce2094",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "4.jpg",
+      "sha256": "88c92e387793149a2c88ab78a2e22e347ee45cbbfef9defb66894bbd6732d720",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "5.jpg",
+      "sha256": "89f82dbed6b34e90c0099b6602ebaf2ab0e39c6d169f45dfe382417857d65b70",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "6.jpg",
+      "sha256": "b4e3829b5f2ebec8077d875b3e7e104380f9c96a05ad5c82c16908590619cde6",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "7.jpg",
+      "sha256": "552f8f496e3d69e25df0ae2bd6171aa788ba2bc6581237d8c6203d29584ed78f",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "8.jpg",
+      "sha256": "4d57ee6845abeaca2e563c21d205ccb180afd9fdcc992bf83e807fef04b6d7b1",
+      "width": 1920,
+      "height": 1080
+    },
+    {
+      "file": "9.jpg",
+      "sha256": "3bbbbada5a70f605bc77e31c7a9445f959927b6c33258860a6c579536703c5db",
+      "width": 1920,
+      "height": 1080
+    }
+  ],
+  "settings": {
+    "imgsz": 640,
+    "device": "cpu",
+    "batch": 1,
+    "rect": false,
+    "conf": 0.5,
+    "iou": 0.7,
+    "max_det": 300,
+    "classes": [
+      1
+    ],
+    "retina_masks": true,
+    "augment": false,
+    "save": false,
+    "show": false,
+    "verbose": false
+  },
+  "class_names": {
+    "0": "CUP",
+    "1": "CUP BASE",
+    "2": "CUP HANDLE",
+    "3": "TRAY"
+  },
+  "input_tensor_shape": [
+    1,
+    3,
+    640,
+    640
+  ],
+  "input_tensor_dtype": "torch.float32",
+  "warmup_calls_excluded": 10,
+  "repeats": 5,
+  "planned_measured_calls": 120,
+  "system": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.12",
+    "logical_cpus": 10,
+    "torch_threads": 8,
+    "opencv_threads": 1,
+    "mps_cpu_fallback_env": null,
+    "ncnn_options": {}
+  },
+  "versions": {
+    "ultralytics": "8.4.178",
+    "torch": "2.14.1",
+    "numpy": "2.5.4",
+    "ncnn": null
+  },
+  "opencv_version": "5.0.0",
+  "temperature_before_warmup_c": null,
+  "temperature_after_warmup_c": null,
+  "timing_definitions": {
+    "backend_inference_ms": "Predictor inference method, with MPS completion synchronization; includes backend adapter overhead.",
+    "prediction_ms": "model.predict plus result.cpu: preprocessing, backend inference, mask postprocessing, host transfer and API overhead.",
+    "excluded": "Model initialization, warm-up, image file reading/decoding, camera/HTTP acquisition, plotting, coordinates and robot operations.",
+    "schedule": "Consecutive single-image calls, sorted images repeated in full passes; console/CSV/temperature recording occurs outside each timed call."
+  },
+  "status": "complete",
+  "results": {
+    "backend_inference_ms": {
+      "count": 120,
+      "mean_ms": 55.082148991666664,
+      "median_ms": 53.2361875,
+      "sample_sd_ms": 6.289570794846126,
+      "p95_ms": 66.34893575,
+      "min_ms": 49.257,
+      "max_ms": 85.028541
+    },
+    "prediction_ms": {
+      "count": 120,
+      "mean_ms": 62.9414854,
+      "median_ms": 60.5902085,
+      "sample_sd_ms": 7.5148735015348205,
+      "p95_ms": 77.36383959999999,
+      "min_ms": 56.2015,
+      "max_ms": 96.687208
+    }
+  },
+  "per_repeat": {
+    "1": {
+      "backend_inference_ms": {
+        "count": 24,
+        "mean_ms": 59.38572225,
+        "median_ms": 56.6062915,
+        "sample_sd_ms": 8.680135864974421,
+        "p95_ms": 79.122517,
+        "min_ms": 50.235417,
+        "max_ms": 82.394584
+      },
+      "prediction_ms": {
+        "count": 24,
+        "mean_ms": 67.98555387500001,
+        "median_ms": 65.128437,
+        "sample_sd_ms": 9.465324587421641,
+        "p95_ms": 89.21161255,
+        "min_ms": 56.973166,
+        "max_ms": 90.733917
+      }
+    },
+    "2": {
+      "backend_inference_ms": {
+        "count": 24,
+        "mean_ms": 56.74593741666666,
+        "median_ms": 54.084333,
+        "sample_sd_ms": 7.663950522886132,
+        "p95_ms": 67.021467,
+        "min_ms": 49.257,
+        "max_ms": 85.028541
+      },
+      "prediction_ms": {
+        "count": 24,
+        "mean_ms": 64.61181416666666,
+        "median_ms": 60.800854,
+        "sample_sd_ms": 8.430565033639951,
+        "p95_ms": 76.34139999999998,
+        "min_ms": 56.388375,
+        "max_ms": 94.596
+      }
+    },
+    "3": {
+      "backend_inference_ms": {
+        "count": 24,
+        "mean_ms": 53.551251791666665,
+        "median_ms": 52.6304375,
+        "sample_sd_ms": 3.3511896517622426,
+        "p95_ms": 58.95198114999999,
+        "min_ms": 49.846583,
+        "max_ms": 66.284167
+      },
+      "prediction_ms": {
+        "count": 24,
+        "mean_ms": 60.958317666666666,
+        "median_ms": 60.1002915,
+        "sample_sd_ms": 4.079480521539953,
+        "p95_ms": 69.08080894999999,
+        "min_ms": 56.877083,
+        "max_ms": 74.988958
+      }
+    },
+    "4": {
+      "backend_inference_ms": {
+        "count": 24,
+        "mean_ms": 53.428460208333334,
+        "median_ms": 52.0725835,
+        "sample_sd_ms": 4.428505034776065,
+        "p95_ms": 59.668523099999994,
+        "min_ms": 49.930917,
+        "max_ms": 70.418375
+      },
+      "prediction_ms": {
+        "count": 24,
+        "mean_ms": 61.60541845833333,
+        "median_ms": 59.671125,
+        "sample_sd_ms": 7.970784819408099,
+        "p95_ms": 68.58464999999998,
+        "min_ms": 56.2015,
+        "max_ms": 96.687208
+      }
+    },
+    "5": {
+      "backend_inference_ms": {
+        "count": 24,
+        "mean_ms": 52.29937329166667,
+        "median_ms": 51.797625,
+        "sample_sd_ms": 2.038639986021658,
+        "p95_ms": 55.733322349999995,
+        "min_ms": 49.3005,
+        "max_ms": 56.643584
+      },
+      "prediction_ms": {
+        "count": 24,
+        "mean_ms": 59.546322833333335,
+        "median_ms": 59.2741455,
+        "sample_sd_ms": 1.9724655048574335,
+        "p95_ms": 62.8633857,
+        "min_ms": 56.385209,
+        "max_ms": 64.057875
+      }
+    }
+  },
+  "calls_without_detections": 0,
+  "temperature_by_repeat_c": [
+    {
+      "repeat": 1,
+      "celsius": null
+    },
+    {
+      "repeat": 2,
+      "celsius": null
+    },
+    {
+      "repeat": 3,
+      "celsius": null
+    },
+    {
+      "repeat": 4,
+      "celsius": null
+    },
+    {
+      "repeat": 5,
+      "celsius": null
+    }
+  ],
+  "temperature_after_c": null
+}

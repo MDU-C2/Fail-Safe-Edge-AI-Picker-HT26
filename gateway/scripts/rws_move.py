@@ -118,6 +118,7 @@ def main() -> None:
     parser.add_argument("--home", action="store_true", help="Move the arm home")
     parser.add_argument("--grip", action="store_true", help="Close the gripper")
     parser.add_argument("--open", action="store_true", help="Open the gripper")
+    parser.add_argument("--aperture", type=float, help="With --open: finger position in mm (0..25, g_MoveTo) instead of fully open")
     parser.add_argument("--no-wait", action="store_true", help="Answer STARTED at once and poll /robot/rws/status")
 
     parser.add_argument("--speed", type=float, help="TCP speed in mm/s for a move or home (gateway default 50)")
@@ -143,6 +144,9 @@ def main() -> None:
 
     elif args.grip or args.open:
         path, body = "/robot/rws/gripper", {"action": "grip" if args.grip else "open"}
+
+        if args.aperture is not None:
+            body["aperture"] = args.aperture
 
     elif any(value is not None for value in position + rotation):
         #

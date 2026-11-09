@@ -198,6 +198,9 @@ def test_rws_status_needs_read_permission_only(
         ("/robot/rws/home", {"acceleration": 0}),
         ("/robot/rws/gripper", {"action": "squeeze"}),
         ("/robot/rws/gripper", {}),
+        ("/robot/rws/gripper", {"action": "open", "aperture": 0}),
+        ("/robot/rws/gripper", {"action": "open", "aperture": 30}),
+        ("/robot/rws/gripper", {"action": "grip", "aperture": 10}),
     ],
 )
 def test_rws_home_and_gripper_are_validated(
@@ -308,6 +311,7 @@ class FakeArmTasks:
                 ("go_home", "FALSE"),
                 ("use_rot", "FALSE"),
                 ("grip_cmd", '""'),
+                ("grip_aperture", "0"),
                 ("target_pos", "[0,0,0]"),
                 ("target_rot", "[1,0,0,0]"),
                 ("move_speed", "[50,500,5000,1000]"),
@@ -463,6 +467,37 @@ def test_rws_motion_home_and_gripper() -> None:
 
     assert arms.gripper("right", "open").message == "DONE"
     assert ("T_ROB_R", "grip_cmd_right", '"OPEN"') in controller.writes
+
+
+def test_rws_motion_gripper_width() -> None:
+    controller = FakeArmTasks()
+    arms = motion(controller)
+
+    assert arms.gripper("left", "open", aperture=12.5).message == "DONE"
+
+    names = [name for _, name, _ in controller.writes]
+
+    assert ("T_ROB_L", "grip_aperture_left", "12.500000") in controller.writes
+    assert names.index("grip_aperture_left") < names.index("grip_cmd_left")
+
+    #
+    # Without a aperture nothing is written to grip_aperture.
+    #
+    controller.writes.clear()
+
+    assert arms.gripper("left", "open").message == "DONE"
+    assert "grip_aperture_left" not in [name for _, name, _ in controller.writes]
+
+
+def test_rws_motion_refuses_a_width_without_the_variable() -> None:
+    controller = FakeArmTasks()
+
+    del controller.symbols["grip_aperture_left"]
+
+    with pytest.raises(MotionConflict, match="no grip_aperture_left"):
+        motion(controller).gripper("left", "open", aperture=10)
+
+    assert controller.writes == []
 
 
 def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:

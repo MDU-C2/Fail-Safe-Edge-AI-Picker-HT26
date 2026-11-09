@@ -1,0 +1,139 @@
+Loaded 24 images (142.4 MiB).
+Warm-up: 10 calls (excluded from results)...
+  warm-up 1/10
+  warm-up 2/10
+  warm-up 3/10
+  warm-up 4/10
+  warm-up 5/10
+  warm-up 6/10
+  warm-up 7/10
+  warm-up 8/10
+  warm-up 9/10
+  warm-up 10/10
+Measuring 120 calls. Output: /home/kasun/picker_benchmarks/run_20261020T101256Z_63320/Fail-Safe-Edge-AI-Picker-HT26/benchmark_results/pi_cpu_640_20260801T225618_374677Z
+[1/120] 1.jpg: backend 921.6 ms | prediction 1032.6 ms | 4 masks
+[2/120] 10.jpg: backend 931.9 ms | prediction 1047.6 ms | 4 masks
+[3/120] 11.jpg: backend 931.8 ms | prediction 1039.8 ms | 4 masks
+[4/120] 12.jpg: backend 945.7 ms | prediction 1110.5 ms | 6 masks
+[5/120] 13.jpg: backend 1016.0 ms | prediction 1165.0 ms | 5 masks
+[6/120] 14.jpg: backend 959.9 ms | prediction 1078.1 ms | 4 masks
+[7/120] 15.jpg: backend 952.0 ms | prediction 1073.9 ms | 4 masks
+[8/120] 16.jpg: backend 1003.5 ms | prediction 1113.1 ms | 4 masks
+[9/120] 17.jpg: backend 948.8 ms | prediction 1041.8 ms | 3 masks
+[10/120] 18.jpg: backend 964.7 ms | prediction 1140.8 ms | 6 masks
+[11/120] 19.jpg: backend 946.0 ms | prediction 1063.9 ms | 4 masks
+[12/120] 2.jpg: backend 955.8 ms | prediction 1068.5 ms | 4 masks
+[13/120] 20.jpg: backend 922.7 ms | prediction 1016.3 ms | 3 masks
+[14/120] 21.jpg: backend 998.7 ms | prediction 1111.6 ms | 4 masks
+[15/120] 22.jpg: backend 960.4 ms | prediction 1090.9 ms | 4 masks
+[16/120] 23.jpg: backend 939.7 ms | prediction 1031.9 ms | 3 masks
+[17/120] 24.jpg: backend 982.0 ms | prediction 1071.1 ms | 3 masks
+[18/120] 3.jpg: backend 944.7 ms | prediction 1074.7 ms | 4 masks
+[19/120] 4.jpg: backend 967.8 ms | prediction 1083.8 ms | 4 masks
+[20/120] 5.jpg: backend 983.0 ms | prediction 1094.6 ms | 4 masks
+[21/120] 6.jpg: backend 1010.4 ms | prediction 1146.4 ms | 4 masks
+[22/120] 7.jpg: backend 995.1 ms | prediction 1175.6 ms | 6 masks
+[23/120] 8.jpg: backend 974.2 ms | prediction 1090.4 ms | 4 masks
+[24/120] 9.jpg: backend 953.0 ms | prediction 1076.1 ms | 4 masks
+[25/120] 1.jpg: backend 998.3 ms | prediction 1115.9 ms | 4 masks
+[26/120] 10.jpg: backend 972.5 ms | prediction 1094.2 ms | 4 masks
+[27/120] 11.jpg: backend 1036.2 ms | prediction 1148.8 ms | 4 masks
+[28/120] 12.jpg: backend 957.5 ms | prediction 1132.1 ms | 6 masks
+[29/120] 13.jpg: backend 976.3 ms | prediction 1147.6 ms | 5 masks
+[30/120] 14.jpg: backend 966.5 ms | prediction 1081.0 ms | 4 masks
+[31/120] 15.jpg: backend 991.0 ms | prediction 1109.5 ms | 4 masks
+[32/120] 16.jpg: backend 945.8 ms | prediction 1080.2 ms | 4 masks
+[33/120] 17.jpg: backend 987.5 ms | prediction 1087.1 ms | 3 masks
+[34/120] 18.jpg: backend 986.3 ms | prediction 1165.9 ms | 6 masks
+[35/120] 19.jpg: backend 980.4 ms | prediction 1096.6 ms | 4 masks
+[36/120] 2.jpg: backend 1019.8 ms | prediction 1150.7 ms | 4 masks
+[37/120] 20.jpg: backend 966.2 ms | prediction 1058.3 ms | 3 masks
+[38/120] 21.jpg: backend 948.5 ms | prediction 1068.8 ms | 4 masks
+[39/120] 22.jpg: backend 966.9 ms | prediction 1109.2 ms | 4 masks
+[40/120] 23.jpg: backend 958.1 ms | prediction 1060.8 ms | 3 masks
+[41/120] 24.jpg: backend 981.5 ms | prediction 1072.7 ms | 3 masks
+[42/120] 3.jpg: backend 1014.3 ms | prediction 1149.8 ms | 4 masks
+[43/120] 4.jpg: backend 1014.5 ms | prediction 1140.3 ms | 4 masks
+[44/120] 5.jpg: backend 1004.6 ms | prediction 1137.3 ms | 4 masks
+[45/120] 6.jpg: backend 1007.2 ms | prediction 1114.7 ms | 4 masks
+[46/120] 7.jpg: backend 1005.5 ms | prediction 1185.9 ms | 6 masks
+[47/120] 8.jpg: backend 1028.2 ms | prediction 1159.2 ms | 4 masks
+[48/120] 9.jpg: backend 1017.1 ms | prediction 1138.1 ms | 4 masks
+[49/120] 1.jpg: backend 1008.4 ms | prediction 1130.1 ms | 4 masks
+[50/120] 10.jpg: backend 1033.9 ms | prediction 1160.6 ms | 4 masks
+[51/120] 11.jpg: backend 1011.3 ms | prediction 1139.5 ms | 4 masks
+[52/120] 12.jpg: backend 990.7 ms | prediction 1184.7 ms | 6 masks
+[53/120] 13.jpg: backend 1034.1 ms | prediction 1189.2 ms | 5 masks
+[54/120] 14.jpg: backend 1033.2 ms | prediction 1156.6 ms | 4 masks
+[55/120] 15.jpg: backend 1024.7 ms | prediction 1148.3 ms | 4 masks
+[56/120] 16.jpg: backend 989.2 ms | prediction 1113.1 ms | 4 masks
+[57/120] 17.jpg: backend 1044.3 ms | prediction 1132.5 ms | 3 masks
+[58/120] 18.jpg: backend 1089.0 ms | prediction 1261.0 ms | 6 masks
+[59/120] 19.jpg: backend 1077.3 ms | prediction 1198.4 ms | 4 masks
+[60/120] 2.jpg: backend 1011.8 ms | prediction 1148.7 ms | 4 masks
+[61/120] 20.jpg: backend 1013.6 ms | prediction 1113.4 ms | 3 masks
+[62/120] 21.jpg: backend 1018.8 ms | prediction 1147.1 ms | 4 masks
+[63/120] 22.jpg: backend 973.3 ms | prediction 1082.6 ms | 4 masks
+[64/120] 23.jpg: backend 1057.4 ms | prediction 1162.0 ms | 3 masks
+[65/120] 24.jpg: backend 994.6 ms | prediction 1096.8 ms | 3 masks
+[66/120] 3.jpg: backend 1033.2 ms | prediction 1155.0 ms | 4 masks
+[67/120] 4.jpg: backend 1040.2 ms | prediction 1160.3 ms | 4 masks
+[68/120] 5.jpg: backend 1001.1 ms | prediction 1111.6 ms | 4 masks
+[69/120] 6.jpg: backend 1021.2 ms | prediction 1146.0 ms | 4 masks
+[70/120] 7.jpg: backend 1014.7 ms | prediction 1192.2 ms | 6 masks
+[71/120] 8.jpg: backend 1025.7 ms | prediction 1145.0 ms | 4 masks
+[72/120] 9.jpg: backend 1010.3 ms | prediction 1128.6 ms | 4 masks
+[73/120] 1.jpg: backend 1039.3 ms | prediction 1181.8 ms | 4 masks
+[74/120] 10.jpg: backend 1005.4 ms | prediction 1124.2 ms | 4 masks
+[75/120] 11.jpg: backend 1023.2 ms | prediction 1155.3 ms | 4 masks
+[76/120] 12.jpg: backend 1033.1 ms | prediction 1207.9 ms | 6 masks
+[77/120] 13.jpg: backend 1035.4 ms | prediction 1184.2 ms | 5 masks
+[78/120] 14.jpg: backend 1005.3 ms | prediction 1134.2 ms | 4 masks
+[79/120] 15.jpg: backend 984.2 ms | prediction 1105.4 ms | 4 masks
+[80/120] 16.jpg: backend 1015.7 ms | prediction 1151.1 ms | 4 masks
+[81/120] 17.jpg: backend 1025.3 ms | prediction 1109.4 ms | 3 masks
+[82/120] 18.jpg: backend 1011.3 ms | prediction 1193.0 ms | 6 masks
+[83/120] 19.jpg: backend 1053.1 ms | prediction 1179.6 ms | 4 masks
+[84/120] 2.jpg: backend 1036.6 ms | prediction 1155.8 ms | 4 masks
+[85/120] 20.jpg: backend 969.8 ms | prediction 1063.7 ms | 3 masks
+[86/120] 21.jpg: backend 965.4 ms | prediction 1092.2 ms | 4 masks
+[87/120] 22.jpg: backend 983.9 ms | prediction 1109.5 ms | 4 masks
+[88/120] 23.jpg: backend 1038.1 ms | prediction 1134.3 ms | 3 masks
+[89/120] 24.jpg: backend 1046.8 ms | prediction 1161.8 ms | 3 masks
+[90/120] 3.jpg: backend 998.0 ms | prediction 1125.7 ms | 4 masks
+[91/120] 4.jpg: backend 1067.7 ms | prediction 1189.6 ms | 4 masks
+[92/120] 5.jpg: backend 1040.5 ms | prediction 1161.5 ms | 4 masks
+[93/120] 6.jpg: backend 994.4 ms | prediction 1104.2 ms | 4 masks
+[94/120] 7.jpg: backend 972.7 ms | prediction 1146.4 ms | 6 masks
+[95/120] 8.jpg: backend 1021.9 ms | prediction 1139.9 ms | 4 masks
+[96/120] 9.jpg: backend 1059.8 ms | prediction 1193.6 ms | 4 masks
+[97/120] 1.jpg: backend 1058.2 ms | prediction 1186.0 ms | 4 masks
+[98/120] 10.jpg: backend 1057.4 ms | prediction 1190.1 ms | 4 masks
+[99/120] 11.jpg: backend 1042.3 ms | prediction 1152.4 ms | 4 masks
+[100/120] 12.jpg: backend 980.3 ms | prediction 1184.3 ms | 6 masks
+[101/120] 13.jpg: backend 1041.0 ms | prediction 1199.9 ms | 5 masks
+[102/120] 14.jpg: backend 1048.5 ms | prediction 1165.9 ms | 4 masks
+[103/120] 15.jpg: backend 1020.2 ms | prediction 1154.5 ms | 4 masks
+[104/120] 16.jpg: backend 1083.8 ms | prediction 1229.5 ms | 4 masks
+[105/120] 17.jpg: backend 996.0 ms | prediction 1092.0 ms | 3 masks
+[106/120] 18.jpg: backend 1115.6 ms | prediction 1286.7 ms | 6 masks
+[107/120] 19.jpg: backend 1032.0 ms | prediction 1155.8 ms | 4 masks
+[108/120] 2.jpg: backend 1092.8 ms | prediction 1220.8 ms | 4 masks
+[109/120] 20.jpg: backend 1082.5 ms | prediction 1181.9 ms | 3 masks
+[110/120] 21.jpg: backend 1002.7 ms | prediction 1135.7 ms | 4 masks
+[111/120] 22.jpg: backend 997.5 ms | prediction 1121.7 ms | 4 masks
+[112/120] 23.jpg: backend 1030.7 ms | prediction 1132.5 ms | 3 masks
+[113/120] 24.jpg: backend 1075.7 ms | prediction 1171.8 ms | 3 masks
+[114/120] 3.jpg: backend 1039.2 ms | prediction 1167.7 ms | 4 masks
+[115/120] 4.jpg: backend 1029.3 ms | prediction 1146.9 ms | 4 masks
+[116/120] 5.jpg: backend 1006.1 ms | prediction 1134.9 ms | 4 masks
+[117/120] 6.jpg: backend 1002.5 ms | prediction 1112.8 ms | 4 masks
+[118/120] 7.jpg: backend 1072.6 ms | prediction 1269.0 ms | 6 masks
+[119/120] 8.jpg: backend 1047.4 ms | prediction 1165.2 ms | 4 masks
+[120/120] 9.jpg: backend 1030.4 ms | prediction 1151.8 ms | 4 masks
+backend_inference_ms: mean 1006.69 ms | median 1007.76 ms | p95 1075.80 ms
+prediction_ms: mean 1133.84 ms | median 1138.81 ms | p95 1200.27 ms
+
+Send back these two files:
+/home/kasun/picker_benchmarks/run_20261020T101256Z_63320/Fail-Safe-Edge-AI-Picker-HT26/benchmark_results/pi_cpu_640_20260801T225618_374677Z/summary.json
+/home/kasun/picker_benchmarks/run_20261020T101256Z_63320/Fail-Safe-Edge-AI-Picker-HT26/benchmark_results/pi_cpu_640_20260801T225618_374677Z/measurements.csv

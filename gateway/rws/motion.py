@@ -210,15 +210,21 @@ class RwsMotion:
         arm: Arm,
         action: Literal["grip", "open"],
         wait: bool = True,
+        aperture: float | None = None,
     ) -> CommandResponse:
-        return self._run(
-            arm,
-            {
-                "go_home": "FALSE",
-                "grip_cmd": f'"{GRIPPER_COMMANDS[action]}"',
-            },
-            wait,
-        )
+        """aperture (mm, open only): finger position for g_MoveTo
+        instead of opening fully; written before grip_cmd."""
+
+        values = {
+            "go_home": "FALSE",
+        }
+
+        if aperture is not None:
+            values["grip_aperture"] = f"{aperture:.6f}"
+
+        values["grip_cmd"] = f'"{GRIPPER_COMMANDS[action]}"'
+
+        return self._run(arm, values, wait)
 
     def status(
         self,
@@ -300,6 +306,18 @@ class RwsMotion:
                     f"The RAPID program in {ARM_TASKS[arm]} has no speed "
                     f"variables (no move_speed_{arm}); upload rapid/ "
                     f"again (rapidctl.py upload)",
+                )
+
+            #
+            # Same for the gripper aperture (rapid/ before grip_aperture).
+            #
+            if "grip_aperture" in values:
+                self._check_variable(
+                    arm,
+                    "grip_aperture",
+                    f"The RAPID program in {ARM_TASKS[arm]} has no "
+                    f"grip_aperture_{arm}; upload rapid/ again "
+                    f"(rapidctl.py upload)",
                 )
 
             for name, value in values.items():
