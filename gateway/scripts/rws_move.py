@@ -41,6 +41,7 @@ Needs: requests
 
 import argparse
 import math
+import os
 import sys
 import threading
 import time
@@ -49,7 +50,7 @@ import requests
 
 
 DEFAULT_URL = "http://169.254.125.202:8000/api/v1"
-DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+DEFAULT_TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # see client_tokens.json (local only)
 
 #
 # Longer than the gateway's own move timeout (60 s).
@@ -111,7 +112,7 @@ def main() -> None:
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Gateway API base URL")
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (strict mode)")
-    parser.add_argument("--client", default="operator", help="Client id (development mode)")
+    parser.add_argument("--client", default="admin", help="Client id (development mode)")
     parser.add_argument("--arm", choices=("left", "right"), default="left")
 
     parser.add_argument("--x", type=float)
@@ -196,10 +197,27 @@ def main() -> None:
 
     body.update(arm=args.arm, wait=not args.no_wait, **speed)
 
-    response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
+    #
+    # Right after the gateway starts, or while a higher-priority
+    # client is also trying, acquire answers 409 with Retry-After.
+    #
+    deadline = time.monotonic() + 15.0
 
-    if not response.ok:
-        sys.exit(f"Could not take control: {response.status_code} {response.text}")
+    while True:
+        response = requests.post(f"{args.url}/control/acquire", headers=headers, timeout=10)
+
+        if response.ok:
+            break
+
+        if (
+            response.status_code != 409
+            or "Retry-After" not in response.headers
+            or time.monotonic() > deadline
+        ):
+            sys.exit(f"Could not take control: {response.status_code} {response.text}")
+
+        print(f"Waiting for control: {response.json()['detail']}")
+        time.sleep(1.0)
 
     #
     # The lease (5 s by default) must outlive the job, so it is

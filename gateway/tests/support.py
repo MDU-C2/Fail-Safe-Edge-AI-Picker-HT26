@@ -28,6 +28,18 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 API_PREFIX = "/api/v1"
 
+#
+# Which gateway the tests start: "python" (uvicorn gateway.main:app)
+# or "cpp" (the C++ binary at CPP_BINARY, relative to the repository
+# root). Set with --impl / GATEWAY_IMPL and --cpp-binary /
+# GATEWAY_CPP_BINARY; conftest.py fills these in.
+#
+IMPLEMENTATIONS = ("python", "cpp")
+
+implementation = os.environ.get("GATEWAY_IMPL", "python")
+
+cpp_binary = os.environ.get("GATEWAY_CPP_BINARY", "gateway/cpp/build/dev/gateway")
+
 STARTUP_TIMEOUT_SECONDS = 90.0
 
 #
@@ -45,27 +57,48 @@ LEASE_SECONDS = 2.0
 RENEW_INTERVAL_SECONDS = 0.5
 
 #
+# A free lease goes to the highest client that tried within this
+# window. Shorter than the lease, longer than the failover tests'
+# device tick. No startup grace by default, so tests can take
+# control as soon as a gateway is up; test_failover.py starts its
+# own gateway with one.
+#
+CONTENTION_SECONDS = 1.0
+
+#
 # Same clients and permissions as gateway/auth_clients.json, with
 # tokens known to the tests.
 #
 CLIENTS = {
-    "operator": {
+    "admin": {
+        "permissions": [
+            "*",
+        ],
+        "control_priority": 1000,
+    },
+    "primary": {
         "permissions": [
             "robot.read",
             "robot.control",
             "camera.read",
-            "camera.control",
+        ],
+        "control_priority": 300,
+    },
+    "secondary": {
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
+        ],
+        "control_priority": 200,
+    },
+    "tertiary": {
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read",
         ],
         "control_priority": 100,
-    },
-    "autonomy": {
-        "permissions": [
-            "robot.read",
-            "robot.control",
-            "camera.read",
-            "camera.control",
-        ],
-        "control_priority": 50,
     },
     "diagnostics": {
         "permissions": [
@@ -253,9 +286,16 @@ class Gateway:
         directory: Path,
         security_mode: str,
         settings: dict[str, str],
+        implementation: str | None = None,
     ) -> None:
         self.security_mode = security_mode
         self.port = free_port()
+
+        #
+        # The suite's implementation (--impl) unless one is given,
+        # for tests that start both.
+        #
+        self.implementation = implementation
 
         self.url = f"http://127.0.0.1:{self.port}"
         self.api_url = f"{self.url}{API_PREFIX}"
@@ -272,25 +312,41 @@ class Gateway:
             "GATEWAY_AUTH_CLIENTS_FILE": str(auth_clients),
             "GATEWAY_CALIBRATION_FILE": str(directory / "calibration.json"),
             "GATEWAY_CONTROL_LEASE_SECONDS": str(LEASE_SECONDS),
+            "GATEWAY_CONTROL_CONTENTION_SECONDS": str(CONTENTION_SECONDS),
+            "GATEWAY_CONTROL_STARTUP_GRACE_SECONDS": "0",
             **settings,
         }
 
         self._process: subprocess.Popen | None = None
 
-    def start(self) -> None:
-        self._log = self.log_path.open("w", encoding="utf-8")
+    def command(self) -> list[str]:
+        """The command line of the selected implementation."""
 
-        self._process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "uvicorn",
-                "gateway.main:app",
+        if (self.implementation or implementation) == "cpp":
+            return [
+                str(REPOSITORY_ROOT / cpp_binary),
                 "--host",
                 "127.0.0.1",
                 "--port",
                 str(self.port),
-            ],
+            ]
+
+        return [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            "gateway.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self.port),
+        ]
+
+    def start(self) -> None:
+        self._log = self.log_path.open("w", encoding="utf-8")
+
+        self._process = subprocess.Popen(
+            self.command(),
             cwd=REPOSITORY_ROOT,
             env=self.environment,
             stdout=self._log,
@@ -340,7 +396,7 @@ class Gateway:
 
     def client(
         self,
-        client_id: str | None = "operator",
+        client_id: str | None = "admin",
     ) -> Client:
         return Client(self, client_id)
 

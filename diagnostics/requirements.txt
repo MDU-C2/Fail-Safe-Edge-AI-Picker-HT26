@@ -1,0 +1,4 @@
+# diagnostics/gateway_diag.py
+requests
+websockets
+rich

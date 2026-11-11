@@ -1,26 +1,49 @@
 {
+    "admin": {
+        "token_hash": "3afaf8646daf7736541c7b4581952171bb7c56a24c43567406edc3d312f9098f",
+        "permissions": [
+            "*"
+        ],
+        "control_priority": 1000
+    },
+    "primary": {
+        "token_hash": "c84d81b581bd0e4d9a2ea9e17cf31259c3bdd956627b60f6beb34bcda708edb3",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read"
+        ],
+        "control_priority": 300
+    },
+    "secondary": {
+        "token_hash": "e86184ea646c4c583c2ff321d29ea6e40ae94bf667062e71aa561ee8eba61859",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read"
+        ],
+        "control_priority": 200
+    },
+    "tertiary": {
+        "token_hash": "0e628abeef2061ed440d2e430bd6a9c2993576f4f58a5d8d4ae1394a13d28474",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read"
+        ],
+        "control_priority": 100
+    },
     "operator": {
         "token_hash": "872f20482f13e6a5c291b4c06186f4a07f949f0793b434c1ccb74dbda1a7fb21",
         "permissions": [
             "robot.read",
             "robot.control",
-            "camera.read",
-            "camera.control"
-        ],
-        "control_priority": 100
-    },
-    "autonomy": {
-        "token_hash": "5af6d1fc6d45bd126f6cc5a0353c7ffe1f7020ebbf6dcecc018971594b4be57d",
-        "permissions": [
-            "robot.read",
-            "robot.control",
-            "camera.read",
-            "camera.control"
+            "camera.read"
         ],
         "control_priority": 50
     },
     "diagnostics": {
-        "token_hash": "56e948dcd6f3c4b26ed4b1a3785204b24dd47038c928a80e95c4f2fe0cc2aea8",
+        "token_hash": "5ac01fb927105035a00d1cfbd583906a135e02113ea8a48c975d0a26b9d85e01",
         "permissions": [
             "robot.read",
             "camera.read"

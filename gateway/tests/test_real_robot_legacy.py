@@ -33,7 +33,7 @@ from gateway.tests.real_robot import (
     above,
     assert_at,
     move,
-    operator,
+    admin,
     pose,
     position,
     real_robot,
@@ -118,68 +118,68 @@ def legacy_move(
 
 @pytest.mark.parametrize("arm", ARMS)
 def test_legacy_move_up_and_back(
-    operator: Client,
+    admin: Client,
     arm: str,
 ) -> None:
-    with returns_to_start(operator, arm) as start:
+    with returns_to_start(admin, arm) as start:
         target = above(position(start), SMALL_OFFSET_MM)
 
-        assert legacy_move(operator, arm, target) == DONE
+        assert legacy_move(admin, arm, target) == DONE
 
-        assert_at(operator, arm, target, start)
+        assert_at(admin, arm, target, start)
 
-        assert legacy_move(operator, arm, position(start)) == DONE
+        assert legacy_move(admin, arm, position(start)) == DONE
 
-        assert_at(operator, arm, position(start), start)
+        assert_at(admin, arm, position(start), start)
 
 
 def test_legacy_both_arms_at_once(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as left, returns_to_start(operator, "right") as right:
+    with returns_to_start(admin, "left") as left, returns_to_start(admin, "right") as right:
         targets = {
             "left": above(position(left), MAX_OFFSET_MM),
             "right": above(position(right), MAX_OFFSET_MM),
         }
 
         for arm, target in targets.items():
-            assert command(operator, target_command(arm, target)) == STARTED
+            assert command(admin, target_command(arm, target)) == STARTED
 
         for arm in ARMS:
-            assert legacy_status(operator, arm) == BUSY, arm
+            assert legacy_status(admin, arm) == BUSY, arm
 
         for arm, start in (("left", left), ("right", right)):
-            assert legacy_wait(operator, arm) == DONE
+            assert legacy_wait(admin, arm) == DONE
 
-            assert_at(operator, arm, targets[arm], start)
+            assert_at(admin, arm, targets[arm], start)
 
 
 def test_legacy_busy_arm_refuses_a_second_job(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as start:
+    with returns_to_start(admin, "left") as start:
         target = above(position(start), MAX_OFFSET_MM)
 
-        assert command(operator, target_command("left", target)) == STARTED
+        assert command(admin, target_command("left", target)) == STARTED
 
-        assert command(operator, target_command("left", target)) == ERR_BUSY
+        assert command(admin, target_command("left", target)) == ERR_BUSY
 
-        assert legacy_wait(operator, "left") == DONE
+        assert legacy_wait(admin, "left") == DONE
 
-        assert_at(operator, "left", target, start)
+        assert_at(admin, "left", target, start)
 
 
 def test_legacy_refusals_do_not_move(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    start = pose(operator, "left")
+    start = pose(admin, "left")
 
-    assert command(operator, "1,2") == {"accepted": False, "message": "ERR bad format"}
+    assert command(admin, "1,2") == {"accepted": False, "message": "ERR bad format"}
 
     #
     # CommServer's own safe zone (its X/Y/Z_MIN/MAX).
     #
-    assert command(operator, target_command("left", OUTSIDE_SAFE_ZONE)) == {
+    assert command(admin, target_command("left", OUTSIDE_SAFE_ZONE)) == {
         "accepted": False,
         "message": "ERR outside safe zone",
     }
@@ -187,9 +187,9 @@ def test_legacy_refusals_do_not_move(
     #
     # Accepted by CommServer, refused by the arm task.
     #
-    assert legacy_move(operator, "left", OUT_OF_REACH) == MOVE_FAILED
+    assert legacy_move(admin, "left", OUT_OF_REACH) == MOVE_FAILED
 
-    assert_at(operator, "left", position(start), start)
+    assert_at(admin, "left", position(start), start)
 
 
 # ================================================================
@@ -197,65 +197,65 @@ def test_legacy_refusals_do_not_move(
 # ================================================================
 
 def test_rws_job_blocks_legacy_on_that_arm(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as start:
+    with returns_to_start(admin, "left") as start:
         target = above(position(start), MAX_OFFSET_MM)
 
-        assert move(operator, "left", target, wait=False) == STARTED
+        assert move(admin, "left", target, wait=False) == STARTED
 
         #
         # CommServer sees the RWS job.
         #
-        assert legacy_status(operator, "left") == BUSY
+        assert legacy_status(admin, "left") == BUSY
 
-        assert command(operator, target_command("left", target)) == ERR_BUSY
+        assert command(admin, target_command("left", target)) == ERR_BUSY
 
-        assert legacy_wait(operator, "left") == DONE
+        assert legacy_wait(admin, "left") == DONE
 
-        assert_at(operator, "left", target, start)
+        assert_at(admin, "left", target, start)
 
 
 def test_legacy_job_blocks_rws_on_that_arm(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as start:
+    with returns_to_start(admin, "left") as start:
         target = above(position(start), MAX_OFFSET_MM)
 
-        assert command(operator, target_command("left", target)) == STARTED
+        assert command(admin, target_command("left", target)) == STARTED
 
         #
         # The RWS API sees the CommServer job.
         #
-        assert expect(operator.get("/robot/rws/status", params={"arm": "left"}), 200) == BUSY
+        assert expect(admin.get("/robot/rws/status", params={"arm": "left"}), 200) == BUSY
 
-        response = operator.post(
+        response = admin.post(
             "/robot/rws/move",
             json={"arm": "left", "wait": False, **dict(zip("xyz", target))},
         )
 
         assert expect(response, 409)["detail"] == "The left arm is busy with an earlier job"
 
-        assert wait_until_idle(operator, "left") == DONE
+        assert wait_until_idle(admin, "left") == DONE
 
-        assert_at(operator, "left", target, start)
+        assert_at(admin, "left", target, start)
 
 
 def test_rws_and_legacy_on_different_arms_at_once(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as left, returns_to_start(operator, "right") as right:
+    with returns_to_start(admin, "left") as left, returns_to_start(admin, "right") as right:
         left_target = above(position(left), MAX_OFFSET_MM)
         right_target = above(position(right), MAX_OFFSET_MM)
 
-        assert move(operator, "left", left_target, wait=False) == STARTED
-        assert command(operator, target_command("right", right_target)) == STARTED
+        assert move(admin, "left", left_target, wait=False) == STARTED
+        assert command(admin, target_command("right", right_target)) == STARTED
 
-        assert expect(operator.get("/robot/rws/status", params={"arm": "left"}), 200) == BUSY
-        assert legacy_status(operator, "right") == BUSY
+        assert expect(admin.get("/robot/rws/status", params={"arm": "left"}), 200) == BUSY
+        assert legacy_status(admin, "right") == BUSY
 
-        assert wait_until_idle(operator, "left") == DONE
-        assert legacy_wait(operator, "right") == DONE
+        assert wait_until_idle(admin, "left") == DONE
+        assert legacy_wait(admin, "right") == DONE
 
-        assert_at(operator, "left", left_target, left)
-        assert_at(operator, "right", right_target, right)
+        assert_at(admin, "left", left_target, left)
+        assert_at(admin, "right", right_target, right)

@@ -17,20 +17,57 @@ Opt-in hardware:
 
 Without --real-robot the real robot is never used: every robot
 address the suite's own gateways get is 127.0.0.1.
+
+Implementation under test (options in implementation.py):
+    --impl python  the Python gateway (default)
+    --impl cpp     the C++ gateway at --cpp-binary (default
+                   gateway/cpp/build/dev/gateway); Linux only, see
+                   gateway/cpp/dev.sh pytest
 """
 
+import os
+from pathlib import Path
 from typing import Iterator
 
 import pytest
 import requests
 from requests.auth import HTTPDigestAuth
 
+from gateway.tests import support
 from gateway.tests.support import (
     ROBOTSTUDIO_RWS_PORT,
     ROBOTSTUDIO_SOCKET_PORT,
     Gateway,
     free_port,
 )
+
+#
+# Modules that test Python internals rather than a running gateway;
+# with --impl cpp they are skipped, and gateway/cpp/tests has their
+# C++ counterparts.
+#
+PYTHON_ONLY = {
+    "test_client_registry.py": "gateway/cpp/tests/test_client_registry.cpp",
+    "test_control_manager.py": "gateway/cpp/tests/test_control_manager.cpp",
+    "test_oak_reconnect.py": "gateway/cpp/tests/test_oak_reconnect.cpp",
+}
+
+#
+# The C++ gateway has no legacy POST /robot/command (the team's
+# CommServer path) by design: these modules, and the tests marked
+# legacy_command elsewhere, test only that.
+#
+LEGACY_ONLY = (
+    "test_robot_tcp.py",
+    "test_real_robot_legacy.py",
+)
+
+#
+# Modules whose routes the C++ gateway does not have yet, and the
+# migration step that brings them (gateway/cpp/README.md). Remove a
+# line once its tests pass with --impl cpp.
+#
+NOT_PORTED_TO_CPP: dict[str, str] = {}
 
 GATEWAY_FIXTURES = (
     "strict_gateway",
@@ -75,15 +112,49 @@ def pytest_addoption(
 
     parser.addoption(
         "--real-robot-token",
-        default="BAD_TOKEN_OPERATOR",
-        help="Bearer token of a client with robot.control on that gateway",
+        default=os.environ.get("GATEWAY_TOKEN", ""),
+        help="Bearer token of a client with robot.control on that gateway (default: GATEWAY_TOKEN)",
     )
-
 
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
+    if support.implementation == "cpp":
+        for item in items:
+            module = Path(str(item.fspath)).name
+
+            if module in PYTHON_ONLY:
+                item.add_marker(
+                    pytest.mark.skip(reason=f"tests Python internals; C++: {PYTHON_ONLY[module]}")
+                )
+
+            elif "python_internals" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="tests Python internals; C++ counterparts in gateway/cpp/tests")
+                )
+
+            elif module in LEGACY_ONLY or "legacy_command" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="legacy POST /robot/command: not in the C++ gateway by design")
+                )
+
+            elif module in NOT_PORTED_TO_CPP:
+                item.add_marker(
+                    pytest.mark.skip(reason=f"not in the C++ gateway yet: {NOT_PORTED_TO_CPP[module]}")
+                )
+
+    else:
+        #
+        # The Python gateway is legacy and gets no new behaviour, so
+        # tests of what only the C++ gateway does skip it.
+        #
+        for item in items:
+            if "cpp_only" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="C++ gateway only: the Python gateway is legacy (no new features)")
+                )
+
     for option in ("robotstudio", "oak", "real_robot", "real_robot_gripper"):
         if config.getoption(option):
             continue

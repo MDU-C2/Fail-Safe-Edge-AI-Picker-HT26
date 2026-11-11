@@ -35,9 +35,9 @@ def test_health_needs_no_credentials(
 def test_health_shows_the_lease(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
+    with admin.control():
         health = expect(gateway.client(None).get("/health"), 200)
 
     assert health["control_lease_active"] is True
@@ -77,12 +77,12 @@ def test_strict_ignores_development_header(
 ) -> None:
     client = strict_gateway.client(None)
 
-    client.session.headers["X-Dev-Client"] = "operator"
+    client.session.headers["X-Dev-Client"] = "admin"
 
     expect(client.get("/robot/status"), 401)
 
 
-def test_development_defaults_to_operator(
+def test_development_defaults_to_admin(
     development_gateway: Gateway,
 ) -> None:
     client = development_gateway.client(None)
@@ -90,7 +90,7 @@ def test_development_defaults_to_operator(
     with client.control():
         lease = expect(client.get("/control"), 200)
 
-    assert lease["client_id"] == "operator"
+    assert lease["client_id"] == "admin"
 
 
 def test_development_rejects_unknown_client(

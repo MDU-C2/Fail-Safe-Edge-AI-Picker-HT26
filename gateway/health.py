@@ -16,7 +16,7 @@ from gateway.rws.client import RwsError, rws_client
 from gateway.rws.motion import rws_motion
 
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 #
 # The health check must answer quickly even when the controller is

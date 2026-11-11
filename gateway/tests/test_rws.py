@@ -84,7 +84,7 @@ def test_rapid_control_needs_permission_and_lease(
     body = {"source": MODULE_SOURCE} if method == "PUT" else None
 
     expect(gateway.client("diagnostics").request(method, path, json=body), 403)
-    expect(gateway.client("operator").request(method, path, json=body), 409)
+    expect(gateway.client("admin").request(method, path, json=body), 409)
 
 
 @pytest.mark.parametrize(
@@ -103,19 +103,59 @@ def test_module_upload_is_validated_before_contacting_controller(
     path: str,
     source: str,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.put(path, json={"source": source}), 422)
+    with admin.control():
+        expect(admin.put(path, json={"source": source}), 422)
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    ["primary", "secondary", "tertiary"],
+)
+@pytest.mark.parametrize(
+    "method, path",
+    [
+        ("PUT", "/robot/rapid/tasks/T_ROB_L/modules/GatewayTest"),
+        ("DELETE", "/robot/rapid/tasks/T_ROB_L/modules/GatewayTest"),
+    ],
+)
+def test_only_admin_changes_the_rapid_program(
+    gateway: Gateway,
+    client_id: str,
+    method: str,
+    path: str,
+) -> None:
+    body = {"source": MODULE_SOURCE} if method == "PUT" else None
+
+    model = gateway.client(client_id)
+
+    with model.control():
+        expect(model.request(method, path, json=body), 403)
+
+
+@pytest.mark.parametrize(
+    "client_id",
+    ["primary", "secondary", "tertiary"],
+)
+def test_models_start_and_stop_rapid(
+    gateway: Gateway,
+    client_id: str,
+) -> None:
+    model = gateway.client(client_id)
+
+    with model.control():
+        expect(model.post("/robot/rapid/stop"), 503)
+        expect(model.post("/robot/rapid/start", json={"reset_program_pointer": True}), 503)
 
 
 def test_control_with_lease_reaches_controller(
     gateway: Gateway,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/rapid/stop"), 503)
+    with admin.control():
+        expect(admin.post("/robot/rapid/stop"), 503)
 
 
 # ================================================================
@@ -139,12 +179,12 @@ def test_rws_moves_need_permission_and_lease(
     body: dict | None,
 ) -> None:
     expect(gateway.client("diagnostics").post(path, json=body), 403)
-    expect(gateway.client("operator").post(path, json=body), 409)
+    expect(gateway.client("admin").post(path, json=body), 409)
 
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        detail = expect(operator.post(path, json=body), 503)["detail"]
+    with admin.control():
+        detail = expect(admin.post(path, json=body), 503)["detail"]
 
     assert detail.startswith("Robot controller unreachable")
 
@@ -169,10 +209,10 @@ def test_rws_move_is_validated(
     gateway: Gateway,
     body: dict,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/rws/move", json=body), 422)
+    with admin.control():
+        expect(admin.post("/robot/rws/move", json=body), 422)
 
 
 def test_rws_status_needs_read_permission_only(
@@ -216,10 +256,10 @@ def test_rws_home_and_gripper_are_validated(
     path: str,
     body: dict,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post(path, json=body), 422)
+    with admin.control():
+        expect(admin.post(path, json=body), 422)
 
 
 @pytest.mark.parametrize(
@@ -233,6 +273,7 @@ def test_rws_home_and_gripper_are_validated(
         ((60, 20, 30), (0.846279, 0.136873, 0.272703, 0.436703)),
     ],
 )
+@pytest.mark.python_internals
 def test_orient_zyx_matches_rapid(
     angles: tuple[float, float, float],
     expected: tuple[float, float, float, float],
@@ -269,6 +310,7 @@ class FiveTaskController:
         return ["SharedVars"]
 
 
+@pytest.mark.python_internals
 def test_rapid_status_handles_background_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -386,6 +428,7 @@ def motion(
     )
 
 
+@pytest.mark.python_internals
 def test_rws_motion_writes_the_arms_variables() -> None:
     controller = FakeArmTasks()
 
@@ -415,6 +458,7 @@ def test_rws_motion_writes_the_arms_variables() -> None:
     assert written["move_ramp_right"] == ("T_ROB_R", "100.000000")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_writes_the_speed() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -447,6 +491,7 @@ def test_rws_motion_writes_the_speed() -> None:
     assert not any(name.startswith("move_speed") for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_a_program_without_speed_variables() -> None:
     controller = FakeArmTasks()
 
@@ -463,6 +508,7 @@ def test_rws_motion_refuses_a_program_without_speed_variables() -> None:
     assert motion(controller).gripper("left", "open").message == "DONE"
 
 
+@pytest.mark.python_internals
 def test_rws_motion_home_and_gripper() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -478,6 +524,7 @@ def test_rws_motion_home_and_gripper() -> None:
     assert ("T_ROB_R", "grip_cmd_right", '"OPEN"') in controller.writes
 
 
+@pytest.mark.python_internals
 def test_rws_motion_gripper_position_and_force() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
@@ -521,6 +568,7 @@ def test_rws_motion_gripper_position_and_force() -> None:
         arms.gripper("left", "open", force=10.0)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_gripper_on_a_program_without_position_and_force() -> None:
     controller = FakeArmTasks()
 
@@ -551,6 +599,7 @@ def test_rws_motion_gripper_on_a_program_without_position_and_force() -> None:
     assert not any(name.startswith("grip_force") for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:
     controller = FakeArmTasks()
 
@@ -561,12 +610,14 @@ def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:
     assert controller.writes == []
 
 
+@pytest.mark.python_internals
 def test_rws_motion_reports_a_failed_move() -> None:
     result = motion(FakeArmTasks()).move("left", (900.0, 0.0, 300.0), None)
 
     assert (result.accepted, result.message) == (False, "ERR move failed")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_arms_are_independent() -> None:
     controller = FakeArmTasks(job_seconds=0.5)
     arms = motion(controller)
@@ -597,6 +648,7 @@ def test_rws_motion_arms_are_independent() -> None:
     assert not arms.is_moving()
 
 
+@pytest.mark.python_internals
 def test_rws_motion_refuses_a_busy_or_missing_program() -> None:
     controller = FakeArmTasks()
 
@@ -618,6 +670,7 @@ def test_rws_motion_refuses_a_busy_or_missing_program() -> None:
         motion(controller).home("right")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_can_start_without_waiting() -> None:
     controller = FakeArmTasks(job_seconds=0.3)
     arms = motion(controller)
@@ -657,6 +710,7 @@ def test_rws_motion_can_start_without_waiting() -> None:
     assert arms.status("right").message == "DONE"
 
 
+@pytest.mark.python_internals
 def test_rws_motion_status_reports_a_failed_job() -> None:
     controller = FakeArmTasks()
     arms = motion(controller)
