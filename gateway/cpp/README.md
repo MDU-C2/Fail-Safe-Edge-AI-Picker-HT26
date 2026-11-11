@@ -26,7 +26,12 @@ gateway/cpp/dev.sh pytest-python      # the same suite against the Python gatewa
 gateway/cpp/dev.sh sanitize           # unit tests + suite under ASan/UBSan and TSan
 gateway/cpp/dev.sh build release-size # the static, size-optimised binary the images ship
 gateway/cpp/dev.sh image              # runtime image gateway-cpp (FROM scratch)
+gateway/cpp/dev.sh wmopkg             # WeOS package for the Lynx -> gateway/cpp/dist/gateway-cpp-<version>.wmopkg
 ```
+
+Deploying to the Westermo Lynx (build, import, start, test) is in
+[LYNX.md](LYNX.md): `dev.sh wmopkg`, then `tools/deploy_lynx.ps1` on
+the lab laptop, then `gateway/scripts/smoke_test.py`.
 
 `dev.sh pytest --robotstudio` runs the RobotStudio tests against the
 C++ binary. The containers use host networking, and WSL needs
@@ -103,7 +108,8 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/health.cpp` | `health.py` |
 | `openapi/openapi.json` | FastAPI's schema, exported by `tools/export_openapi.py` and served as is |
 | `tests/` | GoogleTest; ports of the Python unit tests plus new ones |
-| `tools/` | schema export, memory measurement |
+| `tools/` | schema export, memory measurement, depthai RAM probe, `deploy_lynx.ps1` |
+| `LYNX.md` | deploying to the Westermo Lynx |
 
 Change a Python route or model, then re-export the schema:
 `python gateway/cpp/tools/export_openapi.py` (Windows venv is fine).
@@ -160,7 +166,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests, `--robotstudio` (18 passed against the virtual YuMi) |
 | M6 | OAK producer on a minimal depthai-core build, reconnect | works with the real camera: same intrinsics and depth as the Python gateway on the same scene (valid depth 71 → 95 % over the first 5 s, median 851 mm), `test_camera_contract` passes; C++ port of `test_oak_reconnect`. RAM down from 198 MB to 43 MB peak (see "Memory with the camera"). Open: `test_depth_has_valid_pixels` failed twice (it reads depth about a second after the camera boots, when C++ still gives all zeros; whether Python passes it from a cold start is unchecked); the camera reported a crash dump when the C++ gateway closed it |
-| M7 | arm64/armv7 images, `.wmopkg`, WeOS seccomp check | open |
+| M7 | arm64 `.wmopkg`, running on the Lynx | done for the Lynx-3510 (arm64, WeOS 5.30): `dev.sh wmopkg` (12 MB package), `tools/deploy_lynx.ps1`, runs under WeOS's default seccomp/AppArmor with the real camera, `smoke_test.py` passes ([LYNX.md](LYNX.md)). armv7 not needed for this Lynx |
 
 ## Measurements
 

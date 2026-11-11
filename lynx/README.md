@@ -9,6 +9,8 @@ Everything here was discovered live over SSH with the device's own `help`, `tree
 and `show` commands on **2026-11-11**.
 
 - [COMMANDS.md](COMMANDS.md) — the full WeOS CLI command reference and how to use it.
+- [DEPLOY.md](DEPLOY.md) — how to build, import, configure and run any app on the Lynx
+  (the C++ gateway's deployment is [gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md)).
 - [command-tree.txt](command-tree.txt) — raw `tree` output: every command and config node.
 - `running-config.sanitized.json` — the device's live config as of 2026-11-11, with the
   admin password hash and SNMP community strings redacted. **Kept local only — it is
@@ -30,16 +32,21 @@ and `show` commands on **2026-11-11**.
 
 ## How to reach it
 
-The Lynx has **no static management IP configured** — `vlan1` runs DHCP with an
-IPv4 **link‑local** fallback, so on the lab segment it currently answers at:
+`vlan1` has two IPv4 addresses:
 
 ```
-169.254.219.127   (IPv4 link-local, 169.254.0.0/16 — same range as the OAK camera)
+169.254.219.127/16   link-local (DHCP is configured but gets no answer, so it falls back to this)
+192.168.125.20/24    static, on the robot subnet (added 2026-11-11)
 ```
 
-It is **not** on the `192.168.125.0/24` robot subnet. The laptop's "Ethernet 2"
-already carries a `169.254.125.10/16` address, so it can reach the Lynx directly.
-Management services enabled: **SSH (22), HTTP (80), HTTPS (443), Telnet (23), SNMP**.
+The YuMi is cabled to the Lynx but only answers on `192.168.125.1`, so
+the static address is what lets the Lynx (and apps on it with
+`netns host-os`, like the gateway) reach the robot. It was added with
+`configure` → `iface vlan1` → `inet static 192.168.125.20/24` → `leave`
+and saved with `copy running-config startup-config` (2026-11-11). The laptop's "Ethernet 2"
+has both `169.254.125.10/16` and `192.168.125.10/24`, so it reaches the
+Lynx on either address. Management services enabled: **SSH (22), HTTP
+(80), HTTPS (443), Telnet (23), SNMP**.
 
 ### SSH in
 
@@ -73,7 +80,9 @@ The Lynx is **already hosting the project's edge‑AI apps** via WeOS *app‑hos
 | `yololivetest` | `envoy-yololive-1.0` | YOLO live inference off the OAK (`OAK_TARGET=169.254.1.223`) | Created |
 | `yolowebtest` | `envoy-yoloweb-1.0` | YOLO + web viewer on port 8080 | Created |
 | `yolotest` | `yolophoto2` | YOLO still‑image test (own netns) | No image |
-| `camnettest` | `yoloncnn` | NCNN cam test (`CAP_NET_RAW`) | No image |
+| `gateway` | `gateway-cpp-0.3.0` (label `gatewaycpp`) | The C++ robot gateway, port 8000 ([gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md)) | Running (saved in startup-config, no autostart) |
+
+`camnettest` (NCNN cam test, image `yoloncnn` no longer present) was removed on 2026-11-11 to make room: WeOS allows 5 apps. The same day the running config was saved to the startup config; that also made permanent an earlier unsaved change by someone else (`lynxpicker` had replaced the hello-world app `app1`: image `hello-lynx-1.0`, `cmd /hello.sh`, own netns, autostart).
 
 Images live on **external media** (`external`, path `app/images`), and the apps
 reach the **OAK‑D camera at `169.254.1.223`** — the same camera the gateway uses.

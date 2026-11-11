@@ -192,7 +192,9 @@ Use `tree` inside any context to see everything settable below it, or consult
 
 The Lynx runs the fail-safe **Lynx-tier model** as a WeOS app. `app-hosting` (EXEC)
 manages running apps; `configure → app-hosting` defines them; `file app` manages the
-`.wmopkg` images.
+`.wmopkg` images. The full deployment walkthrough (build, import, define, start,
+update, script it) is [DEPLOY.md](DEPLOY.md). An app's output is in
+`show log app-<app>.log`; `app-hosting log <app>` may show nothing.
 
 ```sh
 # status
@@ -205,7 +207,7 @@ file app erase <name>
 app-hosting image                # show imported images
 app-hosting label <image> <lbl>  # (re)label an image so an app can reference it
 
-# run / observe an app  (app ids on this unit: lynxpicker, yolotest, camnettest,
+# run / observe an app  (app ids on this unit: lynxpicker, yolotest, gateway,
 #                         yololivetest, yolowebtest)
 app-hosting start   lynxpicker
 app-hosting stop    lynxpicker

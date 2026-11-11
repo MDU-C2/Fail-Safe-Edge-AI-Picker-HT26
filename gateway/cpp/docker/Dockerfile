@@ -170,6 +170,14 @@ FROM scratch AS runtime
 #
 COPY --from=build /src/gateway/cpp/build/release-size/gateway /sbin/init
 
+#
+# The clients file at its default path (relative to /), as the Python
+# image has it; only token hashes. A WeOS package keeps just the
+# filesystem, not ENTRYPOINT, so the app's cmd must give the
+# arguments: cmd "/sbin/init --host 0.0.0.0 --port 8000".
+#
+COPY gateway/auth_clients.json /gateway/auth_clients.json
+
 WORKDIR /
 
 EXPOSE 8000

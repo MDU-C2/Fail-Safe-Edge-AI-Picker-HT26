@@ -12,6 +12,7 @@
 #   gateway/cpp/dev.sh pytest-python [ARGS] Python suite against the Python gateway (Linux)
 #   gateway/cpp/dev.sh sanitize             unit tests + suite under ASan/UBSan and TSan
 #   gateway/cpp/dev.sh image                runtime image, with its sizes
+#   gateway/cpp/dev.sh wmopkg [VERSION]     WeOS package for the Lynx -> gateway/cpp/dist/ (see LYNX.md)
 #   gateway/cpp/dev.sh shell                a shell in the toolchain
 #
 # The repository is mounted at /src; the build trees live in the
@@ -121,6 +122,50 @@ case "$command" in
         docker images gateway-cpp
         ;;
 
+    wmopkg)
+        #
+        # WeOS app package for the Westermo Lynx (arm64): the runtime
+        # image's filesystem as a squashfs in a FIT image, made by
+        # Westermo's gateway/docker/generate-container.py. Written to
+        # gateway/cpp/dist/gateway-cpp-<VERSION>.wmopkg (default: the
+        # project version in CMakeLists.txt). Deploying: gateway/cpp/LYNX.md.
+        #
+        version=${1:-$(sed -n 's/^ *VERSION \([0-9.]*\)$/\1/p' "$REPO/gateway/cpp/CMakeLists.txt" | head -1)}
+        dist="$REPO/gateway/cpp/dist"
+        cd "$REPO"
+
+        docker build --platform linux/arm64 -f "$DOCKERFILE" --target runtime -t gateway-cpp .
+
+        #
+        # A .wmopkg keeps only the filesystem (no ENTRYPOINT), so
+        # export it rather than letting the generator rebuild the
+        # Dockerfile without our build cache.
+        #
+        mkdir -p "$dist"
+        container=$(docker create --platform linux/arm64 gateway-cpp)
+        docker export "$container" > "$dist/rootfs.tar"
+        docker rm "$container" > /dev/null
+
+        printf '%s\n' \
+            'FROM debian:trixie-slim' \
+            'RUN apt-get update && apt-get install -y --no-install-recommends device-tree-compiler file python3 squashfs-tools u-boot-tools && rm -rf /var/lib/apt/lists/*' \
+            | docker build -q -t gateway-cpp-wmopkg-tools - > /dev/null
+
+        rm -f "$dist/gateway-cpp-$version.wmopkg"
+        docker run --rm \
+            -v "$REPO/gateway/docker:/generator:ro" \
+            -v "$dist:/dist" \
+            -w /dist \
+            gateway-cpp-wmopkg-tools \
+            python3 /generator/generate-container.py -i rootfs.tar -t rootfs -n gateway-cpp -v "$version" \
+                -d "Robot gateway (C++), OAK camera" -a linux/arm64 > "$dist/generator.log" 2>&1 \
+            || { cat "$dist/generator.log"; exit 1; }
+        rm -f "$dist/rootfs.tar"
+
+        [ -f "$dist/gateway-cpp-$version.wmopkg" ] || { cat "$dist/generator.log"; exit 1; }
+        ls -l "$dist/gateway-cpp-$version.wmopkg"
+        ;;
+
     shell)
         docker run --rm -it \
             -v "$REPO:/src" \
@@ -130,7 +175,7 @@ case "$command" in
         ;;
 
     *)
-        sed -n '2,22p' "$0"
+        sed -n '2,23p' "$0"
         exit 2
         ;;
 esac
