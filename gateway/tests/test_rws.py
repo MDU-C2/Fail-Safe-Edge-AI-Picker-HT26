@@ -33,6 +33,7 @@ ENDMODULE
         "/robot/arms",
         "/robot/arms/left/pose",
         "/robot/arms/right/joints",
+        "/robot/arms/left/gripper",
         "/robot/rapid",
     ],
 )
@@ -52,6 +53,7 @@ def test_unreachable_controller_gives_503(
     [
         ("/robot/arms/middle/pose", {}),
         ("/robot/arms/middle/joints", {}),
+        ("/robot/arms/middle/gripper", {}),
         ("/robot/arms/left/pose", {"coordinate": "World"}),
         ("/robot/arms/left/pose", {"tool": "../tool0"}),
         ("/robot/arms/left/pose", {"wobj": "a" * 33}),
@@ -198,6 +200,15 @@ def test_rws_status_needs_read_permission_only(
         ("/robot/rws/home", {"acceleration": 0}),
         ("/robot/rws/gripper", {"action": "squeeze"}),
         ("/robot/rws/gripper", {}),
+        ("/robot/rws/gripper", {"action": "move"}),
+        ("/robot/rws/gripper", {"action": "move", "position": 26}),
+        ("/robot/rws/gripper", {"action": "move", "position": -1}),
+        ("/robot/rws/gripper", {"action": "move", "position": 10, "force": 5}),
+        ("/robot/rws/gripper", {"action": "open", "position": 10}),
+        ("/robot/rws/gripper", {"action": "grip", "position": 10}),
+        ("/robot/rws/gripper", {"action": "open", "force": 5}),
+        ("/robot/rws/gripper", {"action": "grip", "force": 0}),
+        ("/robot/rws/gripper", {"action": "grip", "force": 21}),
     ],
 )
 def test_rws_home_and_gripper_are_validated(
@@ -313,6 +324,8 @@ class FakeArmTasks:
                 ("move_speed", "[50,500,5000,1000]"),
                 ("move_acc", "100"),
                 ("move_ramp", "100"),
+                ("grip_pos", "25"),
+                ("grip_force", "20"),
             )
         }
 
@@ -463,6 +476,79 @@ def test_rws_motion_home_and_gripper() -> None:
 
     assert arms.gripper("right", "open").message == "DONE"
     assert ("T_ROB_R", "grip_cmd_right", '"OPEN"') in controller.writes
+
+
+def test_rws_motion_gripper_position_and_force() -> None:
+    controller = FakeArmTasks()
+    arms = motion(controller)
+
+    assert arms.gripper("left", "move", position=12.5).message == "DONE"
+
+    assert controller.writes[-3:] == [
+        ("T_ROB_L", "grip_cmd_left", '"MOVE"'),
+        ("T_ROB_L", "grip_pos_left", "12.500000"),
+        ("T_ROB_L", "move_request_left", "TRUE"),
+    ]
+
+    assert arms.gripper("right", "grip", force=4.5).message == "DONE"
+
+    assert controller.symbols["grip_force_right"] == "4.500000"
+
+    #
+    # Without a force: the SmartGripper default, so an earlier
+    # gentle grip does not carry over.
+    #
+    assert arms.gripper("right", "grip").message == "DONE"
+
+    assert controller.symbols["grip_force_right"] == "20.000000"
+
+    #
+    # open does not touch the position or the force.
+    #
+    controller.writes.clear()
+
+    assert arms.gripper("right", "open").message == "DONE"
+
+    assert not any(name.startswith(("grip_force", "grip_pos")) for _, name, _ in controller.writes)
+
+    with pytest.raises(ValueError):
+        arms.gripper("left", "move")
+
+    with pytest.raises(ValueError):
+        arms.gripper("left", "open", position=10.0)
+
+    with pytest.raises(ValueError):
+        arms.gripper("left", "open", force=10.0)
+
+
+def test_rws_motion_gripper_on_a_program_without_position_and_force() -> None:
+    controller = FakeArmTasks()
+
+    del controller.symbols["grip_pos_left"]
+    del controller.symbols["grip_force_left"]
+
+    arms = motion(controller)
+
+    #
+    # An older arm loop would take MOVE for an arm move to
+    # target_pos, so nothing is written.
+    #
+    with pytest.raises(MotionConflict, match="no gripper position variables"):
+        arms.gripper("left", "move", position=10.0)
+
+    with pytest.raises(MotionConflict, match="no gripper force variables"):
+        arms.gripper("left", "grip", force=5.0)
+
+    assert controller.writes == []
+
+    #
+    # A plain grip or open works as before (g_GripIn's own
+    # default force).
+    #
+    assert arms.gripper("left", "grip").message == "DONE"
+    assert arms.gripper("left", "open").message == "DONE"
+
+    assert not any(name.startswith("grip_force") for _, name, _ in controller.writes)
 
 
 def test_rws_motion_refuses_targets_outside_the_safe_zone() -> None:

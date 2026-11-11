@@ -3,8 +3,10 @@ Full camera-to-robot calibration for the YuMi left arm, through the gateway API.
 
 What it does, in one run:
   1. Reads the camera intrinsics (and lens distortion, if the gateway gives it).
-  2. Takes control, moves the arm HOME, then to each pose in POSES with the gripper in
-     CALIB_ROT. Step by step (Enter before every move) unless --auto.
+  2. Takes control, moves the arm HOME, then to START_POSE (high, where the gripper turns
+     into CALIB_ROT), then to each pose in POSES, and last to END_POSE (high). START_POSE
+     and END_POSE are only for getting in and out safely: no pictures, not in the fit.
+     Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
      the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
      stale depth frame from before the move is never used.
@@ -12,6 +14,8 @@ What it does, in one run:
      so images and poses can never get out of step.
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
      fit and on poses left out of it ("unseen"), then saves calibration.json.
+  6. If some poses are flagged (unseen error over twice the median), fits once more
+     without them and saves that as calibration.json instead.
 
 The robot is moved through the gateway's RWS API (POST /robot/rws/home and
 /robot/rws/move, see gateway/scripts/client_template.py), so the RAPID program in
@@ -52,17 +56,22 @@ GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 1
 # Gripper orientation during calibration: horizontal, flat side with the tag up.
 CALIB_ROT = (90, 0, 90)
 
-# Gripper TCP positions, mm, wobj0, table = z 0. The first pose stays high, because the
-# move from HOME turns the gripper into CALIB_ROT.
+# Gripper TCP positions, mm, wobj0, table = z 0.
+# START_POSE and END_POSE are high, right above the first and last pose, so the gripper turns
+# into CALIB_ROT well above the table and leaves straight up. Not measured, not in the fit.
+START_POSE = (470, 420, 200)
+END_POSE = (580, -10, 200)
+
+# The 20 measured poses: x 360-690, y -230 to 420, z 70-130. Each step goes to a neighbouring point.
 POSES = [
-    (600, 410, 140), (600, 250, 90), (600, 90, 170), (600, -70, 70), (600, -230, 110),
-    (520, -230, 140), (520, -70, 90), (520, 90, 110), (520, 250, 70), (520, 410, 90),
-    (440, 410, 90), (440, 250, 170), (440, 90, 70), (440, -70, 110), (440, -230, 140),
-    (380, -150, 170), (350, -70, 110), (350, 90, 90), (380, 250, 90), (350, 410, 140),
+    (470, 420, 110), (360, 420, 90), (360, 200, 70), (360, -10, 130), (410, -230, 90),
+    (470, -230, 130), (470, -10, 70), (470, 200, 110), (580, 200, 90), (580, 420, 70),
+    (630, 310, 130), (525, 310, 90), (625, 200, 110), (690, 200, 70), (690, -10, 110),
+    (635, -120, 70), (525, -120, 130), (470, -120, 90), (580, -230, 110), (580, -10, 130),
 ]
 
 TAG_ID = 0
-TAG_OFFSET = (-115, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
+TAG_OFFSET = (-122, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT (was -115; -7 from pick tests)
 SETTLE = 1.0                     # s to wait after the robot reports DONE
 FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
 
@@ -181,9 +190,9 @@ def goto(tcp, rot):
 # Measurement
 
 def find_tag(rgb):
-    """Tag corners in pixels, or None unless exactly one tag with TAG_ID is visible."""
+    """Tag corners in pixels, or None if no tag with TAG_ID is visible."""
     corners, ids, _ = detector.detectMarkers(cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY))
-    if ids is None or list(ids.ravel()).count(TAG_ID) != 1:
+    if ids is None or TAG_ID not in ids.ravel():
         return None
     return corners[list(ids.ravel()).index(TAG_ID)][0]
 
@@ -268,6 +277,7 @@ def solve(folder, exclude=()):
         unseen_xyz.append(si * Ri @ cam[i] + ti - rob[i])
     unseen_xyz = np.array(unseen_xyz)          # predicted minus real, mm, robot frame
     unseen = np.linalg.norm(unseen_xyz, axis=1)
+    flagged = [s["image"] for s, u in zip(samples, unseen) if u > 2 * np.median(unseen)]
 
     print(f"\n{'image':>5}  {'pose':>18}  {'fit':>8}  {'unseen':>8}  {'dx':>6}  {'dy':>6}  {'dz':>6}  {'depth':>7}")
     for s, e, u, d, p in zip(samples, err, unseen, unseen_xyz, cam):
@@ -293,6 +303,15 @@ def solve(folder, exclude=()):
     print(f"Saved calibration.json (in the session folder and next to this script)")
     if TAG_OFFSET == (0.0, 0.0, 0.0):
         print("TAG_OFFSET is (0, 0, 0): positions are off by the tag-to-TCP distance until it is measured.")
+    return flagged
+
+
+def solve_clean(folder, exclude=()):
+    """Fit, then fit again without the flagged poses. The second fit is the one saved."""
+    flagged = solve(folder, exclude)
+    if flagged:
+        print(f"\nRefitting without the flagged poses {flagged}:")
+        solve(folder, set(exclude) | set(flagged))
 
 
 # Robot run
@@ -316,6 +335,9 @@ def run(auto):
     if not ask("go HOME") or not home():
         release_control(lease)
         raise SystemExit("Stopped before the first pose")
+    if not ask(f"start pose {START_POSE}") or not goto(START_POSE, CALIB_ROT):
+        release_control(lease)
+        raise SystemExit("Stopped before the first pose (start pose not reached)")
 
     for n, pose in enumerate(POSES, 1):
         if not ask(f"pose {n}/{len(POSES)} {pose}"):
@@ -331,9 +353,11 @@ def run(auto):
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
+    print(f"Going to the end pose {END_POSE}")
+    goto(END_POSE, CALIB_ROT)
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
-    solve(folder)
+    solve_clean(folder)
 
 
 if __name__ == "__main__":
@@ -347,6 +371,6 @@ if __name__ == "__main__":
         ROBOT_URL = args.robot_url.rstrip("/")
 
     if args.fit:
-        solve(args.fit, set(args.exclude))
+        solve_clean(args.fit, set(args.exclude))
     else:
         run(args.auto)

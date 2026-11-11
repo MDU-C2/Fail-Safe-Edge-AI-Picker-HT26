@@ -235,6 +235,23 @@ class RwsClient:
             f"/rw/motionsystem/mechunits/{unit}/jointtarget"
         )[0]
 
+    def gripper_position(
+        self,
+        side: str,
+    ) -> float:
+        """SmartGripper finger position of side "L" or "R", in mm.
+
+        The gripper's own position signal (hand_ActualPosition_<side>,
+        0.1 mm), so it needs no RAPID. A controller without the
+        SmartGripper (RobotStudio) answers 404.
+        """
+
+        state = self.get_state(
+            f"/rw/iosystem/signals/Hand_{side}/hand_ActualPosition_{side}"
+        )[0]
+
+        return float(state["lvalue"]) / 10
+
     # ============================================================
     # Controller and RAPID state
     # ============================================================

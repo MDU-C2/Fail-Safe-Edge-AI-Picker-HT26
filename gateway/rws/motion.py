@@ -31,6 +31,26 @@ ARM_TASKS: dict[Arm, str] = {
 GRIPPER_COMMANDS = {
     "grip": "GRIP",
     "open": "OPEN",
+    "move": "MOVE",
+}
+
+GripperAction = Literal["grip", "open", "move"]
+
+#
+# Holding force of a grip without one, in N: the SmartGripper's own
+# default for g_GripIn, and its maximum.
+#
+DEFAULT_GRIP_FORCE = 20.0
+
+#
+# Variables added to rapid/SharedVars.mod later than the rest. An
+# older program on the controller lacks them and would refuse the
+# write half way through a job, so they are checked first.
+#
+NEWER_VARIABLES = {
+    "move_speed": "speed variables",
+    "grip_pos": "gripper position variables",
+    "grip_force": "gripper force variables",
 }
 
 
@@ -118,8 +138,9 @@ class RwsMotion:
     Services.
 
     Uses the PERS variables of rapid/SharedVars.mod: the
-    job is written first (target, go_home or grip_cmd, and for moves
-    and home the speed: move_speed, move_acc, move_ramp), then
+    job is written first (target, go_home or grip_cmd, for moves
+    and home the speed: move_speed, move_acc, move_ramp, for the
+    gripper grip_force or grip_pos), then
     move_request_<arm> is set to TRUE. The arm task does the job,
     writes move_ok_<arm> and clears move_request_<arm>, which is
     polled here.
@@ -208,17 +229,45 @@ class RwsMotion:
     def gripper(
         self,
         arm: Arm,
-        action: Literal["grip", "open"],
+        action: GripperAction,
         wait: bool = True,
+        position: float | None = None,
+        force: float | None = None,
     ) -> CommandResponse:
-        return self._run(
-            arm,
-            {
-                "go_home": "FALSE",
-                "grip_cmd": f'"{GRIPPER_COMMANDS[action]}"',
-            },
-            wait,
-        )
+        """Close ("grip"), open ("open") or move ("move") the gripper.
+
+        position is the opening between the fingers in mm for
+        move (g_MoveTo); force the holding force in N for grip
+        (g_GripIn), None for DEFAULT_GRIP_FORCE.
+        """
+
+        if (action == "move") != (position is not None):
+            raise ValueError("position is required for move and only for move")
+
+        if force is not None and action != "grip":
+            raise ValueError("force is only for grip")
+
+        values = {
+            "go_home": "FALSE",
+            "grip_cmd": f'"{GRIPPER_COMMANDS[action]}"',
+        }
+
+        optional = set()
+
+        if action == "move":
+            values["grip_pos"] = f"{position:.6f}"
+
+        if action == "grip":
+            values["grip_force"] = f"{DEFAULT_GRIP_FORCE if force is None else force:.6f}"
+
+            #
+            # A program from before grip_force grips with the
+            # default force anyway.
+            #
+            if force is None:
+                optional.add("grip_force")
+
+        return self._run(arm, values, wait, optional)
 
     def status(
         self,
@@ -342,23 +391,38 @@ class RwsMotion:
         arm: Arm,
         values: dict[str, str],
         wait: bool,
+        optional: set[str] = frozenset(),
     ) -> CommandResponse:
+        """Write the job and set move_request.
+
+        Of NEWER_VARIABLES, those in optional are left out when the
+        program lacks them; any other missing one refuses the job
+        before anything is written.
+        """
+
         if not self._busy[arm].acquire(blocking=False):
             raise MotionConflict(f"A {arm} arm job is already in progress")
 
         try:
             self._check_ready(arm)
 
-            #
-            # A program from before the speed variables would refuse
-            # the write half way through the job.
-            #
-            if "move_speed" in values:
+            values = dict(values)
+
+            for name, description in NEWER_VARIABLES.items():
+                if name not in values:
+                    continue
+
+                if name in optional:
+                    if not self._has_variable(arm, name):
+                        del values[name]
+
+                    continue
+
                 self._check_variable(
                     arm,
-                    "move_speed",
-                    f"The RAPID program in {ARM_TASKS[arm]} has no speed "
-                    f"variables (no move_speed_{arm}); upload rapid/ "
+                    name,
+                    f"The RAPID program in {ARM_TASKS[arm]} has no "
+                    f"{description} (no {name}_{arm}); upload rapid/ "
                     f"again (rapidctl.py upload)",
                 )
 
@@ -421,6 +485,14 @@ class RwsMotion:
         name: str,
         message: str,
     ) -> None:
+        if not self._has_variable(arm, name):
+            raise MotionConflict(message)
+
+    def _has_variable(
+        self,
+        arm: Arm,
+        name: str,
+    ) -> bool:
         try:
             self._read(arm, name)
 
@@ -428,7 +500,9 @@ class RwsMotion:
             if error.status_code != 400:
                 raise
 
-            raise MotionConflict(message) from error
+            return False
+
+        return True
 
     def _check_ready(
         self,
