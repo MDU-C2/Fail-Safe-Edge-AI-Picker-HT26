@@ -32,7 +32,7 @@ the clients of `gateway/auth_clients.json`).
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
 | Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`; enabled, no autostart; saved in the startup config (2026-11-11), so it survives a reboot but must be started by hand (`app-hosting start gateway`) |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`; enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
