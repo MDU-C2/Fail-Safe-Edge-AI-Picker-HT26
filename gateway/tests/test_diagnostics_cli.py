@@ -372,3 +372,94 @@ def test_controller_panels_render() -> None:
     assert "BUSY" in text and "DONE" in text
     assert "motoron" in text and "AUTO" in text
     assert "LeftArm, SharedVars" in text
+
+
+def test_dashboard_shows_both_arms() -> None:
+    """The watch layout gives the arms panel a fixed height; no arm may be cut off."""
+
+    def ok(data: object) -> "diag.Result":
+        return diag.Result(path="/", status=200, data=data)
+
+    results = {
+        "health": ok(
+            {
+                "status": "ok",
+                "security_mode": "strict",
+                "camera": {"ok": True},
+                "robot_controller": {"ok": True, "reachable": True},
+            }
+        ),
+        "arms": ok({"left": pose(400.0), "right": pose(450.0)}),
+    }
+    gateway = diag.Gateway(
+        url="http://127.0.0.1:9/api/v1",
+        token=None,
+        client="diagnostics",
+        verify=True,
+        timeout=1,
+    )
+
+    for width in (100, 140):
+        console = Console(file=io.StringIO(), width=width, height=40, record=True)
+        console.print(diag.dashboard(gateway, results, diag.View(), None, 40))
+        text = console.export_text()
+
+        assert "400.0" in text, width
+        assert "450.0" in text, width
+
+
+def test_taller_terminal_shows_more_events() -> None:
+    """The events panel gets every line the other panels do not need."""
+
+    def ok(data: object) -> "diag.Result":
+        return diag.Result(path="/", status=200, data=data)
+
+    results = {
+        "health": ok(
+            {
+                "status": "ok",
+                "security_mode": "development",
+                "camera": {"ok": True},
+                "robot_controller": {"ok": True, "reachable": True},
+            }
+        ),
+        "arms": ok({"left": pose(400.0), "right": pose(450.0)}),
+    }
+    gateway = diag.Gateway(
+        url="http://127.0.0.1:9/api/v1",
+        token=None,
+        client="diagnostics",
+        verify=True,
+        timeout=1,
+    )
+    feed = diag.EventFeed(url="ws://127.0.0.1:9", client="diagnostics", events=[])
+    feed.state = "connected"
+
+    for number in range(200):
+        feed.events_received.append(
+            diag.ReceivedEvent(
+                received_at=diag.datetime.now(diag.timezone.utc),
+                message={"type": "control.renewed", "data": {"n": f"event{number:03d}"}},
+            )
+        )
+
+    def visible(height: int) -> list[str]:
+        console = Console(file=io.StringIO(), width=120, height=height, record=True)
+        console.print(diag.dashboard(gateway, results, diag.View(), feed, height, 120))
+        text = console.export_text()
+
+        assert text.count("\n") <= height + 1
+        assert "450.0" in text
+
+        return [line for line in text.splitlines() if "n=event" in line]
+
+    shown = {height: visible(height) for height in (40, 60, 90)}
+
+    assert len(shown[40]) >= diag.MIN_EVENTS_HEIGHT - 2
+    assert len(shown[40]) < len(shown[60]) < len(shown[90])
+
+    #
+    # 30 more lines of terminal, 30 more events, and always the newest.
+    #
+    assert len(shown[90]) - len(shown[60]) == 30
+    assert all("event199" in lines[-1] for lines in shown.values())

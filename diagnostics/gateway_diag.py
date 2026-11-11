@@ -32,6 +32,7 @@ Needs: requests, websockets, rich (diagnostics/requirements.txt)
 """
 
 import argparse
+import io
 import json
 import math
 import os
@@ -72,6 +73,11 @@ TARGETS = {
 }
 
 ARMS = ("left", "right")
+
+#
+# Panel border (2) + table header and rule (2) + one row per arm.
+#
+ARMS_PANEL_HEIGHT = 4 + len(ARMS)
 
 #
 # Every event family in gateway/events/permissions.py; diagnostics
@@ -669,7 +675,11 @@ def arms_panel(
     if arms is None or not arms.ok:
         return Panel(failure(arms), title="arms (mm, deg)", title_align="left")
 
-    table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+    #
+    # No top or bottom edge: the dashboard gives this panel exactly
+    # ARMS_PANEL_HEIGHT lines (header, rule, one row per arm, border).
+    #
+    table = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False, show_edge=False)
 
     for column in ("arm", "x", "y", "z", "rx", "ry", "rz", "cf", "gripper", "tool / wobj"):
         table.add_column(column, justify="left" if column in ("arm", "cf", "tool / wobj") else "right", no_wrap=True)
@@ -937,39 +947,100 @@ def command_status(
     return exit_code(results)
 
 
+#
+# Lines the events panel keeps however small the terminal is.
+#
+MIN_EVENTS_HEIGHT = 6
+
+HEADER_HEIGHT = 4
+
+
+def rendered_height(
+    renderable: Any,
+    width: int,
+) -> int:
+    """Lines the renderable takes at this width, at its natural height."""
+
+    console = Console(file=io.StringIO(), width=max(width, 20))
+
+    return len(console.render_lines(renderable, console.options, pad=False))
+
+
 def dashboard(
     gateway: Gateway,
     results: dict[str, Result],
     view: View,
     feed: "EventFeed | None",
     height: int,
+    width: int = 120,
 ) -> Layout:
+    """
+    The watch screen. Every panel above the events gets the lines it
+    needs at this width; the events panel gets all the rest, so a
+    taller terminal shows more events.
+    """
+
     root = Layout()
     mode = (results["health"].data or {}).get("security_mode") if results["health"].ok else None
-    events_height = min(max(height // 4, 6), 16)
+    header = Layout(header_panel(gateway, results, view), name="header", size=HEADER_HEIGHT)
 
+    if not results["health"].ok:
+        events_height = max(height - HEADER_HEIGHT, MIN_EVENTS_HEIGHT)
+
+        root.split_column(
+            header,
+            Layout(events_panel(feed, mode, events_height), name="events", size=events_height),
+        )
+
+        return root
+
+    #
+    # Same split as the body's 2:3 ratio below.
+    #
+    left_width = width * 2 // 5
+    right_width = width - left_width
+
+    camera = camera_panel(results, view)
+    robot = robot_panel(results)
+    control = control_panel(results)
+    rapid = rapid_panel(results)
+
+    camera_height = rendered_height(camera, left_width)
+    control_height = rendered_height(control, right_width)
+
+    body_height = max(
+        camera_height + rendered_height(robot, left_width),
+        control_height + rendered_height(rapid, right_width),
+    )
+
+    events_height = max(
+        height - HEADER_HEIGHT - ARMS_PANEL_HEIGHT - body_height,
+        MIN_EVENTS_HEIGHT,
+    )
+
+    #
+    # The arms table is wide (ten columns), so it gets the full width.
+    # The body takes what the events leave: on a terminal too small
+    # for everything the robot and RAPID panels shrink, not the events.
+    #
     root.split_column(
-        Layout(header_panel(gateway, results, view), name="header", size=4),
+        header,
+        Layout(arms_panel(results), name="arms", size=ARMS_PANEL_HEIGHT),
         Layout(name="body"),
         Layout(events_panel(feed, mode, events_height), name="events", size=events_height),
     )
-
-    if not results["health"].ok:
-        root["body"].update(Text(""))
-        return root
 
     root["body"].split_row(
         Layout(name="left", ratio=2),
         Layout(name="right", ratio=3),
     )
     root["left"].split_column(
-        Layout(camera_panel(results, view), name="camera", size=11),
-        Layout(robot_panel(results), name="robot"),
+        Layout(camera, name="camera", size=camera_height),
+        Layout(robot, name="robot"),
     )
     root["right"].split_column(
-        Layout(arms_panel(results), name="arms", size=6),
-        Layout(control_panel(results), name="control", size=6),
-        Layout(rapid_panel(results), name="rapid"),
+        Layout(control, name="control", size=control_height),
+        Layout(rapid, name="rapid"),
     )
 
     return root
@@ -985,7 +1056,7 @@ def command_watch(
     results: dict[str, Result] = {"health": Result(path="/health", error="not polled yet")}
 
     def layout() -> Layout:
-        return dashboard(gateway, results, view, feed, console.size.height)
+        return dashboard(gateway, results, view, feed, console.size.height, console.size.width)
 
     try:
         with Live(layout(), console=console, screen=True, auto_refresh=False) as live:
