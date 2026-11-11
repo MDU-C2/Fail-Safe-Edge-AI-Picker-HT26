@@ -14,3 +14,6 @@ capture_and_detect/data
 /calibration/calibration_runs
 /client_tokens.json
 /.idea
+
+# Westermo Lynx device config snapshot — kept local, not shared
+/lynx/running-config.sanitized.json

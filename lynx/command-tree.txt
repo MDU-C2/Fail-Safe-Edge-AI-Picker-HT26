@@ -1,0 +1,1278 @@
+/
+ |-- aaa                 Show Status of AAA
+ |-- aggregates          Status of aggregated ports
+ |-- alarm               Alarm status, or show alarm log
+ |-- arp                 Show CPU ARP cache
+ |-- audit /
+ |   |-- list          List the audit Categories and EventIDs that exist in the system.
+ |   |-- raw           Show the audit log syslog file.
+ |   |-- raw-category  Show the audit log syslog file by category.
+ |   |-- show          Show all the entries in the audit ring buffer.
+ |   |-- status        Show the audit ring buffer status.
+ |   |-- last          Show the last NUMBER entries in the audit ring buffer.
+ |   |-- range         Show a range of entries in the audit ring buffer.
+ |   |-- time          Show all the entries in the audit ring buffer within the time range.
+ |   |-- from          Show all the entries in the audit ring buffer from the provided time.
+ |   |-- to            Show all the entries in the audit ring buffer up to the provided time.
+ |   |-- search        Show the audit ring buffer entries that match the search STRING.
+ |   |-- category      Show the audit ring buffer entries for the specified CATEGORY.
+ |    `- clear         Clear the audit ring buffer.
+ |-- batch               Non-interactive mode
+ |-- clear               Clear screen.
+ |-- pki /
+ |   |-- generate  Generate a self-signed X.509 RSA type certificate or an OpenVPN static key (PSK
+ |   |-- import    Import a certificate or key from a source (FTP/TFTP/SCP/SFTP/HTTP/HTTPS/USB).
+ |   |-- remove    Remove PKI artifacts.
+ |   |-- trigger   Trigger the pki daemon to re-read the config and send enrollment/renewal
+ |   |-- cert /
+ |   |   |-- show    Overview of certificates, keys, root-store CA's, or a detailed view of a single
+ |   |   |-- enroll /
+ |   |   |   |-- server             Label of the enrollement server that should handle this certificate.
+ |   |   |   |-- password           Challenge password to include in the certificate request.
+ |   |   |   |-- dn                 Subject distinguished name of this certificate.
+ |   |   |   |-- renewal-threshold  Percentage (0-99 [%]) of elapsed validity time before renewal is called. 0=neve
+ |   |   |   |-- san                Subject alternative name.
+ |   |   |   |-- key-size           Key length / Modulus size
+ |   |   |   |-- profile            Certificate profile name to be included in the certificate request.
+ |   |   |    `- show               Certificate overview
+ |   |    `- remove  Remove certificate related artifacts.
+ |    `- show      Show state of PKI daemon and enrollment servers.
+ |-- cert                DEPRECATED! Use pki exec context instead.
+ |-- dhcp                Manage DHCP client.
+ |-- dhcp-clients        Show active DHCP clients.
+ |-- dhcp-server         Manage DHCP Server.
+ |-- sensor              Display environment status: temperature, power, digital in and SFP DDM.
+ |-- fdb                 Forwarding database (ATU/MAC)
+ |-- partitions          Show partition table
+ |-- flash-table         Show active flash partition table.
+ |-- frnt                Show/manage status/stats of FRNT rings
+ |-- ring                Status of ring protocols
+ |-- mrp                 Status of MRP rings
+ |-- coupling            Status of Coupling instance(s).
+ |-- history             Show command history
+ |-- ip /
+ |   |-- name-server      Domain Name Server (DNS) Info.
+ |   |-- domain           Default domain name
+ |   |-- hosts            Show local host table in different formats.
+ |   |-- default-gateway  System default gateway
+ |   |-- ddns             Control DDNS client or show status.
+ |   |-- route            System routing table.
+ |   |-- mroute           System multicast routing table.
+ |   |-- policy-route     System policy routing table.
+ |   |-- route-monitor    System monitor routing.
+ |   |-- igmp             Status of IGMP Snooping daemon.
+ |   |-- firewall         Firewall rules, counters, conntrack.
+ |   |-- forwarding       IP unicast routing setting
+ |   |-- rip              Status of RIP daemon.
+ |   |-- ospf             Status of OSFP daemon.
+ |   |-- pim              Status of PIM daemon.
+ |    `- mptcpd           Show the status of openvpn mptcp connection
+ |-- ipv6 /
+ |   |-- neighbors   Manage IPv6 neighbor(s).
+ |   |-- mld         Status of MLD Querier daemon.
+ |   |-- route       System routing table.
+ |   |-- forwarding  IPv6 forwarding setting.
+ |    `- show        Show summary of IPv6 settings.
+ |-- iface               Interface overview
+ |-- ifaces              Interfaces overview
+ |-- interactive         Interactive mode
+ |-- lldp                LLDP/CDP neighbours
+ |-- lockout-policy      Account lockout policy
+ |-- monitor             Port Monitor Overview
+ |-- port                Manage or show port status.
+ |-- ptp /
+ |   |-- network  Show PTP network summary
+ |   |-- query    Query network for PTP management response.
+ |    `- show     Show a summary of PTP status.
+ |-- package /
+ |   |-- remove   Remove installed package(s)
+ |   |-- install  Install package
+ |   |-- show     Show package list
+ |-- port-map            
+ |-- poe                 Status of PoE
+ |-- policy              Policy Filtering
+ |-- rmon /
+ |   |-- statistics   Show port statistics
+ |    `- clear-stats  Clear port statistics.
+ |-- spanning-tree       Status of Spanning Tree (RSTP).
+ |-- tunnel /
+ |   |-- ipsec      Restart or monitor the IPsec daemon.
+ |   |-- ssl        Restart one or all tunnels
+ |   |-- gre        Show status of configured GRE tunnel(s)
+ |    `- wireguard  Show status of configured WireGuard tunnel(s)
+ |-- vlan                IEEE 802.1Q VLAN
+ |-- ospf                
+ |-- rip                 
+ |-- vrrp                Status of VRRP daemon.
+ |-- vrrp-legacy         Status of VRRP daemon.
+ |-- ipconfig            Show legacy neighbour devices.
+ |-- ipcalc              An IP subnet calculator
+ |-- ping                Ping a network host or group.
+ |-- show                Show summary/status of COMMAND, or display contents of FILE.
+ |-- factory-config      Factory configuration, default settings
+ |-- logfile             Show contents of a log file
+ |-- running-config      Currently running configuration, RAM only
+ |-- startup-config      Startup configuration, from built-in flash, USB, or SD card
+ |-- safe-config         Safe configuration, from built-in flash, USB, or SD card
+ |-- no-config           No configuration, from built-in flash, USB, or SD card
+ |-- ntp                 Show/Manage NTP clients
+ |-- ssh                 Secure shell login to another host
+ |-- ssh-host-key        Ssh host key management
+ |-- telnet              Telnet login to another host
+ |-- tcpdump             Capture traffic on a network interface.
+ |-- traceroute          Trace the route packets take to a network host.
+ |-- nslookup            Query the nameserver for the IP address of the given HOST optionally using a sp
+ |-- shell               
+ |-- configure /
+ |   |-- terminal       
+ |   |-- aaa /
+ |   |   |-- user /
+ |   |   |   |-- enable        Enable or disable this user in the system.
+ |   |   |   |-- password      Set the user password
+ |   |   |   |-- hash          Set the user password in hash format.
+ |   |   |   |-- role          Set role of the user. Default role is viewer.
+ |   |   |   |-- show          Show summary of settings.
+ |   |   |    `- ssh-user-key  ssh user key management
+ |   |   |-- username         Change admin password.
+ |   |   |-- password-policy /
+ |   |   |   |-- enable               Enable/Disable password policy.
+ |   |   |   |-- min-length           Set password policy min length <8-64>. Max length is 64.	Default: 14
+ |   |   |   |-- uppercases           Specify number of uppercase letters <0-64>.	Default: 0.
+ |   |   |   |-- lowercases           Specify number of lowercase letters <0-64>.	Default: 0.
+ |   |   |   |-- digits               Specify number of digits <0-64>.		Default: 0.
+ |   |   |   |-- specials             Specify number of special characters <0-64>.	Default: 0.
+ |   |   |   |-- max-repeat           Reject passwords with more than N consecutive characters <0-64>.	Default: 0.
+ |   |   |   |-- consecutive-letters  Enable/Disable consecutive letter policy.
+ |   |   |   |-- consecutive-length   Set consecutive letters length <4-8>.	Default: 4.
+ |   |   |   |-- prevent-reuse        Enable/Disable preventing reuse of current password.
+ |   |   |   |-- reject-username      Enable/Disable reject username in password.			Default: Enable.
+ |   |   |    `- show                 Show an overview of the policy settings.
+ |   |   |-- lockout-policy /
+ |   |   |   |-- enable       Enable/disable account lockout
+ |   |   |   |-- deny         Number of failed login attempts before lockout
+ |   |   |   |-- deny-admin   Enable to even allow admin to be locked out
+ |   |   |   |-- unlock-time  Duration of lockout (s)
+ |   |   |   |-- exclude      Interface to exclude.
+ |   |   |    `- show         Show account lockout settings
+ |   |   |-- auth-chain /
+ |   |   |   |-- order           The order in which the authentication chain entries are evaluated.
+ |   |   |   |-- local-fallback  Enable use of local-account if the end of the authentication chain is reached.
+ |   |   |   |-- on-reject       Control what happens when an entry in the authentication chain explicitly rejec
+ |   |   |    `- show            Show authentication chain configuration
+ |   |   |-- local-db /
+ |   |   |   |-- username     Add a user to this local db.
+ |   |   |   |-- description  Free form description of this local db.
+ |   |   |    `- show         Show summary of settings
+ |   |   |-- remote-server /
+ |   |   |   |-- type                   Remote server type.
+ |   |   |   |-- encryption-type        Encryption type.
+ |   |   |   |-- encryption-type        Encryption type.
+ |   |   |   |-- ca-cert                Public CA cert label to validate remote server.
+ |   |   |   |-- client-cert            P12/PFX client package label to send to server for validation.
+ |   |   |   |-- message-authenticator  Control validation of the message authenticator attribute.
+ |   |   |   |-- description            Free form description of this remote server.
+ |   |   |   |-- address                Address of remote server.
+ |   |   |   |-- password               Password for remote server. May not be empty.
+ |   |   |   |-- auth-port              Authentication port to connect to on remote server.
+ |   |   |   |-- timeout                Abort trying to connect to server after this long.
+ |   |   |    `- show                   Show summary of settings
+ |   |   |-- server-group /
+ |   |   |   |-- description  Free form description of this server group.
+ |   |   |   |-- server       Remote server(s) to authenticate against.
+ |   |   |    `- show         Show summary of settings
+ |   |   |-- mac-auth /
+ |   |   |   |-- enable       Activate, or deactivate this auth instance.
+ |   |   |   |-- description  Free form description of this mac-auth.
+ |   |   |   |-- mac          MAC address pattern.
+ |   |   |    `- show         Show summary
+ |   |    `- show             Show summary of aaa settings
+ |   |-- alarm /
+ |   |   |-- action /
+ |   |   |   |-- target  Set target.
+ |   |   |   |-- port    Control admin status of a port.
+ |   |   |   |-- iface   Control admin status of an interface.
+ |   |   |    `- show    Summary of settings
+ |   |   |-- trigger /
+ |   |   |   |-- action         Connect trigger to an action.
+ |   |   |   |-- condition      Set trigger condition.
+ |   |   |   |-- enable         Enable or disable trigger.
+ |   |   |   |-- persistent     Set or clear persistent flag for trigger.
+ |   |   |   |-- port           Set which ports to trigger alarm on.
+ |   |   |   |-- instance       Set which instance to monitor.
+ |   |   |   |-- sample         Set type of sampling and sampling interval.
+ |   |   |   |-- sensor         Set which sensor to trigger alarm on.
+ |   |   |   |-- severity       Set severity level.
+ |   |   |   |-- threshold      Set threshold level.
+ |   |   |   |-- outbound       Specify the interface or IP address used
+ |   |   |   |-- peer           Peer to target
+ |   |   |   |-- number         Number of packets received/lost (Default: 3)
+ |   |   |   |-- interval       Frequency between samples (Default:3)
+ |   |   |   |-- initial-state  Initial alarm state for trigger.
+ |   |   |   |-- protocol       Set which ring protocol to trigger alarm on.
+ |   |   |   |-- ring-id        Set which ring-id to trigger alarm on.
+ |   |   |   |-- media-name     The name of the media.
+ |   |   |    `- show           Summary of settings
+ |   |   |-- types         Show available trigger types
+ |   |   |-- summary-trap  Enable Summary alarm traps
+ |   |    `- show          Show triggers
+ |   |-- audit /
+ |   |   |-- enable  Enable or disable audit logging.
+ |   |   |-- syslog  Enable or disable sending audit log messages to syslog.
+ |   |    `- show    Show summary.
+ |   |-- lag /
+ |   |   |-- type     Mode/operation of port set
+ |   |   |-- ports    Set of ports to aggregate
+ |   |   |-- mode     Set LACP mode
+ |   |   |-- timeout  Set LACP timeout
+ |   |    `- show     Show an overview of the settings.
+ |   |-- port /
+ |   |   |-- enable          Enable/Disable port
+ |   |   |-- disable         
+ |   |   |-- auto-negotiate  Enable/Disable auto negotiate.
+ |   |   |-- speed-duplex    Speed and duplex, or advertisement mask if auto-negotiate.
+ |   |   |-- fastlink        Improves connection times for links
+ |   |   |-- gbit-cu-master  Configures 1000Mb/s copper autonegotiation role
+ |   |   |-- flow-control    Set flow control, sending and reacting to pause frames.
+ |   |   |-- priority        Priority value, used in combination with priority-mode 'port'.
+ |   |   |-- priority-mode   - port  : ignore priority of any incoming packet, and apply pre-configured
+ |   |   |-- show            Show summary of settings
+ |   |   |-- rate-limit /
+ |   |   |   |-- show           Show summary of settings
+ |   |   |   |-- ingress        Inbound traffic, storm limiting, in kbps/kfps.
+ |   |   |   |-- egress         Outbound traffic maximum bandwidth, in kbps.
+ |   |   |    `- storm-control  When ingress rate limit threshold is reached, the port will be brought down
+ |   |   |-- health-monitor /
+ |   |   |   |-- show           Show summary of settings
+ |   |   |    `- state-changes  If <THRESHOLD> link state changes occur within <WINDOW> seconds, the port
+ |   |   |-- mdix-mode       Cable MDI/MDIX crossover (Rx/Tx)
+ |   |   |-- default-vid     Default VID for untagged frames
+ |   |   |-- preferred       Select preferred media for combo ports: auto, tp, fibre
+ |   |   |-- description     Free form description of this port 
+ |   |   |-- learning        Set learning (switch/hub) mode, default enabled
+ |   |   |-- bridge-group    Set bridge port group id
+ |   |    `- detailed        Show detailed port information.
+ |   |-- ports /
+ |   |   |-- enable          Enable/Disable port
+ |   |   |-- disable         
+ |   |   |-- auto-negotiate  Enable/Disable auto negotiate.
+ |   |   |-- speed-duplex    Speed and duplex, or advertisement mask if auto-negotiate.
+ |   |   |-- fastlink        Improves connection times for links
+ |   |   |-- gbit-cu-master  Configures 1000Mb/s copper autonegotiation role
+ |   |   |-- flow-control    Set flow control, sending and reacting to pause frames.
+ |   |   |-- priority        Priority value, used in combination with priority-mode 'port'.
+ |   |   |-- priority-mode   - port  : ignore priority of any incoming packet, and apply pre-configured
+ |   |   |-- show            Show summary of settings
+ |   |   |-- rate-limit /
+ |   |   |   |-- show           Show summary of settings
+ |   |   |   |-- ingress        Inbound traffic, storm limiting, in kbps/kfps.
+ |   |   |   |-- egress         Outbound traffic maximum bandwidth, in kbps.
+ |   |   |    `- storm-control  When ingress rate limit threshold is reached, the port will be brought down
+ |   |   |-- health-monitor /
+ |   |   |   |-- show           Show summary of settings
+ |   |   |    `- state-changes  If <THRESHOLD> link state changes occur within <WINDOW> seconds, the port
+ |   |   |-- mdix-mode       Cable MDI/MDIX crossover (Rx/Tx)
+ |   |   |-- default-vid     Default VID for untagged frames
+ |   |   |-- preferred       Select preferred media for combo ports: auto, tp, fibre
+ |   |   |-- description     Free form description of this port 
+ |   |   |-- learning        Set learning (switch/hub) mode, default enabled
+ |   |   |-- bridge-group    Set bridge port group id
+ |   |    `- detailed        Show detailed port information.
+ |   |-- vlan /
+ |   |   |-- name                Set name, or description, of VLAN
+ |   |   |-- tagged              Set tagged ports
+ |   |   |-- untagged            Set untagged ports
+ |   |   |-- multicast-snooping  Enable, or disable IGMP/MLD snooping
+ |   |   |-- nest                Set untagged port(s) nest policy
+ |   |    `- show                Show summary of VLAN settings
+ |   |-- vlans /
+ |   |   |-- unique-macdb         
+ |   |   |-- vlan-iface-mac-mode  Set the default mac assignment mode for all vlan ifaces. This
+ |   |    `- show                 Show summary of settings
+ |   |-- vrf /
+ |   |   |-- show    Show summary of VRF settings
+ |   |   |-- enable  Enable, or disable this VRF instance
+ |   |    `- iface   Assign interface to VRF
+ |   |-- iface /
+ |   |   |-- inet /
+ |   |   |   |-- clientid  DHCP client ID, default:disabled (MAC)
+ |   |   |   |-- arping    Enable ARP-ping option in DHCP client
+ |   |   |   |-- option    DHCP option(s) to request
+ |   |   |    `- show      Show summary of settings
+ |   |   |-- inet6 /
+ |   |   |    `- show  Show summary of settings
+ |   |   |-- enable      Set interface administratively up/down.
+ |   |   |-- enable      Set interface administratively up/down.
+ |   |   |-- shutdown    Shutdown the interface, same as "no up"
+ |   |   |-- mac         Change, or restore, MAC address of interface.
+ |   |   |-- mtu         Set maximum transfer unit, MTU, of interface.
+ |   |   |-- redirect    Control the sending of ICMP redirect.
+ |   |   |-- proxy-arp   Enable or disable Proxy ARP on this interface.
+ |   |   |-- arp-notify  Enable or disable sending gratuitous ARP on this interface.
+ |   |   |-- arp-accept  Enable or disable accepting gratuitous ARP on this interface.
+ |   |   |-- arp-watch /
+ |   |   |   |-- report  Select how ARP watch events should be reported.
+ |   |   |   |-- event   Configure which ARP events should be monitored and reported.
+ |   |   |    `- show    Show summary of ARP watch settings.
+ |   |   |-- ip-watch    Enable IP watch on this interface
+ |   |   |-- name        Show interface name
+ |   |   |-- distance    Administrative distance for routes learned on this interface.
+ |   |   |-- ospf /
+ |   |   |   |-- passive              Control passive-interface setting for OSPF on this interface.
+ |   |   |   |-- priority             Designated Router (DR) election priority for this interface.
+ |   |   |   |-- cost                 Link cost, default: 10
+ |   |   |   |-- hello-interval       Hello interval, default: 10
+ |   |   |   |-- dead-interval        Dead interval, default: 40
+ |   |   |   |-- network              Explicitly set the OSPF network type.
+ |   |   |   |-- auth                 Authentication for OSPF packets, Default: None.
+ |   |   |   |-- retransmit-interval  Set time between retransmitting lost link state advertisements.
+ |   |   |   |-- transmit-delay       Set link state transmit delay.
+ |   |   |    `- show                 Show summary of settings.
+ |   |   |-- rip /
+ |   |   |   |-- passive          Control passive-interface setting for RIP on this interface.
+ |   |   |   |-- split-horizon    Enable, or disable, split horizon on this interface, default: Enabled.
+ |   |   |   |-- send-version     RIP version to send on this interface, default: Auto
+ |   |   |   |-- receive-version  RIP version to receive on this interface, default: Auto
+ |   |   |   |-- auth             Authentication for RIP packets, Default: None.
+ |   |   |    `- show             Show summary of settings.
+ |   |   |-- pim /
+ |   |   |   |-- priority        Designated Router (DR) election priority for this interface.
+ |   |   |   |-- hello-interval  Set the pim hello interval for the iface.
+ |   |   |   |-- hold-interval   Set the PIM hold interval for the iface.
+ |   |   |   |-- passive         Control passive-interface setting for PIM on this interface.
+ |   |   |    `- show            Show summary of settings.
+ |   |    `- show        Show summary of interface settings
+ |   |-- ifaces         
+ |   |-- ip /
+ |   |   |-- default-gateway                        Set default gateway (use route command instead)
+ |   |   |-- firewall /
+ |   |   |   |-- enable        Enable the firewall
+ |   |   |   |-- input         Manage input rules.
+ |   |   |   |-- forward       Manage forwarding rules.
+ |   |   |   |-- nat           Manage Network Address Translation rules.
+ |   |   |   |-- port-forward  Manage port forwarding rules.
+ |   |   |   |-- prerouting    Manage prerouting rules.
+ |   |   |   |-- policy        Set default filter policy.
+ |   |   |   |-- move          Reorder rules.
+ |   |   |   |-- counter       Show or modify counters
+ |   |   |   |-- alg           Application Level Gateway (NAT) helpers.
+ |   |   |   |-- log           Handle logging for the firewall.
+ |   |   |    `- show          Show all rules
+ |   |   |-- stateless-nat /
+ |   |   |   |-- dnat     Perform stateless network address translation, NAT, on the IP
+ |   |   |   |-- passive  Set existing rule active/passive.
+ |   |   |   |-- move     Reorder rules. Default table: filter
+ |   |   |    `- show     Show summary
+ |   |   |-- ddns /
+ |   |   |   |-- enable       Enable DDNS service
+ |   |   |   |-- interval     Set IP address update interval (in sec). Max 10 days.
+ |   |   |   |-- ca-store     Choose root CA certificate store.
+ |   |   |   |-- provider-id /
+ |   |   |   |   |-- provider        Set name of builtin DDNS service provider.
+ |   |   |   |   |-- custom          Set name of custom DDNS service provider.
+ |   |   |   |   |-- server          Set custom DDNS server and path
+ |   |   |   |   |-- checkip-server  Set DDNS checkip server and path
+ |   |   |   |   |-- checkip-ssl     Enable HTTPS, for checkip server that support it. Default: HTTP
+ |   |   |   |   |-- ssl             Enable/Disable HTTPS. Default: Enabled
+ |   |   |   |   |-- username        Set username and password for this provider. Password can be in hashed form.
+ |   |   |   |   |-- password        Set password for this provider as a plain text or hashed.
+ |   |   |   |   |-- hostname        Set up to 7 DNS hostname/alias.
+ |   |   |   |    `- show            DDNS Provider overview
+ |   |   |    `- show         DDNS configuration overview
+ |   |   |-- icmp /
+ |   |   |   |-- broadcast-ping  Enable reply to broadcast pings
+ |   |   |    `- show            Show summary.
+ |   |   |-- multicast-snooping                     Allow per VLAN IGMP/MLD snooping, or disable it entirely
+ |   |   |-- multicast-querier                      IGMP/MLD snooping querier mode
+ |   |   |-- multicast-querier-robustness           Control IGMP/MLD querier robustness value, QRV.
+ |   |   |-- multicast-proxy-query                  Allow sending IGMP query with source IP 0.0.0.0 in proxy mode
+ |   |   |-- multicast-querier-interval             IGMP/MLD query interval in seconds
+ |   |   |-- multicast-fast-leave                   IGMP/MLD Fast Leave (access) ports. Default: None
+ |   |   |-- multicast-router-timeout               Timeout for learned multicast routers.
+ |   |   |-- multicast-router-ports                 Static multicast router ports
+ |   |   |-- multicast-flood-unknown                Control flooding of unknown multicast.
+ |   |   |-- multicast-snooping-boundary            Specify port(s) to act as a boundary for IGMP/MLD signaling.
+ |   |   |-- multicast-snooping-boundary-direction  Specify the direction of the boundary for IGMP/MLD signaling.
+ |   |   |-- route                                  Manage static routes.
+ |   |   |-- policy-route /
+ |   |   |   |-- match       Set the match rule(s) specifying the policy how this route is selected.
+ |   |   |   |-- next-hop    Specify the next hop IP address for frames matching the policy.
+ |   |   |   |-- in-iface    Specify the incoming iface(s) to consider for the route.
+ |   |   |   |-- preference  Set the preference value of the policy-based route instance.
+ |   |   |   |-- enable      Enable or disable the policy-based route instance.
+ |   |   |    `- show        Show the policy-based route configuration
+ |   |   |-- mroute                                 Manage static multicast routes.
+ |   |   |-- multicast-forwarding                   Enable IP multicast routing
+ |   |   |-- forwarding                             Enable IP unicast routing
+ |   |   |-- default-ttl                            Set default TTL for outgoing packets
+ |   |   |-- offload                                CPU offloading
+ |   |    `- show                                   Show summary.
+ |   |-- ipv6 /
+ |   |   |-- enable        Enable or disable IPv6 functionality on the system.
+ |   |   |-- forwarding    Enable IPv6 unicast routing
+ |   |   |-- default-hlim  Set the default hop limit for outgoing packets.
+ |   |   |-- route         Manage Static routes.
+ |   |    `- show          Show summary.
+ |   |-- fdb /
+ |   |   |-- aging-timeout  Set FDB aging timeout, default 300 sec. Max age time apx. one hour.
+ |   |   |-- group          Manage static IPv4 multicast entries
+ |   |   |-- mac            Manage static MAC entries.
+ |   |    `- show           Show summary
+ |   |-- ring /
+ |   |   |-- show      Show configured rings.
+ |   |   |-- mrp /
+ |   |   |   |-- enable       Enable or disable this ring instance.
+ |   |   |   |-- ports        Set ring ports, a.k.a. port 1, port 2.
+ |   |   |   |-- mode         Set MRP mode.
+ |   |   |   |-- profile      Set MRP ring recovery profile mode.
+ |   |   |   |-- vid          Enable/disable VLAN encapsulation of MRP signalling with given VLAN id.
+ |   |   |   |-- link-react   Enable/disable React on link change.
+ |   |   |   |-- robustness   
+ |   |   |   |-- link-change  
+ |   |   |   |-- priority     
+ |   |   |   |-- domain-uuid  Set the MRP domain UUID.
+ |   |   |    `- show         Show an overview of the settings.
+ |   |   |-- frnt /
+ |   |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |   |-- port /
+ |   |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |   |    `- show        Show summary of settings
+ |   |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |   |    `- show              Show summary of settings
+ |   |   |-- frntv0 /
+ |   |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |   |-- port /
+ |   |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |   |    `- show        Show summary of settings
+ |   |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |   |    `- show              Show summary of settings
+ |   |   |-- frntv2 /
+ |   |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |   |-- port /
+ |   |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |   |    `- show        Show summary of settings
+ |   |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |   |    `- show              Show summary of settings
+ |   |    `- coupling /
+ |   |       |-- enable           Enable this instance.
+ |   |       |-- adv-interval     Set advertisement interval, in ms.
+ |   |       |-- coupling-port /
+ |   |       |   |-- priority        Coupling port priority. The port with the lowest priority
+ |   |       |   |-- hello-interval  Time interval in ms for hello packets on the coupling ports.
+ |   |       |   |-- preempt         When preempt is enabled the priority of the link will
+ |   |       |    `- show            Show summary of settings
+ |   |       |-- port /
+ |   |       |   |-- priority        Coupling port priority. The port with the lowest priority
+ |   |       |   |-- hello-interval  Time interval in ms for hello packets on the coupling ports.
+ |   |       |   |-- preempt         When preempt is enabled the priority of the link will
+ |   |       |    `- show            Show summary of settings
+ |   |       |-- link-down-delay  
+ |   |       |-- nodes            The number of RiCo nodes in the interlink redundancy domain, i.e have
+ |   |        `- show             Show summary of settings.
+ |   |-- frnt /
+ |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |-- port /
+ |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |    `- show        Show summary of settings
+ |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |    `- show              Show summary of settings
+ |   |-- frntv0 /
+ |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |-- port /
+ |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |    `- show        Show summary of settings
+ |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |    `- show              Show summary of settings
+ |   |-- frntv2 /
+ |   |   |-- version           Set FRNT version 0 or 2.
+ |   |   |-- ring-id           Set ring id for FRNT version 2. Maximum number of instances that
+ |   |   |-- focal-point       Set FRNT mode: focal-point or member.
+ |   |   |-- response-delay    The delay from when the ring is closed until the focal point changes
+ |   |   |-- ports             Set ring ports, a.k.a. port M, port N.
+ |   |   |-- hello-time        Health packet interval (M,N), default: 100 ms.
+ |   |   |-- ring-interval     Set interval for ring packets, in ms.
+ |   |   |-- port /
+ |   |   |   |-- hello-time  Health packet interval, in ms.
+ |   |   |   |-- fwd-delay   Delay until port set to forward, in seconds.
+ |   |   |    `- show        Show summary of settings
+ |   |   |-- blocked-port      Set the blocking port on focal point when the ring is OK. When no blocking
+ |   |   |-- guarded-recovery  When enabled FRNT will use all ring control events to prevent a loop
+ |   |    `- show              Show summary of settings
+ |   |-- rings          
+ |   |-- router /
+ |   |   |-- ospf /
+ |   |   |   |-- router-id           Set the OSFP router identifier.
+ |   |   |   |-- distance            Set protocol distance, default 110.
+ |   |   |   |-- passive-interface   Control if OSPF should be passive on all interfaces by default.
+ |   |   |   |-- neighbor            Define an OSPF neighbor.
+ |   |   |   |-- network             Specify a network to announce and an OSPF area the network belongs to.
+ |   |   |   |-- area /
+ |   |   |   |   |-- default-cost  Default route cost for stub/nssa, only for ABR.
+ |   |   |   |   |-- range         Summarize, suppress or substitute routes from this area.
+ |   |   |   |   |-- stub          Configure an area as a "stub" area.
+ |   |   |   |   |-- nssa          Configure an area as a "not so stubby area".
+ |   |   |   |    `- show          Overview of area settings.
+ |   |   |   |-- redistribute        Redistribute external routing information into the OSPF domain.
+ |   |   |   |-- distribute-default  Introduce a default route into the OSPF domain.
+ |   |   |   |-- timer /
+ |   |   |   |   |-- lsa-min-arrival    Set minimum delay in receiving new version of a LSA.
+ |   |   |   |   |-- lsa-min-interval   Set delay between sending LSAs.
+ |   |   |   |   |-- spf-delay          Set delay from first change received till SPF calculation.
+ |   |   |   |   |-- spf-min-hold-time  Set initial hold time between consecutive SPF calculations.
+ |   |   |   |   |-- spf-max-hold-time  Set maximum hold time.
+ |   |   |   |    `- show               OSPF timers configuration overview
+ |   |   |    `- show                OSPF configuration overview
+ |   |   |-- rip /
+ |   |   |   |-- version             Define RIP version, default is v2.
+ |   |   |   |-- distance            Set protocol distance, default 120.
+ |   |   |   |-- timers              Control RIP protocol timers.
+ |   |   |   |-- passive-interface   Control if RIP should be passive on all interfaces by default.
+ |   |   |   |-- neighbor            Define a RIP neighbor.
+ |   |   |   |-- network             Define RIP enabled networks.
+ |   |   |   |-- redistribute        Redistribute external routing information.
+ |   |   |   |-- distribute-default  Inject default route, i.e., announce network 0.0.0.0/0.
+ |   |   |    `- show                RIP configuration overview
+ |   |   |-- pim /
+ |   |   |   |-- enable                     Enable or disable pim.
+ |   |   |   |-- mode                       Set the PIM mode to use.
+ |   |   |   |-- rendezvous-point           Configure static Rendezvous Point(s) (RP).
+ |   |   |   |-- interface                  Specify the interface(s) on which to enable PIM to operate on.
+ |   |   |   |-- passive-interface          Control if PIM should be passive on all interfaces by default.
+ |   |   |   |-- keepalive-timer            Set the timeout value for a (S,G) multicast stream.
+ |   |   |   |-- rp-keepalive-timer         Set the RP specific timeout value for a (S,G) multicast stream.
+ |   |   |   |-- register-suppression-time  Set the time value for Register Suppression.
+ |   |   |   |-- join-prune-interval        Set the transmission interval of periodic Join/Prune frames.
+ |   |   |   |-- spt-switchover             Enable or disable spt-switchover.
+ |   |   |   |-- register-policy            Specify if a specific source IP is permitted or denied.
+ |   |   |   |-- ssm-policy                 Specify a range of group addresses where PIM will permit or deny SM over.
+ |   |   |    `- show                       PIM configuration overview
+ |   |   |-- vrrp /
+ |   |   |   |-- enable    Activate or deactivate VRRP instance.
+ |   |   |   |-- address   Virtual router IP address, must be in same subnet as interface.
+ |   |   |   |-- vrid      Set router ID.
+ |   |   |   |-- iface     Set interface to listen on.
+ |   |   |   |-- interval  Advertisement interval, in seconds or in 10 milliseconds intervals.
+ |   |   |   |-- priority  Router priority, 255 only if IP owner.  Default: 100.
+ |   |   |   |-- version   Set VRRP version.  Default: 2.
+ |   |   |   |-- preempt   Preempt existing router of lower priority, with optional delay.
+ |   |   |   |-- track     Track event trigger to adjust priority dynamically.
+ |   |   |   |-- vmac      Create and/or use a virtual interface for VRRP. Uses the VRRP MAC address.
+ |   |   |   |-- accept    Set Accept_Mode.  Default: enabled.
+ |   |   |    `- show      Show summary of settings.
+ |   |   |-- group /
+ |   |   |   |-- show         Show summary of settings.
+ |   |   |   |-- member       Add or remove (with "no") member instance.
+ |   |   |    `- description  Add or edit free-text description.
+ |   |   |-- show                Show router summary/overview.
+ |   |   |-- vrrp-startup-delay  
+ |   |-- spanning-tree /
+ |   |   |-- priority       Bridge priority, used in root bridge election, default 8(32768).
+ |   |   |-- max-age-time   Set root bridge maximum age timeout, default 20.
+ |   |   |-- hello-time     Set root bridge hello time interval, default 2.
+ |   |   |-- forward-delay  Set root bridge forward delay timeout, default 15.
+ |   |   |-- port /
+ |   |   |   |-- enable      Enable/Disable STP on for this/these port(s)
+ |   |   |   |-- admin-edge  Set edge port
+ |   |   |   |-- path-cost   Set path cost, default based on speed-duplex.
+ |   |   |    `- show        Display summary of STP port settings.
+ |   |    `- show           Display overview of spanning tree settings.
+ |   |-- ntp /
+ |   |   |-- enable       Activate, or deactivate, NTP
+ |   |   |-- peer /
+ |   |   |   |-- enable         Activate, or deactivate, Peer
+ |   |   |   |-- preferred      Set this server as preferred time source
+ |   |   |   |-- poll-interval  Interval, in seconds, between updates (30-720). Default: 512
+ |   |   |    `- show           Show a summary of NTP peer settings
+ |   |   |-- server /
+ |   |   |   |-- show    Show NTP server summary.
+ |   |   |    `- listen  Interfaces on which to allow server queries.
+ |   |   |-- step-adjust /
+ |   |   |   |-- threshold  Set the step-adjust threshold (in seconds), defaults to 10
+ |   |   |   |-- limit      Set the step-adjust limit, defaults to 1
+ |   |   |    `- show       Show a summary of NTP step-adjust settings
+ |   |    `- show         Show a summary of NTP settings
+ |   |-- ptp /
+ |   |   |-- enable            Activate, or deactivate PTP.
+ |   |   |-- minor_version     PTP Minor Version.
+ |   |   |-- clock /
+ |   |   |   |-- client-only  Force the local clock to be a client clock
+ |   |   |   |-- priority1    Priority1 attribute of the local clock
+ |   |   |   |-- priority2    Priority2 attribute of the local clock
+ |   |   |   |-- ports        Configure Clock ports
+ |   |   |    `- show         Show a summary of PTP clock settings
+ |   |   |-- description       User defined description
+ |   |   |-- profile /
+ |   |   |   |-- delay                
+ |   |   |   |-- egress-vlan          VLAN (8021Q) settings for PTP packets.
+ |   |   |   |-- timestamping         
+ |   |   |   |-- domain               Domain number of the local clock
+ |   |   |   |-- logAnnounceInterval  Frequency of 'Announce' messages sent by an OC/BC
+ |   |   |   |-- step_threshold       Offset at which an OC/BC steps the clock
+ |   |   |    `- show                 Show a summary of PTP settings
+ |   |   |-- ptp_log_level     Log level for PTP daemon. Default: 5
+ |   |   |-- ts2phc_log_level  Log level for ts2phc daemon. Default: 5
+ |   |    `- show              Show a summary of PTP settings
+ |   |-- system /
+ |   |   |-- hostname                     System hostname
+ |   |   |-- domain                       System domain name
+ |   |   |-- description                  System description
+ |   |   |-- location                     System location
+ |   |   |-- contact                      System contact
+ |   |   |-- issue                        
+ |   |   |-- issue-net                    
+ |   |   |-- motd                         System postlogin message.
+ |   |   |-- timezone                     System timezone.
+ |   |   |-- list-timezones               List all available timezones
+ |   |   |-- flooding /
+ |   |   |   |-- multicast  Set flooding of unknown multicast traffic to CPU.
+ |   |   |   |-- unicast    Set flooding of unknown unicast to the CPU.
+ |   |   |    `- show       Show summary of system settings
+ |   |   |-- bypass-at-startup            Stay in bypass mode at startup.
+ |   |   |-- jumbo-frame-switching        Enable/Disable jumbo frame switching on all applicable ports (9000 bytes)
+ |   |   |-- encrypt-secrets              Encrypt secrets in the config file.
+ |   |   |-- automatic-firmware-checksum  Enable/Disable automatic firmware checksum calculation.
+ |   |    `- show                         Show summary of system settings
+ |   |-- logging /
+ |   |   |-- secure-mode              Enable secure mode, reject messages from remote machines.
+ |   |   |-- identification           Manage logging identification settings.
+ |   |   |-- source /
+ |   |   |   |-- name                      Change the name of the source.
+ |   |   |   |-- type                      Specify the type of the source.
+ |   |   |   |-- userspace                 Enable or disable local userspace log messages.
+ |   |   |   |-- kernel                    Enable or disable local kernel log messages.
+ |   |   |   |-- audit                     Enable or disable local audit log messages.
+ |   |   |   |-- format                    Set the syslog formatting to expect from remote clients.
+ |   |   |   |-- transport                 Specify the transport protocol to be used for the source.
+ |   |   |   |-- ip-protocol               Specify the IP protocol to be used for the source.
+ |   |   |   |-- listen                    Specify a specific interface, with static address, to listen on.
+ |   |   |   |-- port                      Specify another port to use, other than the default.
+ |   |   |   |-- peer-verify               Select the verification method to be used during TLS handshake.
+ |   |   |   |-- ignore-hostname-mismatch  Enable to ignore certificate hostname mismatch during validation.
+ |   |   |   |-- keep-hostname             Enable or disable hostname rewriting
+ |   |   |   |-- use-dns                   Enable or disable DNS usage for hostname resolving.
+ |   |   |   |-- use-local-timestamp       Enable or disable usage of local timestamp for received messages.
+ |   |   |   |-- certificate               Specify the Certificate to use.
+ |   |   |   |-- ca-certificate            Specify the CA Certificate to use.
+ |   |   |   |-- revocation                Specify if to use Certificate Revocation Lists.
+ |   |   |    `- show                      Show summary of settings.
+ |   |   |-- destination /
+ |   |   |   |-- name                      Change the name of the destination.
+ |   |   |   |-- type                      Specify the type of the destination.
+ |   |   |   |-- file-name                 Specify the name or the path of the log file to be used.
+ |   |   |   |-- rotate                    Specify the maximum number of log files to keep.
+ |   |   |   |-- size                      Specify the size that triggers log file rotation when reached.
+ |   |   |   |-- compress                  Specify the maximum number of compressed log files to keep.
+ |   |   |   |-- media                     Specify the target media where the log file will be stored.
+ |   |   |   |-- format                    Set the syslog formatting to use when sending messages to the remote server.
+ |   |   |   |-- transport                 Specify the transport protocol to be used for the destination.
+ |   |   |   |-- ip-protocol               Specify the IP protocol to be used for the destination.
+ |   |   |   |-- host                      Defines the location of the host for the remote destination.
+ |   |   |   |-- port                      Specify a port to use, different from the default one.
+ |   |   |   |-- peer-verify               Select the verification method to be used during TLS handshake.
+ |   |   |   |-- ignore-hostname-mismatch  Enable to ignore certificate hostname mismatch during validation.
+ |   |   |   |-- certificate               specify the Certificate to use.
+ |   |   |   |-- ca-certificate            specify the CA Certificate to use.
+ |   |   |   |-- revocation                Specify if to use Certificate Revocation Lists.
+ |   |   |   |-- throttle                  Specify a throttle value to rate limit the number of messages sent per second.
+ |   |   |    `- show                      Show summary of settings.
+ |   |   |-- filter /
+ |   |   |   |-- name        Change the name of the filter.
+ |   |   |   |-- invert      Enable if the entire filter logic should be inverted.
+ |   |   |   |-- facility    Filter messages based on their facility.
+ |   |   |   |-- level       Filter messages based on the severity level of the message
+ |   |   |   |-- hostname    Filter messages based on the hostname field of the message.
+ |   |   |   |-- message     Filter messages based on the text content of the message.
+ |   |   |   |-- program     Filter messages based on the name of the program that generated it.
+ |   |   |   |-- network     Filter messages based on the provided IP subnet.
+ |   |   |   |-- rate-limit  Filter out messages if they exceed the provided message rate.
+ |   |   |    `- show        Show summary of settings.
+ |   |   |-- filter-convert-priority  Create filters based on the old sink priority value
+ |   |   |-- sink /
+ |   |   |   |-- name         Change the name of the sink.
+ |   |   |   |-- source       Define the source(s) from which the log messages should be sent.
+ |   |   |   |-- destination  Define the destination(s) to which the log messages should be sent.
+ |   |   |   |-- filter       Define optional filter(s) to include or exclude specific log messages.
+ |   |   |    `- show         Show summary of settings.
+ |   |   |-- console                  Enable or disable default logging directly on the console.
+ |   |   |-- external-logging         Enable or disable logging of default log files to USB.
+ |   |   |-- external-logging-media   Specify the target external media (USB/SD-Card) for the logging
+ |   |    `- show                     Show logging summary.
+ |   |-- monitor /
+ |   |   |-- enable       Enable/Disable port monitoring.
+ |   |   |-- destination  Set monitor destination.
+ |   |   |-- source       Set monitoring sources.
+ |   |    `- show         Display current monitoring setup.
+ |   |-- dhcp-server /
+ |   |   |-- enable        Activate, or deactivate DHCP server.
+ |   |   |-- gateway       Allow default route to be sent to clients.
+ |   |   |-- name-server   Allow DNS to be sent to clients.
+ |   |   |-- log-server    Define system log server(s) used in DHCP offer.
+ |   |   |-- route         Advertise classless static routes.
+ |   |   |-- ping-check    Verify address is not in use, default enabled.
+ |   |   |-- server-port   Set server listening port, default 67
+ |   |   |-- client-port   Set client port, default 68
+ |   |   |-- bootfile      Bootfile name, FILE field or option 67.
+ |   |   |-- tftp-server   Set the domain name or IP address of the boot server.
+ |   |   |-- option-force  Enable or disable forcing of DHCP options
+ |   |   |-- host /
+ |   |   |   |-- lease-time    Lease time, or default to subnet setting.
+ |   |   |   |-- address       Lease address, or addresses, needs subnet.
+ |   |   |   |-- bootfile      Bootfile name, FILE field or option 67.
+ |   |   |   |-- tftp-server   Set the domain name or IP address of the boot server.
+ |   |   |   |-- hostname      Set hostname for client option 12
+ |   |   |   |-- preempt       If Enabled the lease will be handed out to a new client if they both send the s
+ |   |   |   |-- gateway       Define gateway used in DHCP offer.
+ |   |   |   |-- name-server   Define system domain name server(s) used in DHCP offer.
+ |   |   |   |-- log-server    Define system log server(s) used in DHCP offer.
+ |   |   |   |-- ntp-server    Define system NTP server(s) used in DHCP offer.
+ |   |   |   |-- option-force  Enable or disable forcing of DHCP options
+ |   |   |   |-- domain        Define domain name used in DHCP offer.
+ |   |   |   |-- match         Fields to match in DHCP request.
+ |   |   |   |-- route         Advertise classless static routes.
+ |   |   |    `- show          Show summary of settings.
+ |   |   |-- subnet /
+ |   |   |   |-- gateway       Define gateway used in DHCP offer.
+ |   |   |   |-- name-server   Define system domain name server(s) used in DHCP offer.
+ |   |   |   |-- log-server    Define system log server(s) used in DHCP offer.
+ |   |   |   |-- ntp-server    Define system NTP server(s) used in DHCP offer.
+ |   |   |   |-- option-force  Enable or disable forcing of DHCP options
+ |   |   |   |-- domain        Define domain name used in DHCP offer.
+ |   |   |   |-- lease-time    Define max lease time, a static host entry can override.
+ |   |   |   |-- netmask       Define netmask used in DHCP offer
+ |   |   |   |-- pool          Dynamic address pool, start to end, or number of entries.
+ |   |   |   |-- route         Advertise classless static routes.
+ |   |   |    `- show          Show summary of settings.
+ |   |    `- show          Show summary of settings.
+ |   |-- tftp-server /
+ |   |   |-- enable  Activate, or deactivate, TFTP server
+ |   |   |-- listen  Listen interface
+ |   |   |-- path    VFS path to serve files from.
+ |   |    `- show    Show a summary of TFTP settings
+ |   |-- dhcp-relay /
+ |   |   |-- enable                 Activate, or deactivate DHCP Relay Agent
+ |   |   |-- server                 Set address and port of DHCP server(s).
+ |   |   |-- force-server-identity  Force Server Identity (Option 54), default disabled.
+ |   |   |-- udp-listen-port        Set the udp port the relay agent is listening on.
+ |   |   |-- option82 /
+ |   |   |   |-- remoteid-type  Set Option 82 Remote ID type, default MAC.
+ |   |   |    `- show           Show an overview of the settings.
+ |   |   |-- iface /
+ |   |   |   |-- server  Set address and port of DHCP server(s).
+ |   |   |   |-- giaddr  Set the GIADDR to use in relayed DHCP requests.
+ |   |   |   |-- port /
+ |   |   |   |   |-- enable          Control relaying for port(s).
+ |   |   |   |   |-- circuitid-type  Circuit-ID type for port(s).
+ |   |   |   |    `- show            Show summary of settings.
+ |   |   |    `- show    Show an overview of the settings.
+ |   |    `- show                   Show an overview of the settings.
+ |   |-- dns /
+ |   |   |-- show         Show DNS summary.
+ |   |   |-- name-server  Set domain name server(s)
+ |   |   |-- host         Manage entries in the local host table
+ |   |   |-- search       Set search path list for host name lookups.
+ |   |    `- server /
+ |   |       |-- show            Show DNS server summary.
+ |   |       |-- enable          Activate, or deactivate DNS server.
+ |   |       |-- listen          Interfaces on which to allow server queries.
+ |   |       |-- domain-forward  Forward queries for a domain to another name server.
+ |   |        `- reject-AAAA     Reject DNS AAAA resolution requests
+ |   |-- tunnel /
+ |   |   |-- gre /
+ |   |   |   |-- enable       Enable or disable GRE tunnel.
+ |   |   |   |-- local        Set IP address to be used at the local end.
+ |   |   |   |-- remote       Set IP address to be used at the remote end.
+ |   |   |   |-- outbound     Set outbound interface.
+ |   |   |   |-- ttl          Set a fixed TTL on tunneled packets.
+ |   |   |   |-- description  Free form description of this GRE tunnel.
+ |   |   |    `- show         GRE tunnel overview
+ |   |   |-- ssl /
+ |   |   |   |-- enable                 Activate, or deactivate, SSL tunnel
+ |   |   |   |-- description            Free form description of this SSL tunnel.
+ |   |   |   |-- server                 Set unit in server or client mode
+ |   |   |   |-- client                 
+ |   |   |   |-- pull                   Should we allow the server to push settings to us. If this is
+ |   |   |   |-- type                   Set the tunnel to be in tap (bridge) or tun (routed) mode.
+ |   |   |   |-- pool                   IP address to be pushed to all clients connecting to us
+ |   |   |   |-- client-to-client       Allow clients to communicate with each other.
+ |   |   |   |-- max-clients            Define how many clients that is allowed to simultaneous connect to
+ |   |   |   |-- renegotiation-timeout  Set the renegotiation time for the data channel, this can be set on
+ |   |   |   |-- duplicate-cn           Allow multiple clients to connect with the same CommonName, without this
+ |   |   |   |-- push-network           Define networks to push towards all clients, these networks will automatically
+ |   |   |   |-- data-ciphers           List of ciphers to include in cipher negotiation between
+ |   |   |   |-- data-ciphers-fallback  Fallback cipher to use when connecting to peers without support for negotiation
+ |   |   |   |-- crypto                 Crypto to use.
+ |   |   |   |-- auth                   Authentication hash to use.
+ |   |   |   |-- peer                   Remote peer IP address, or DNS domain name.
+ |   |   |   |-- keepalive              Send keepalive probes over the tunnel to make sure that stateful
+ |   |   |   |-- method                 Select method of authentication, cert or psk.
+ |   |   |   |-- secret                 The shared secret for the tunnel.
+ |   |   |   |-- certificate            Local certificate to use, including private key.
+ |   |   |   |-- ca-certificate         CA certificate used for signing our certificate, without private key.
+ |   |   |   |-- revocation             Enable certificate revocation checking according to policy:
+ |   |   |   |-- tls-auth               Enable TLS authentication.
+ |   |   |   |-- tls-version-min        Minimum TLS version accepted from peers.
+ |   |   |   |-- local-address          Local address.
+ |   |   |   |-- bind-dev               Binding device.
+ |   |   |   |-- protocol               Protocol to encapsulate the traffic in.
+ |   |   |   |-- compression            Set preferred compression setting to be used on the tunnel. 
+ |   |   |   |-- port                   TCP/UDP port to listen on.
+ |   |   |   |-- aaa-method             Add an extra authentication layer on the tunnel.
+ |   |   |   |-- identity               Credentials for outgoing authentication.
+ |   |   |   |-- client-configuration /
+ |   |   |   |   |-- common-name  The X.509 certificate common name used to match this CN binding.
+ |   |   |   |   |-- address      Bind IPv4 address to Common Name.
+ |   |   |   |   |-- iroute       Configure an internal route to a specific client.
+ |   |   |   |    `- show         Show user.
+ |   |   |   |-- show                   SSL tunnel overview
+ |   |   |    `- mptcp-monitor          Ifaces to monitor only valid in mptcp client case
+ |   |   |-- ipsec /
+ |   |   |   |-- enable         Activate, or deactivate IPsec tunnel.
+ |   |   |   |-- version        Select IKE protocol version.
+ |   |   |   |-- aggressive     Aggressive or main mode
+ |   |   |   |-- pfs            Perfect Forward Secrecy.
+ |   |   |   |-- dpd-action     Dead Peer Detection.
+ |   |   |   |-- dpd-delay      Period time for DPD packets.
+ |   |   |   |-- dpd-timeout    Timeout before closing down the tunnel due to lost peer.
+ |   |   |   |-- initiator      Role, initiator (client) or responder (server).
+ |   |   |   |-- ike            Phase-1 handshake negotiation.
+ |   |   |   |-- reauth-time    Time after which re-authentication occurs. Disabled by default.
+ |   |   |   |-- sa-rekey-time  Time after which CHILD_SA rekeying is performed.
+ |   |   |   |-- esp            Phase-2 handshake negotiation.
+ |   |   |   |-- method         Authentication method. Default: psk
+ |   |   |   |-- certificate    Certificate to use, including private key.
+ |   |   |   |-- ca             CA certificate label used to validate the remote certificate.
+ |   |   |   |-- secret         Pre-shared key (PSK, shared secret), MIN:8 MAX:63
+ |   |   |   |-- peer           Remote peer IP address.
+ |   |   |   |-- local-address  Local address.
+ |   |   |   |-- local-id       Local ID.
+ |   |   |   |-- remote-id      Remote peer ID.
+ |   |   |   |-- local-subnet   Subnet to expose to other side of VPN tunnel.
+ |   |   |   |-- remote-subnet  Remote subnet allowed to access your local site.
+ |   |   |   |-- description    Free form description of this IPSec tunnel.
+ |   |   |   |-- revocation     Certificate revocation policy.
+ |   |   |    `- show           IPsec tunnel overview
+ |   |   |-- wireguard /
+ |   |   |   |-- enable       Enable or disable WireGuard tunnel.
+ |   |   |   |-- description  Free form description of this WireGuard tunnel.
+ |   |   |   |-- private-key  Set private key for this WireGuard tunnel.
+ |   |   |   |-- listen-port  Set listen port for this WireGuard tunnel.
+ |   |   |   |-- peer /
+ |   |   |   |   |-- description           Set the peer description.
+ |   |   |   |   |-- enable                Enable or disable WireGuard peer.
+ |   |   |   |   |-- public-key            Set the peer public key.
+ |   |   |   |   |-- preshared-key         Set the peer preshared key.
+ |   |   |   |   |-- endpoint              Set the peer endpoint IP address, hostname or FQDN.
+ |   |   |   |   |-- listen-port           Set the peer listen port.
+ |   |   |   |   |-- persistent-keepalive  Set the peer persistent keepalive interval.
+ |   |   |   |   |-- allowed-ips           Set the peer allowed IPs.
+ |   |   |   |    `- show                  Show peer settings.
+ |   |   |    `- show         WireGuard tunnel overview
+ |   |    `- show       Show tunnel summary/overview.
+ |   |-- app-hosting /
+ |   |   |-- app /
+ |   |   |   |-- enable       Enable or disable an app.
+ |   |   |   |-- autostart    Enable or disable autostart of an app.
+ |   |   |   |-- description  App description.
+ |   |   |   |-- capability   Add capabilities to an app.
+ |   |   |   |-- cmd          Initialization command for the application.
+ |   |   |   |-- shell        A shell to be used when attaching to an app.
+ |   |   |   |-- netns        The network namespace to assign an app to.
+ |   |   |   |-- share        Manage shared resources: ports, veth-pairs, external media
+ |   |   |   |-- environment  Set environment variables for the application environment.
+ |   |   |   |-- image        The label of an image.
+ |   |   |    `- show         Show app configuration overview.
+ |   |   |-- cpu      Percentage of CPU power to be shared among all apps.
+ |   |   |-- ram      Percentage of RAM to be shared among all apps.
+ |   |   |-- storage /
+ |   |   |   |-- media  Storage media for application image files.
+ |   |   |   |-- path   Storage path, relative to the selected media.
+ |   |   |    `- show   Show storage configuration overview.
+ |   |    `- show     Show app hosting overview.
+ |   |-- discover /
+ |   |   |-- mdns /
+ |   |   |   |-- enable  Activate, or deactivate, multicast DNS (mDNS) responder
+ |   |   |   |-- listen  Interfaces on which to allow multicast DNS (mDNS) announcements
+ |   |   |    `- show    Show summary
+ |   |   |-- ssdp /
+ |   |   |   |-- enable  Activate, or deactivate, ssdp
+ |   |   |   |-- listen  Interfaces on which to allow Microsoft(TM) SSDP announcements
+ |   |   |    `- show    Show summary
+ |   |    `- show  Show discover summary/overview.
+ |   |-- management /
+ |   |   |-- web /
+ |   |   |   |-- http /
+ |   |   |   |   |-- enable  Activate, or deactivate, http
+ |   |   |   |   |-- listen  Interfaces on which to allow HTTP connections
+ |   |   |   |   |-- port    Port to run HTTP daemon (default 80)
+ |   |   |   |    `- show    Show summary
+ |   |   |   |-- https /
+ |   |   |   |   |-- enable       Activate, or deactivate, https
+ |   |   |   |   |-- listen       Interfaces on which to allow HTTPS connections
+ |   |   |   |   |-- port         Port to run HTTPS daemon (default 443)
+ |   |   |   |   |-- certificate  Specify a custom certificate to use.
+ |   |   |   |   |-- fallback     Enable or disable certificate fallback.
+ |   |   |   |    `- show         Show summary
+ |   |   |   |-- session-timeout                Set auto logout delay in minutes, default 10 min.
+ |   |   |   |-- login-banner                   Configure a banner to be displayed on the login page of the WEB.
+ |   |   |   |-- suppress-login-error-messages  Suppress login authentication error messages on the web login page.
+ |   |   |    `- show                           Show summary
+ |   |   |-- ssh /
+ |   |   |   |-- enable           Activate, or deactivate, ssh
+ |   |   |   |-- login-banner     Configure a banner to be displayed on the ssh console login.
+ |   |   |   |-- listen           Interfaces on which to allow SSH connections
+ |   |   |   |-- port             Port to run SSH daemon, default 22.
+ |   |   |   |-- keepalive        Interval between keepalive probes sent to each client
+ |   |   |   |-- idle-timeout     Tear down the connection if the user has not been active, keepalive probes is n
+ |   |   |   |-- fail-delay       Set a delay to SEC seconds occurring after a failed login attempt.
+ |   |   |   |-- external-access  Configure access to secure shell copy (scp) to the device
+ |   |   |   |-- shell-access /
+ |   |   |   |   |-- enable     Enable or disable 'shell' access from remote SSH connections
+ |   |   |   |   |-- audit-log  Enable or disable continuous audit log event when remote shell access is enable
+ |   |   |   |   |-- warning    Enable or disable the persistent warning when remote shell access is enabled.
+ |   |   |   |    `- show       Show summary
+ |   |   |    `- show             Show summary
+ |   |   |-- telnet /
+ |   |   |   |-- enable  Activate, or deactivate, telnet
+ |   |   |   |-- listen  Interfaces on which to allow telnet connections
+ |   |   |   |-- port    Port to run Telnet daemon, default 23.
+ |   |   |    `- show    Show summary
+ |   |   |-- snmp /
+ |   |   |   |-- enable               Activate, or deactivate, snmp
+ |   |   |   |-- rocommunity          Manage SNMP read-only community string
+ |   |   |   |-- rwcommunity          Manage SNMP read-write community string
+ |   |   |   |-- trapcommunity        Manage SNMP trap community string
+ |   |   |   |-- host                 Manage SNMP trap sink host definitions.
+ |   |   |   |-- listen               Interfaces on which to allow SNMP connections
+ |   |   |   |-- rwuser               Manage SNMP v3 read/write users
+ |   |   |   |-- rouser               Manage SNMP v3 read-only users
+ |   |   |   |-- commands-allowed     Set commands allowed to run through snmp.
+ |   |   |   |-- engine-id            Manage SNMP v3 local engine id string.
+ |   |   |   |-- ifindex-persistence  Manage ifindex persistence for Port and vlan interfaces.
+ |   |   |    `- show                 Show SNMP summary.
+ |   |   |-- cli /
+ |   |   |   |-- timeout  Set auto logout delay in seconds, default off
+ |   |   |    `- show     Show summary
+ |   |   |-- console /
+ |   |   |   |-- login         Enable / disable console login
+ |   |   |   |-- login-banner  Configure a banner to be displayed on the local console login.
+ |   |   |    `- show          Show summary
+ |   |   |-- max-remote-sessions  This setting controls the number of concurrent remote sessions.
+ |   |    `- show                 Management service overview.
+ |   |-- lldp /
+ |   |   |-- enable              Enable/Disable LLDP
+ |   |   |-- tx-interval         Number of seconds between tx packet < 5 - 300 > (default: 30)
+ |   |   |-- tx-hold-multiplier  Multiplied with tx-interval it sets the TimeToLive in LLDP package < 2 - 10 > (
+ |   |   |-- port /
+ |   |   |   |-- enable     Enable/Disable LLDP on port(s)
+ |   |   |   |-- direction  Set transmit direction
+ |   |   |    `- show       Display summary of LLDP port settings.
+ |   |    `- show                Show summary
+ |   |-- profinet /
+ |   |   |-- enable        Enable or disable PROFINET, configuration still saved.
+ |   |   |-- station-name  Set profinet station name.
+ |   |   |-- iface         Set interface that profinet will operate on.
+ |   |    `- show          Show an overview of the settings.
+ |   |-- metrics /
+ |   |   |-- enable            Enable or disable METRICS
+ |   |   |-- sample-rate       sample-rate in second, default 20s, 1s-3600s.
+ |   |   |-- snmp              Enable metrics on SNMP.
+ |   |   |-- web               Enable metrics on Web on configured port, default 9100, min 1024, max 65535.
+ |   |   |-- port-utilization  Enable port utilization on configured port (s).
+ |   |    `- show              Show an overview of the settings.
+ |   |-- poe /
+ |   |   |-- port /
+ |   |   |   |-- enable      Enable/Disable PoE port
+ |   |   |   |-- priority    The PoE ports will be shutdown in this priority order when there is an
+ |   |   |   |-- limit       Port power limit in W
+ |   |   |   |-- limit-mode  Port power limit mode, where forced is a mode to drive non-compliant
+ |   |   |    `- show        Show port configuration
+ |   |    `- show  Show PoE configuration
+ |   |-- hostname       System hostname string (RFC1123)
+ |   |-- location       System location string
+ |   |-- contact        System contact string
+ |   |-- timezone       System timezone string
+ |   |-- username       User password
+ |   |-- watchdog /
+ |   |   |-- enable    Enable or disable watchdog daemon, default enabled.
+ |   |   |-- interval  Set watchdog kick interval, seconds.
+ |   |   |-- timeout   Set kernel wdt timeout, seconds.
+ |   |   |-- monitor /
+ |   |   |   |-- enable       Enable or disable the monitor.
+ |   |   |   |-- interval     Set the monitor interval.
+ |   |   |   |-- description  Free form description of this watchdog monitor.
+ |   |   |   |-- logmark      Enable or disable logging to syslog.
+ |   |   |   |-- warning      Set the percentage when to trigger a warning.
+ |   |   |    `- show         Show summary
+ |   |    `- show      Show summary
+ |   |-- port-access /
+ |   |   |-- enable              Enable or disable port access control in configuration.
+ |   |   |-- port                Port(s) to be managed by 802.1X and/or MAC auth.
+ |   |   |-- port-method         Set port access control method.
+ |   |   |-- dot1x /
+ |   |   |   |-- enable                 Enable or disable 802.1X configuration.
+ |   |   |   |-- authentication-server  Select one or two remote authentication servers to use.
+ |   |   |   |-- active-authentication  Enable or disable active-authentication.
+ |   |   |   |-- re-authenticate        Enable or disable periodic re-authentication.
+ |   |   |   |-- quiet-period           Enable or disable quiet period.
+ |   |   |    `- show                   Show 802.1X authentication configuration.
+ |   |   |-- mac-authentication /
+ |   |   |   |-- enable                 Enable or disable MAC authentication configuration.
+ |   |   |   |-- authentication-server  Select a remote authentication server to use for MAB
+ |   |   |   |-- service-type           Select the service type used for the MAB RADIUS requests.
+ |   |   |   |-- accept-list            Specify a local MAC address whitelist to use for authentication.
+ |   |   |    `- show                   Show MAC authentication configuration.
+ |   |   |-- vlan-assignment /
+ |   |   |   |-- enable         Enable or disable VLAN assignment.
+ |   |   |   |-- allowed-vlans  Specify which VLANs are allowed for assignment.
+ |   |   |   |-- allowed-vids   Specify which VLAN IDs (VIDs) are allowed for assignment.
+ |   |   |   |-- default-vlan   Enable or disable default VLAN assignment.
+ |   |   |    `- show           Show VLAN assignment configuration.
+ |   |   |-- description         Free form string describing current port access control configuration.
+ |   |    `- show                Show configuration of this port access control instance.
+ |   |-- pki /
+ |   |   |-- enroll /
+ |   |   |   |-- enable           Activate, or deactivate enroll pki
+ |   |   |   |-- label            Enrollment server name (no spaces allowed).
+ |   |   |   |-- description      Free-form description of this enroll pki.
+ |   |   |   |-- url              URL to the service providing enrollment.
+ |   |   |   |-- ra-dn            Subject-Hash of an RA certificate used for communication with the SCEP server.
+ |   |   |   |-- fingerprint      Fingerprint of the root CA-certificate calculated for the certificate in binary
+ |   |   |   |-- fingerprint-alg  Hashing algorithm used to calculate the fingerprint of the root CA-certificate.
+ |   |   |   |-- protocol         Server protocol type
+ |   |   |   |-- cipher           Cipher used for symmetric encryption of data sent to the server
+ |   |   |   |-- renew-request    By default, a PKCSReq message is sent when renewing a certificate.
+ |   |   |    `- show             enroll pki overview
+ |   |   |-- revocation /
+ |   |   |   |-- label              Revocation label
+ |   |   |   |-- description        Description for the revocation server
+ |   |   |   |-- protocol           Revocation protocol
+ |   |   |   |-- renewal-threshold  Percentage (1-99 [%]) of elapsed validity time before CRL refreshing starts.
+ |   |   |   |-- url                Revocation URL.
+ |   |   |    `- show               Revocations overview
+ |   |    `- show        Show summary of pki settings
+ |    `- policy /
+ |       |-- enable          Activate, or deactivate, policy filtering
+ |       |-- ingress-policy /
+ |       |   |-- description  Free form description of this ingress-policy any combination printable
+ |       |   |-- filter /
+ |       |   |   |-- match   Set match rule(s) specifying the policy when the filter action should
+ |       |   |   |-- pos     Position where the filter is to be inserted
+ |       |   |   |-- action  Specify the action to be performed when a filter match is found.
+ |       |   |    `- show    Show configuraton of ingress-policy filter.
+ |       |   |-- name         Set name for ingress policy.
+ |       |    `- show         Show configuraton of ingress-policy.
+ |       |-- egress-policy /
+ |       |   |-- description  Free form description of this egress-policy any combination printable
+ |       |   |-- filter /
+ |       |   |   |-- match   Set match rule(s) specifying the policy when the filter action should
+ |       |   |   |-- pos     Position where the filter is to be inserted
+ |       |   |   |-- action  Specify the action to be performed when a filter match is found.
+ |       |   |    `- show    Show configuraton of egress-policy filter.
+ |       |   |-- name         Set name for ingress policy.
+ |       |    `- show         Show configuraton of egress-policy.
+ |       |-- port /
+ |       |   |-- ingress-chain /
+ |       |   |   |-- ingress         Select the ingress-policies that should be enabled for the selected
+ |       |   |   |-- default-action  Select action for frames that do not match any configured rule
+ |       |   |    `- show            Show configuraton of ingress-chain.
+ |       |   |-- egress-chain /
+ |       |   |   |-- egress          Select the egress-policies that should be enabled for the selected
+ |       |   |   |-- default-action  Select action for frames that do not match any configured rule
+ |       |   |    `- show            Show configuraton of egress-chain.
+ |       |    `- show           Show configuraton of port.
+ |        `- show            Show configuraton of policy.
+ |-- app-hosting /
+ |   |-- image    Show imported images.
+ |   |-- label    Set/change the label of an image.
+ |   |-- reload   Update apps whose images match the label, and restart them. If no label
+ |   |-- attach   Attach to running application. Run `exit` or press `ctrl-d` to detach.
+ |   |-- start    Start a stopped application.
+ |   |-- stop     Stop a running app.
+ |   |-- restart  Restart a running app.
+ |   |-- app      Show summary of all enabled apps or the details of one app.
+ |   |-- log      Show generated logs for an app.
+ |   |-- follow   Follow log for an app.
+ |    `- show     Show summary of application hosting.
+ |-- copy                Copy configuration files, save config.
+ |-- media /
+ |   |-- format /
+ |   |   |-- filesystem        Select desired filesystem to format
+ |   |   |-- label             Set optional label to be used on the formatted device
+ |   |   |-- start-formatting  Start formatting the device according to current configuration
+ |   |    `- show              Show a summary the current settings to be used during the formatting
+ |   |-- populate         Populates the specified media with factory config and directories
+ |   |-- sync             Sync configuration and certificates between media.
+ |   |-- partition /
+ |   |   |-- add                 Add a new partition definition
+ |   |   |-- modify              Modify an existing partition definition
+ |   |   |-- delete              Delete a specific or all existing partition definitions
+ |   |   |-- start-partitioning  Start partitioning and formatting the device according to current configuration
+ |   |    `- show                Show a summary the current partitioning of the device.
+ |   |-- eject            Eject (unmount) a connected external media device.
+ |   |-- mount-inactive   Try to mount all inactive media defined in the boot configuration.
+ |   |-- mount-available  Try to mount available media device(s).
+ |   |-- devices          Show all connected physical media devices (USBs/SD-Cards)
+ |    `- show             Show media information.
+ |-- date                System date & time
+ |-- diff                Compare two configuration files, unidiff.
+ |-- follow              Continuously monitor a file, like UNIX 'tail -F'
+ |-- logout              Logout, or quit the CLI.
+ |-- memory              Display memory usage
+ |-- processes           Display running processes
+ |-- reboot              Reboot device with startup-config
+ |-- factory-reset       Perform factory reset of device, dangerous!
+ |-- system-information  Show system information
+ |-- tutorial            Brief introduction to the CLI
+ |-- uptime              Display system uptime
+ |-- upgrade             Upgrade all, primary (main), secondary (backup) or bootloader firmware.
+ |-- firmware-checksum   Check the CRC of a firmware image on the device.
+ |-- version             Show currently running firmware build details
+ |-- watchdog            Show watchdog status, raw
+ |-- users               Show which users are online right now and from where.
+ |-- whoami              Show user ID.
+ |-- boot /
+ |   |-- config-sync      Sync config from media before completing system bootstrap.
+ |   |-- config-order     Specify the system boot configuration order.
+ |   |-- cert-order       Define the system boot certificate order.
+ |   |-- config-fallback  Specify the fallback option to 'config-order'.
+ |   |-- media /
+ |   |   |-- match /
+ |   |   |   |-- label      Set media match label
+ |   |   |    `- partition  Set media match partition
+ |   |   |-- read-only  Enable, or disable read-only mode
+ |   |   |-- timeout    Set the timeout, for how long to wait for media during boot.
+ |   |    `- show       Show summary of settings.
+ |   |-- loader /
+ |   |   |-- rescue-address   Rescue mode IP address.
+ |   |   |-- rescue-netmask   Rescue mode netmask.
+ |   |   |-- rescue-peer      Rescue peer IP.
+ |   |   |-- allow-untrusted  Allow untrusted WeOS.
+ |   |   |-- unlock-license   Manage unlock license file.
+ |   |   |-- boot-integrity   Bootloader config integrity status.
+ |   |   |-- show             Show summary of bootloader settings.
+ |   |    `- show             Show summary of bootloader settings.
+ |   |-- net /
+ |   |   |-- sync                Sync the obtained net config to the startup of the selected media.
+ |   |   |-- mode                Net boot mode to use if configured in the config-order.
+ |   |   |-- timeout             Timeout for lease and bootfile from server
+ |   |   |-- clientid            Client ID to be provided in the DHCP discover
+ |   |   |-- accept-first-lease  Enable to always accept the first DHCP lease received.
+ |   |   |-- mac                 MAC Address used by Bootp
+ |   |   |-- password            Net config mode password
+ |   |    `- show                Show a summary of the net settings.
+ |   |-- aux-port         Manage auxiliary ports.
+ |    `- show             Show a summary of the device bootstrap settings.
+ |-- profinet /
+ |   |-- config          Show basic profinet configuration info
+ |   |-- ar-connections  Show AR Connection(s) information
+ |   |-- states          Show AR Connection(s) state information
+ |   |-- submodules      Show submodules information
+ |   |-- scheduler       Show profinet scheduler information
+ |   |-- diagnosis       Show profinet diagnosis
+ |   |-- data-check      Show profinet data check configuration
+ |   |-- data-adjust     Show profinet data adjust configuration
+ |   |-- im-records      Show profinet Identification and Maintenance (I&M) Records
+ |   |-- show            Show a summary of the profinet settings
+ |    `- dcp /
+ |       |-- identify  Send a new DCP Identify to refresh the list
+ |       |-- detailed  Show detailed info on received DCP identify responses
+ |       |-- show      List received DCP identify responses
+ |        `- set       Send a DCP Set Request for the specified suboption.
+ |-- ledflash            Flash all yellow port leds
+ |-- port-access /
+ |   |-- instance-dividers         Enable or disable dividers between instances in the output of show commands.
+ |   |-- dot1x-authentications     Show currently authenticated 802.1X clients
+ |   |-- mac-auth-authentications  Show currently authenticated MAC addresses
+ |   |-- ports                     Show port access port status
+ |   |-- vlan-assignment           Show port access VLAN assignment status
+ |   |-- audit                     Show Port Access related log messages from the audit log.
+ |    `- show                      Show a summary of all port access status information
+ |-- config-hash         Shows the SHA256 hash of the running configuration
+ |-- logging /
+ |   |-- source       Show source related status
+ |   |-- destination  Show destination related status
+ |   |-- filter       Show filter related status
+ |   |-- all          Show all logging status information
+ |   |-- internal     Show internal logging status information
+ |    `- show         Show logging status information
+ |-- metrics /
+ |   |-- cpu-utilization     Show cpu utilization
+ |   |-- memory-utilization  Show memory utilization
+ |   |-- port-utilization    Show port utilization
+ |    `- show                Show metric information
+ |-- provisioning /
+ |   |-- enable   Activate provisioning. Note that the actual provisioning
+ |   |-- ports    Ports that are to take part in provisioning
+ |   |-- mode     Operating modes:
+ |   |-- timeout  Period of time (upon boot, unless started explicitly) during which
+ |   |-- start    Start provisioning immediately using current settings
+ |   |-- stop     Stop provisioning immediately
+ |    `- show     Show a summary of provisioning settings
+ |-- encrypt-password    Sets a password to be used in encrypted-secrets.
+ |-- file /
+ |   |-- cfg /
+ |   |   |-- diff    Compare two configuration files.
+ |   |   |-- dir     List files on internal or external media.
+ |   |   |-- copy    Copy file from from/to internal or external media.
+ |   |   |-- erase   Erase configuration file on internal or external media.
+ |   |   |-- show    Show configuration
+ |   |   |-- import  Import configuration from remote source onto filesystem.
+ |   |    `- export  Export configuration to remote destination.
+ |   |-- log /
+ |   |   |-- dir     List files on internal or external media.
+ |   |   |-- follow  Continuously monitor a (log) file, like UNIX 'tail -F'. Exit with Ctrl-C
+ |   |   |-- copy    Copy file from/to internal or external media.
+ |   |   |-- erase   Erase log file on internal or external media.
+ |   |   |-- show    Show content of file on internal or external media.
+ |   |    `- export  Export log to remote destination.
+ |    `- app /
+ |       |-- dir     List app images stored on the system.
+ |       |-- ls      List app images stored on the system.
+ |       |-- show    List app images stored on the system.
+ |       |-- erase   Erase app image from system.
+ |        `- import  The import command is used to install a .wmopkg app image onto the device.
+ |-- id                  List Unix user id and group id(s).
+ |-- status              Show the list of warnings and errors
+  `- arp-watch /
+     |-- flush  Flush learned ARP watch entries.
+     |-- audit  Show audit log entries related to ARP watch events.
+      `- show   Show ARP watch status for interfaces with ARP watch enabled.
