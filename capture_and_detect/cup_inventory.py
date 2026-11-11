@@ -11,12 +11,13 @@ from pathlib import Path
 # the deployed robot controller must still validate reachability and motion.
 X_MIN, X_MAX = 350, 800
 Y_MIN, Y_MAX = -230, 420
-TRAVEL_Z = 250
+TRAVEL_Z = 175
 GRIPPER_TCP_Z = 159
 LEFT_READY = (400, 100, 450)
 LEFT_DOWN = (180, 0, 180)
 FLANGE_MIN = (180, -400, 50)
-FLANGE_MAX = (800, 500, 600)
+FLANGE_MAX = (800, 500, 700)
+Z_MIN = 199  # Minimum ordinary flange target, not a path or gripper-clearance guarantee.
 ACCEPTANCE_FLAGS = ("in_cup", "near_handle", "cup_height")
 
 
@@ -60,6 +61,16 @@ def _flange_problem(position):
         return "invalid corrected flange coordinates"
     if not all(low <= value <= high for value, low, high in zip(position, FLANGE_MIN, FLANGE_MAX)):
         return "corrected flange target is outside the gateway workspace"
+    return None
+
+
+def _motion_flange_problem(position, *, pick=False):
+    """Check endpoint limits, with the lower ordinary-motion flange bound."""
+    problem = _flange_problem(position)
+    if problem:
+        return problem
+    if position[2] < Z_MIN and not pick:
+        return f"flange target is below the ordinary motion clearance of {Z_MIN} mm"
     return None
 
 

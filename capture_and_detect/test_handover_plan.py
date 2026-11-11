@@ -6,11 +6,34 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from cup_inventory import SelectionError, hover_moves
+from cup_inventory import FLANGE_MAX, Z_MIN, TRAVEL_Z, SelectionError, hover_moves
 from handover_plan import (
-    DEFAULT_SPEED, FLIP_ACCELERATION, FLIP_SPEED, PLACE_ABOVE,
+    DEFAULT_SPEED, HOME_SPEED, PICK_SPEED, PICK_Z, CUP_Z_MIN, CUP_Z_MAX, FLIP_ACCELERATION, FLIP_SPEED, PLACE_ABOVE,
     handover_jobs, pick_position_problem,
 )
+
+
+def configuration_constant(node, values):
+    """Read numeric configuration arithmetic without executing upstream code."""
+    if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+        return node.value
+    if isinstance(node, ast.Tuple):
+        return tuple(configuration_constant(item, values) for item in node.elts)
+    if isinstance(node, ast.Name):
+        return values[node.id]
+    if isinstance(node, ast.Subscript):
+        value = configuration_constant(node.value, values)
+        index = configuration_constant(node.slice, values)
+        if isinstance(value, tuple) and type(index) is int:
+            return value[index]
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = configuration_constant(node.operand, values)
+        return -value if isinstance(node.op, ast.USub) else value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+        left = configuration_constant(node.left, values)
+        right = configuration_constant(node.right, values)
+        return left + right if isinstance(node.op, ast.Add) else left - right
+    raise ValueError("Not supported configuration arithmetic")
 
 
 class HandoverPlanTests(unittest.TestCase):
@@ -51,14 +74,14 @@ class HandoverPlanTests(unittest.TestCase):
         bodies = {job["name"]: job["body"] for job in self.plan()}
         expected = {
             "left_ready": ("left", (400, 100, 450), (180, 0, 180)),
-            "left_handover": ("left", (400, -100, 549), (180, 0, 180)),
-            "left_clear": ("left", (400, -100, 584), (180, 0, 180)),
-            "right_via": ("right", (200, -250, 200), (0, 0, 0)),
-            "right_beside": ("right", (380, -235, 175), (0, 0, 0)),
-            "right_below": ("right", (380, -115, 175), (0, 0, 0)),
-            "right_take": ("right", (380, -115, 210), (0, 0, 0)),
-            "right_lower": ("right", (380, -115, 175), (0, 0, 0)),
-            "right_turn_half": ("right", (400, -157.5, 242.5), (90, 0, 0)),
+            "left_handover": ("left", (350, -100, 655), (180, 0, 180)),
+            "left_clear": ("left", (350, -100, 690), (180, 0, 180)),
+            "right_via": ("right", (300, -300, 250), (0, 0, 0)),
+            "right_beside": ("right", (330, -235, 281), (0, 0, 0)),
+            "right_below": ("right", (330, -115, 281), (0, 0, 0)),
+            "right_take": ("right", (330, -115, 316), (0, 0, 0)),
+            "right_lower": ("right", (330, -115, 281), (0, 0, 0)),
+            "right_turn_half": ("right", (375, -157.5, 295.5), (90, 0, 0)),
             "right_retreat": ("right", (420, -200, 310), (180, 0, 0)),
             "right_place": ("right", (420, -200, 230), (180, 0, 0)),
             "right_clear": ("right", (420, -200, 310), (180, 0, 0)),
@@ -80,7 +103,7 @@ class HandoverPlanTests(unittest.TestCase):
                     name, body = job["name"], job["body"]
                     if name in ("approach_cup", "descend_to_cup", "lift_cup"):
                         self.assertEqual((body["x"], body["y"]), (385, 125))
-                        self.assertEqual(body["z"], 234 if name == "descend_to_cup" else 409)
+                        self.assertEqual(body["z"], 229 if name == "descend_to_cup" else 334)
                         self.assertEqual(tuple(body[a] for a in ("rx", "ry", "rz")), (180, 0, 180))
                     else:
                         self.assertEqual(job, baseline[name])
@@ -96,6 +119,10 @@ class HandoverPlanTests(unittest.TestCase):
                     if job["endpoint"].endswith(("/move", "/home")):
                         expected = ((min(speed, FLIP_SPEED), FLIP_ACCELERATION, 100)
                                     if job["name"] in ("right_turn_half", "right_retreat")
+                                    else (min(speed, HOME_SPEED), 100, 100)
+                                    if job["endpoint"].endswith("/home")
+                                    else (min(speed, PICK_SPEED), 100, 100)
+                                    if job["name"] in ("descend_to_cup", "lift_cup", "left_handover")
                                     else (speed, 100, 100))
                         self.assertEqual((body["speed"], body["acceleration"], body["ramp"]), expected)
                     if job["endpoint"].endswith("/home"):
@@ -111,25 +138,44 @@ class HandoverPlanTests(unittest.TestCase):
                 handover_jobs(cup, place=self.place, tag_offset=offset)
 
     def test_every_fixed_move_target_is_checked_before_any_plan_is_returned(self):
-        for constant, value in (("HANDOVER_L", (400, -100, 601)),
-                                ("LEFT_LIFT", 52), ("R_VIA", (179, -250, 200)),
-                                ("PLACE_ABOVE", 371),
+        for constant, value in (("HANDOVER_L", (350, -100, 701)),
+                                ("LEFT_LIFT", 46), ("R_VIA", (179, -250, 200)),
+                                ("PLACE_ABOVE", 471),
                                 ("PICK_Z", -110)):
             with self.subTest(constant=constant), patch("handover_plan." + constant, value):
                 with self.assertRaisesRegex(SelectionError, "workspace"):
                     self.plan()
 
     def test_fixed_height_pick_requires_table_height_without_changing_hover_rules(self):
-        for height in (-55, -0.1, 0, 9.9, 150.1, 249):
+        for height in (-55, -30.1, 150.1, 174.9):
             cup = dict(self.cup, z=height)
             with self.subTest(height=height):
                 self.assertIsNotNone(pick_position_problem(cup))
-                with self.assertRaisesRegex(SelectionError, "10..150"):
+                with self.assertRaisesRegex(SelectionError, "-30..150"):
                     handover_jobs(cup, place=self.place)
                 self.assertEqual(len(hover_moves(cup)), 2)
-        for height in (10, 50, 150):
+        for height in (-30, -15, 0, 50, 150):
             self.assertIsNone(pick_position_problem(dict(self.cup, z=height)))
             self.assertEqual(len(handover_jobs(dict(self.cup, z=height), place=self.place)), 24)
+
+    def test_ordinary_clearance_applies_except_to_explicit_pick_and_place(self):
+        with patch("handover_plan.R_VIA", (300, -300, 198.9)):
+            with self.assertRaisesRegex(SelectionError, "ordinary motion clearance"):
+                self.plan()
+        with patch("handover_plan.PICK_Z", 30):
+            pick = next(job for job in self.plan() if job["name"] == "descend_to_cup")
+            self.assertEqual(pick["body"]["z"], 189)
+        jobs = self.plan(place=dict(self.place, z=119))
+        by_name = {job["name"]: job["body"] for job in jobs}
+        self.assertEqual(by_name["right_place"]["z"], 119)
+        self.assertEqual(by_name["right_clear"]["z"], 199)
+        with self.assertRaisesRegex(SelectionError, "ordinary motion clearance"):
+            self.plan(place=dict(self.place, z=118.9))
+
+    def test_configuration_reader_rejects_calls_and_attribute_access(self):
+        for expression in ("run_hardware()", "robot.move", "[x for x in items]"):
+            with self.subTest(expression=expression), self.assertRaises(ValueError):
+                configuration_constant(ast.parse(expression, mode="eval").body, {})
 
     def test_invalid_inputs_or_blocked_selection_never_produce_a_plan(self):
         for axis in ("x", "y", "z"):
@@ -153,7 +199,7 @@ class HandoverPlanTests(unittest.TestCase):
         original = copy.deepcopy(alternative)
         jobs = {job["name"]: job for job in self.plan(place=alternative)}
         baseline = {job["name"]: job for job in self.plan()}
-        expected = {"right_turn_half": (430, -237.5, 242.5),
+        expected = {"right_turn_half": (405, -237.5, 295.5),
                     "right_retreat": (480, -360, 310),
                     "right_place": (480, -360, 230),
                     "right_clear": (480, -360, 310)}
@@ -166,22 +212,36 @@ class HandoverPlanTests(unittest.TestCase):
 
     def test_invalid_place_never_returns_a_plan(self):
         for place in (None, (), {}, dict(self.place, x=float("nan")),
-                      dict(self.place, y=501), dict(self.place, z=521)):
+                      dict(self.place, y=501), dict(self.place, z=621)):
             with self.subTest(place=place), self.assertRaises(SelectionError):
                 self.plan(place=place)
 
     def test_defaults_and_waypoints_match_original_program_without_importing_it(self):
-        # Parse literal configuration only: importing the original runs hardware.
+        # Parse numeric configuration only: importing the original runs hardware.
         source = Path(__file__).with_name("capture_and_detect.py").read_text()
         tree = ast.parse(source)
         original = {}
         for node in tree.body:
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1:
                 try:
-                    original[node.targets[0].id] = ast.literal_eval(node.value)
-                except (ValueError, TypeError):
-                    pass
+                    value = configuration_constant(node.value, original)
+                except (KeyError, ValueError, TypeError, IndexError):
+                    continue
+                target = node.targets[0]
+                if isinstance(target, ast.Name):
+                    original[target.id] = value
+                elif (isinstance(target, ast.Tuple) and isinstance(value, tuple)
+                      and len(target.elts) == len(value)
+                      and all(isinstance(item, ast.Name) for item in target.elts)):
+                    original.update((item.id, part) for item, part in zip(target.elts, value))
         self.assertEqual(DEFAULT_SPEED, original["SPEED"])
+        self.assertEqual(HOME_SPEED, original["HOME_SPEED"])
+        self.assertEqual(PICK_SPEED, original["PICK_SPEED"])
+        self.assertEqual(PICK_Z, original["PICK_Z"])
+        self.assertEqual((CUP_Z_MIN, CUP_Z_MAX), (original["CUP_Z_MIN"], original["CUP_Z_MAX"]))
+        self.assertEqual(TRAVEL_Z, original["TRAVEL_Z"])
+        self.assertEqual(Z_MIN, original["Z_MIN"])
+        self.assertEqual(FLANGE_MAX[2], original["GATEWAY_Z_MAX"])
         self.assertEqual(FLIP_SPEED, original["FLIP_SPEED"])
         self.assertEqual(FLIP_ACCELERATION, original["FLIP_ACCELERATION"])
         self.assertEqual(PLACE_ABOVE, original["PLACE_ABOVE"])
@@ -210,6 +270,12 @@ class HandoverPlanTests(unittest.TestCase):
                         if name in ("right_turn_half", "right_retreat"):
                             self.assertEqual(body["speed"], original["FLIP_SPEED"])
                             self.assertEqual(body["acceleration"], original["FLIP_ACCELERATION"])
+                        elif name in ("descend_to_cup", "lift_cup", "left_handover"):
+                            self.assertEqual(body["speed"], original["PICK_SPEED"])
+                            self.assertEqual(body["acceleration"], original["ACCELERATION"])
+                        elif name in ("right_home_start", "left_home", "right_home"):
+                            self.assertEqual(body["speed"], original["HOME_SPEED"])
+                            self.assertEqual(body["acceleration"], original["ACCELERATION"])
                         else:
                             self.assertEqual(body["speed"], original["SPEED"])
                             self.assertEqual(body["acceleration"], original["ACCELERATION"])

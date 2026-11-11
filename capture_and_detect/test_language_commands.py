@@ -75,7 +75,7 @@ class LanguageCommandTests(unittest.TestCase):
         proposal = controller.propose("Move above cup one")
         response = controller.confirm(proposal["token"])
         self.assertEqual([(c["x"], c["y"], c["z"]) for c in robot.commands],
-                         [(400, 100, 450), (505, 100, 409)])
+                         [(400, 100, 450), (505, 100, 334)])
         self.assertEqual([call.args[0] for call in capture.call_args_list],
                          ["scan", "verification"])
         self.assertEqual(response["action"], "hover")
@@ -483,13 +483,13 @@ class LanguageCommandTests(unittest.TestCase):
                                    "blocked_reason", "status"})
         self.assertTrue(cup["hover_available"])
         self.assertTrue(cup["pick_available"])
-        session.inventory["cups"][0]["z"] = 200
+        session.inventory["cups"][0]["z"] = 160
         changed = scene_summary(session)["cups"][0]
         self.assertTrue(changed["hover_available"])
         self.assertFalse(changed["pick_available"])
 
     def test_pick_height_restriction_still_allows_hover_but_blocks_goto(self):
-        original = inventory(objects=[detection("CUP", 100), detection("CUP BASE", 100, z=200)])
+        original = inventory(objects=[detection("CUP", 100), detection("CUP BASE", 100, z=160)])
         controller, _, _, robot, interpreter = self.controller(original=original, candidate=intent("hover"))
         proposal = controller.propose("Hover over cup one")
         self.assertEqual(proposal["kind"], "proposal")

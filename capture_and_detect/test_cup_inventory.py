@@ -33,7 +33,7 @@ class CupInventoryTests(unittest.TestCase):
         moves = hover_moves(cup, tag_offset=(-115, 0, 40))
         self.assertEqual(len(moves), 2)
         self.assertEqual((moves[0]["x"], moves[0]["y"], moves[0]["z"]), LEFT_READY)
-        self.assertEqual((moves[1]["x"], moves[1]["y"], moves[1]["z"]), (385, 100, 409))
+        self.assertEqual((moves[1]["x"], moves[1]["y"], moves[1]["z"]), (385, 100, 334))
         for move in moves:
             self.assertEqual(set(move), {"x", "y", "z", "rx", "ry", "rz", "arm", "speed",
                                          "acceleration", "ramp", "wait"})
@@ -61,7 +61,7 @@ class CupInventoryTests(unittest.TestCase):
         for oz in (-1000, 0, 40, 1000):
             with self.subTest(oz=oz):
                 moves = hover_moves(cup, tag_offset=(-115, 25, oz), speed=100)
-                self.assertEqual((moves[1]["x"], moves[1]["y"], moves[1]["z"]), (385, 125, 409))
+                self.assertEqual((moves[1]["x"], moves[1]["y"], moves[1]["z"]), (385, 125, 334))
                 self.assertEqual(moves[0]["z"], 450)
                 self.assertEqual(moves[1]["speed"], 100)
 
@@ -89,12 +89,12 @@ class CupInventoryTests(unittest.TestCase):
                     hover_moves({"x": x, "y": y, "z": 50})
 
     def test_base_at_hover_height_or_above_is_rejected_but_negative_z_is_allowed(self):
-        for z in (250, 251, 1000):
+        for z in (175, 176, 1000):
             with self.subTest(z=z):
                 with self.assertRaisesRegex(SelectionError, "at or above"):
                     hover_moves({"x": 500, "y": 100, "z": z})
-        for z in (-2.8, 0, 249.9):
-            self.assertEqual(hover_moves({"x": 500, "y": 100, "z": z})[1]["z"], 409)
+        for z in (-2.8, 0, 174.9):
+            self.assertEqual(hover_moves({"x": 500, "y": 100, "z": z})[1]["z"], 334)
 
     def test_nonfinite_or_invalid_coordinates_offsets_and_speed_never_produce_plan(self):
         cup = {"x": 500, "y": 100, "z": 50}

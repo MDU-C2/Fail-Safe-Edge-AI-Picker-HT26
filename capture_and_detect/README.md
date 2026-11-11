@@ -130,12 +130,14 @@ send Stop. Demo and dry-run Stop make no robot or gateway requests.
 ## What goto does
 
 The plan in `handover_plan.py` reuses the poses from the repository's original
-`capture_and_detect.py` handover. Normal move and home requests use **1200 mm/s** by default,
-with **100% acceleration and ramp**. The two cup-turning moves use **100 mm/s**
+`capture_and_detect.py` handover. Normal moves use **250 mm/s** by default,
+with **100% acceleration and ramp**. Automatic home is capped at **200 mm/s**.
+Picking, lifting and carrying to the handover are capped at **100 mm/s**.
+The two cup-turning moves use **100 mm/s**
 and **30% acceleration**, with 100% ramp, matching the upstream program.
 Every job must return `accepted: true` and exactly `message: "DONE"` before the
-next starts. `--speed` changes normal movement/home speed (1–1500 mm/s);
-turning uses the lower of that setting and 100 mm/s. Actual speed also depends
+next starts. `--speed` changes normal movement speed (1–1500 mm/s);
+home, picking and turning use the lower of that setting and their respective caps. Actual speed also depends
 on the robot controller. The custom controller retains serial confirmed jobs,
 its initial right-arm home check and one camera verification per cup; it does not
 adopt the upstream program's concurrent arm timing.
@@ -162,7 +164,7 @@ actually hold a cup. This workflow has no independent grasp or placement sensor.
 Open **Robot controls → Handover alignment** to correct the right hand's
 receiving position without updating the Pi gateway or RAPID. X/Y/Z offsets are
 in robot-base millimetres, relative to the existing flange position
-`(380, -115, 210)`. They are not camera/image directions. The startup offset is
+`(330, -115, 316)`. They are not camera/image directions. The startup offset is
 `(0, 0, 0)`; the application does not infer a correction from a phone video.
 
 After the current collision has been inspected and recovered, establish the
@@ -170,8 +172,8 @@ robot-axis direction and the centring correction at the real setup. For a
 horizontal centring problem, leave Z at zero unless a height correction has
 also been taught. Apply the small measured X/Y correction, scan again, select
 one cup and review the displayed receiving XYZ before confirming the trial.
-For example, an **illustrative** X offset of `+2` changes receiving X from 380
-to 382 mm; that example is not a diagnosed direction for this mug.
+For example, an **illustrative** X offset of `+2` changes receiving X from 330
+to 332 mm; that example is not a diagnosed direction for this mug.
 
 **Apply alignment** changes future plans only and sends no movement. It cancels
 cup and operator previews and invalidates the scan. **Reset alignment** returns
@@ -292,8 +294,8 @@ The detected base Z is checked, but heights remain fixed for this tabletop:
 
 | Position | Gripper TCP Z | Flange Z sent to RWS |
 | --- | ---: | ---: |
-| Above selected cup | 250 mm | 409 mm |
-| Pick selected cup | 75 mm | 234 mm |
+| Above selected cup | 175 mm | 334 mm |
+| Pick selected cup | 70 mm | 229 mm |
 
 The 159 mm difference is the existing gripper length. `tag_offset[2]` is not
 added to these fixed heights. For example, stored X=600 and offset X=-115 gives
@@ -304,9 +306,9 @@ Fixed poses are already flange positions; no camera offset is added to them:
 | Pose | Flange X/Y/Z (mm) |
 | --- | --- |
 | Left ready | 400, 100, 450 |
-| Left handover / lifted clear | 400, -100, 549 / 584 |
-| Right via | 200, -250, 200 |
-| Right beside / below / take | 380, -235, 175 / 380, -115, 175 / 380, -115, 210 |
+| Left handover / lifted clear | 350, -100, 655 / 690 |
+| Right via | 300, -300, 250 |
+| Right beside / below / take | 330, -235, 281 / 330, -115, 281 / 330, -115, 316 |
 | Right placement | Selected grid location X, Y, Z |
 | Right above placement | Same X/Y, placement Z + 80 |
 | Right halfway turn | Midpoint of right-below and right-above-placement |
@@ -317,8 +319,9 @@ Home uses the existing RAPID home routines;
 the client also checks all seven reported axes within 1 degree of those targets.
 
 Saved XY limits remain X=350–800 and Y=-230–420 mm. Corrected flange targets
-must also fit the gateway defaults: X=180–800, Y=-400–500, Z=50–600 mm.
-Full picking additionally requires a detected cup-base Z of 10–150 mm.
+must also fit the configured gateway limits: X=180–800, Y=-400–500, Z=50–700 mm.
+Ordinary flange targets must be at least 199 mm high; pick/place targets may be lower.
+Full picking additionally requires a detected cup-base Z of -30–150 mm.
 A candidate permitted only for hovering is labelled `HOVER ONLY` in the image
 and `hover only` in the list. A cup with Y=-627 mm remains blocked even when
 explicitly selected. Place it inside the calibrated work area and scan again;

@@ -6,6 +6,7 @@ import secrets
 import time
 
 from cup_inventory import SelectionError
+from handover_plan import HOME_SPEED
 from robot_client import RobotClient
 
 
@@ -93,7 +94,7 @@ class RobotControls:
         self._check_ready()
         self.session.set_speed(valid_speed(speed))
         return {"message": f"Future cup actions use {self.session.speed:g} mm/s; automatic home uses "
-                           f"{self.session.home_speed:g} mm/s; manual home is capped at "
+                           f"{getattr(self.session, 'home_speed', min(self.session.speed, HOME_SPEED)):g} mm/s; manual home is capped at "
                            f"{min(self.session.speed, 100):g} mm/s. Pending selections cancelled. "
                            "This setting lasts until the app restarts."}
 

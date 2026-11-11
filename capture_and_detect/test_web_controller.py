@@ -15,6 +15,7 @@ from cup_commands import CupSession
 from cup_inventory import SelectionError
 from language_commands import LanguageController
 from robot_client import RobotCommandError
+from robot_controls import RobotControls
 from test_cup_selection import RobotDouble, detection, inventory
 from test_support_grid import grid_fixture
 from web_controller import WebController, WebError
@@ -77,6 +78,16 @@ class DirectWebSelectionTests(unittest.TestCase):
         values = {"action": "hover", "capture_id": self.session.inventory["capture"], "cup_id": 1}
         values.update(changes)
         return self.language.propose_selection(**values)
+
+    def test_speed_control_reports_actual_caps_without_new_session_attributes(self):
+        controls = RobotControls(self.session)
+        for speed, automatic, manual in ((250, 200, 100), (25, 25, 25), (1500, 200, 100)):
+            with self.subTest(speed=speed):
+                result = controls.set_speed(speed)
+                self.assertIn(f"automatic home uses {automatic} mm/s", result["message"])
+                self.assertIn(f"manual home is capped at {manual} mm/s", result["message"])
+                self.assertEqual(self.session.speed, speed)
+        self.assertEqual(self.fixture.robot.jobs, [])
 
     def test_direct_selection_requires_confirmation_and_skips_model(self):
         result = self.propose()
@@ -197,7 +208,7 @@ class WebControllerTests(unittest.TestCase):
         self.assertIsNone(proposal["cup_id"])
         self.assertEqual(proposal["cup_ids"], [1, 2])
         self.assertEqual([place["id"] for place in proposal["placements"]], [1, 2])
-        self.assertEqual(proposal["speed"], 1200)
+        self.assertEqual(proposal["speed"], 250)
         self.assertEqual(proposal["flip_speed"], 100)
         self.assertEqual(self.fixture.robot.jobs, [])
         self.fixture.interpreter.interpret.assert_not_called()

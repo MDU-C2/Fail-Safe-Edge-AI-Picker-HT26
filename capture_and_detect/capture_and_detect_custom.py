@@ -490,7 +490,7 @@ def main(argv=None):
     parser.add_argument("--gateway", default="http://169.254.125.202:8000")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
-    parser.add_argument("--speed", type=positive, default=DEFAULT_SPEED, help="Normal motion speed, mm/s (1..1500; default 1200). Turning is capped at 100.")
+    parser.add_argument("--speed", type=positive, default=DEFAULT_SPEED, help=f"Normal motion speed, mm/s (1..1500; default {DEFAULT_SPEED}). Home is capped at 200; picking/turning at 100.")
     parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
     parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
     parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")

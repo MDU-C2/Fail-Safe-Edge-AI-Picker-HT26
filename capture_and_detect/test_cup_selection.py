@@ -150,7 +150,7 @@ class CupSelectionTests(unittest.TestCase):
         session, capture, robot, save = self.session(fresh=fresh)
         handle_terminal(session, "scan")
         handle_terminal(session, "hover 1")
-        self.assertEqual([(c["x"], c["y"], c["z"]) for c in robot.commands], [(400, 100, 450), (505, 100, 409)])
+        self.assertEqual([(c["x"], c["y"], c["z"]) for c in robot.commands], [(400, 100, 450), (505, 100, 334)])
         self.assertTrue(all(c["arm"] == "left" and c["wait"] is True for c in robot.commands))
         self.assertEqual([call.args[0] for call in capture.call_args_list], ["scan", "verification"])
         self.assertEqual(session.inventory["cups"][0]["status"], "at_hover")
@@ -166,7 +166,7 @@ class CupSelectionTests(unittest.TestCase):
         with patch("requests.post") as post, patch("requests.get") as get:
             session.scan()
             moves = [job["body"] for job in self.select(session)]
-            self.assertEqual([(c["x"], c["y"], c["z"]) for c in moves], [(400, 100, 450), (500, 100, 409)])
+            self.assertEqual([(c["x"], c["y"], c["z"]) for c in moves], [(400, 100, 450), (500, 100, 334)])
             post.assert_not_called()
             get.assert_not_called()
         self.assertTrue(session.scan_usable)
@@ -243,7 +243,7 @@ class CupSelectionTests(unittest.TestCase):
                                (inventory(capture="v1", sequence=11, tag_offset=session.tag_offset), 99)]
         session.scan()
         self.select(session)
-        self.assertEqual((robot.commands[1]["x"], robot.commands[1]["y"], robot.commands[1]["z"]), (385, 100, 409))
+        self.assertEqual((robot.commands[1]["x"], robot.commands[1]["y"], robot.commands[1]["z"]), (385, 100, 334))
         self.assertEqual(session.inventory["cups"][0]["x"], 500)
         self.assertEqual(session.inventory["cups"][0]["last_verification"]["jobs"][1]["endpoint"], "/robot/rws/move")
 
@@ -319,7 +319,7 @@ class CupSelectionTests(unittest.TestCase):
         handle_terminal(session, "scan")
         handle_terminal(session, "goto 2")
         jobs = {job["name"]: job for job in robot.jobs}
-        for name, height in (("approach_cup", 409), ("descend_to_cup", 234), ("lift_cup", 409)):
+        for name, height in (("approach_cup", 334), ("descend_to_cup", 229), ("lift_cup", 334)):
             body = jobs[name]["body"]
             self.assertEqual((body["x"], body["y"], body["z"]), (490, 100, height))
         self.assertEqual(robot.jobs[-1]["name"], "right_home")

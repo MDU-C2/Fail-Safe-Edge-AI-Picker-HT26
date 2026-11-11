@@ -80,7 +80,7 @@ class DetectionStorageTests(unittest.TestCase):
         cup = scan["cups"][0]
         self.assertEqual((cup["x"], cup["y"], cup["z"]), (510, 100, 50))
         self.assertEqual(cup["camera_mm"], {"x": 510, "y": 100, "z": 800})
-        self.assertEqual(cup["hover_target"]["flange_mm"], {"x": 395, "y": 100, "z": 409})
+        self.assertEqual(cup["hover_target"]["flange_mm"], {"x": 395, "y": 100, "z": 334})
         self.assertEqual(scan["tag_offset_mm"], [-115, 0, 40])
         self.assertTrue(cup["selectable"])
         self.assertEqual(json.loads((self.out_dir / "cups.json").read_text()), scan)
@@ -102,7 +102,7 @@ class DetectionStorageTests(unittest.TestCase):
 
     def test_actual_mark_cup_bases_accepts_orphans_from_height_or_handle(self):
         cases = [([(1, (505, 95, 515, 105))], 800, "cup_height"),
-                 ([(1, (505, 95, 515, 105)), (2, (515, 95, 525, 105))], 950, "near_handle")]
+                 ([(1, (505, 95, 515, 105)), (2, (515, 95, 525, 105))], 910, "near_handle")]
         for detections, depth_mm, reason in cases:
             with self.subTest(reason=reason):
                 self.model.predict.return_value = [Result(self.image, detections)]

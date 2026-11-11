@@ -292,7 +292,7 @@ def main(argv=None):
     parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Placement cell width in mm (default 80; 20..200)")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--speed", type=float, default=DEFAULT_SPEED,
-                        help="Normal robot speed in mm/s (default 1200); cup flips are capped at 100")
+                        help=f"Normal robot speed in mm/s (default {DEFAULT_SPEED}); home capped at 200; picking/turning at 100")
     parser.add_argument("--max-result-age", type=float, default=15)
     parser.add_argument("--match-mm", type=float, default=20)
     parser.add_argument("--match-px", type=float, default=40)

@@ -6,25 +6,29 @@ only a coarse target filter; the controller must still check reachability.
 
 from cup_inventory import (
     GRIPPER_TCP_Z, LEFT_DOWN, LEFT_READY, TRAVEL_Z, SelectionError,
-    _flange_problem, finite_number, normalize_offset, position_problem,
+    _motion_flange_problem, finite_number, normalize_offset, position_problem,
 )
 from placing_grid import validate_place
 
 # Preserve the table and handover geometry from the original detection program.
 # Pick/travel heights refer to the left gripper TCP. All fixed poses below refer
 # to tool0 (the flange), so calibration offsets must not be added to them.
-CUP_Z_MIN, CUP_Z_MAX = 10, 150
-PICK_Z = 75
-HANDOVER_L = (400, -100, 549)
+CUP_Z_MIN, CUP_Z_MAX = -30, 150
+PICK_Z = 70
 LEFT_LIFT = 35
+LEFT_TOP = 690
+HANDOVER_X = 350
+HANDOVER_L = (HANDOVER_X, -100, LEFT_TOP - LEFT_LIFT)
 RIGHT_UP = (0, 0, 0)
 RIGHT_DOWN = (180, 0, 0)
 RIGHT_SIDE = (90, 0, 0)
-R_VIA = (200, -250, 200)
-R_TAKE = (380, -115, 210)
+R_VIA = (300, -300, 250)
+R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])
-DEFAULT_SPEED = 1200
+DEFAULT_SPEED = 250
+HOME_SPEED = 200
+PICK_SPEED = 100
 FLIP_SPEED = 100
 FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
@@ -70,13 +74,14 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=DEFAULT_SPEED,
     """Return ordered ``{name, endpoint, body}`` jobs for one selected cup.
 
     Apply the calibration's X/Y offset exactly once to cup-relative moves. The
-    recorded Z and Z offset are not commanded: the table pick uses TCP Z=75 mm
-    and travel uses TCP Z=250 mm, with the 159 mm gripper length added to each.
+    recorded Z and Z offset are not commanded: the table pick uses TCP Z=70 mm
+    and travel uses TCP Z=175 mm, with the 159 mm gripper length added to each.
     Home jobs use the controller's existing home routines, not guessed poses.
     The explicit placing-grid location is a flange target, without calibration
-    offsets. Normal moves use the original program's 1200 mm/s default; both
-    rotation moves use at most 100 mm/s and 30% acceleration. A lower selected
-    speed also caps those rotation moves.
+    offsets. Normal moves use the original program's 250 mm/s default. Homes
+    use at most 200 mm/s; picking, lifting and carrying to the handover use at
+    most 100 mm/s. Rotation moves use at most 100 mm/s and 30% acceleration.
+    A lower selected speed caps all of those moves.
 
     An explicit receiving offset translates the right hand's take/below/beside
     points together and recomputes its turning midpoint. Near the adjusted grip,
@@ -112,8 +117,8 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=DEFAULT_SPEED,
         jobs.append({"name": name, "endpoint": "/robot/rws/" + endpoint,
                      "body": {"arm": arm, "wait": True, **body}})
 
-    def move(name, arm, position, rotation, *, move_speed=None, acceleration=100, ramp=100):
-        reason = _flange_problem(position)
+    def move(name, arm, position, rotation, *, move_speed=None, acceleration=100, ramp=100, pick=False):
+        reason = _motion_flange_problem(position, pick=pick)
         if reason:
             raise SelectionError(f"{name}: {reason}")
         job(name, arm, "move", **dict(zip(("x", "y", "z"), position)),
@@ -121,7 +126,7 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=DEFAULT_SPEED,
             speed=speed if move_speed is None else move_speed, acceleration=acceleration, ramp=ramp)
 
     def home(name, arm):
-        job(name, arm, "home", speed=speed, acceleration=100, ramp=100)
+        job(name, arm, "home", speed=min(speed, HOME_SPEED), acceleration=100, ramp=100)
 
     def grip(name, arm, action):
         job(name, arm, "gripper", action=action)
@@ -131,10 +136,10 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=DEFAULT_SPEED,
     grip("left_open", "left", "open")
     move("left_ready", "left", LEFT_READY, LEFT_DOWN)
     move("approach_cup", "left", above, LEFT_DOWN)
-    move("descend_to_cup", "left", pick, LEFT_DOWN)
+    move("descend_to_cup", "left", pick, LEFT_DOWN, move_speed=min(speed, PICK_SPEED), pick=True)
     grip("grip_cup", "left", "grip")
-    move("lift_cup", "left", above, LEFT_DOWN)
-    move("left_handover", "left", HANDOVER_L, LEFT_DOWN)
+    move("lift_cup", "left", above, LEFT_DOWN, move_speed=min(speed, PICK_SPEED))
+    move("left_handover", "left", HANDOVER_L, LEFT_DOWN, move_speed=min(speed, PICK_SPEED))
 
     # The left hand holds the cup until the right hand has finished gripping it.
     grip("right_open", "right", "open")
@@ -153,7 +158,7 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=DEFAULT_SPEED,
     move("right_retreat", "right", place_above, RIGHT_DOWN,
          move_speed=min(speed, FLIP_SPEED), acceleration=FLIP_ACCELERATION)
     home("left_home", "left")
-    move("right_place", "right", spot, RIGHT_DOWN)
+    move("right_place", "right", spot, RIGHT_DOWN, pick=True)
     grip("right_release", "right", "open")
     move("right_clear", "right", place_above, RIGHT_DOWN)
     home("right_home", "right")
