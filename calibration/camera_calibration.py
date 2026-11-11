@@ -51,13 +51,13 @@ GRIPPER_TCP_Z = 159              # tGrip in rapid/LeftArmInstructions.mod: TCP 1
 # Gripper orientation during calibration: horizontal, flat side with the tag up.
 CALIB_ROT = (90, 0, 90)
 
-# Gripper TCP positions, mm, wobj0, table = z 0. The first pose stays high, because the
-# move from HOME turns the gripper into CALIB_ROT.
+# Gripper TCP positions, mm, wobj0, table = z 0. Pose 1 and pose 20 are high (z 200), so the
+# gripper turns into CALIB_ROT, and leaves, well above the table. Each step goes to a neighbouring point.
 POSES = [
-    (600, 410, 200), (600, 250, 90), (600, 90, 170), (600, -70, 70), (600, -230, 110),
-    (520, -230, 140), (520, -70, 90), (520, 90, 110), (520, 250, 70), (520, 410, 90),
-    (440, 410, 90), (440, 250, 170), (440, 90, 70), (440, -70, 110), (440, -230, 140),
-    (380, -150, 170), (350, -70, 110), (350, 90, 90), (380, 250, 90), (350, 410, 140),
+    (470, 420, 200), (360, 420, 110), (360, 200, 70), (360, -10, 130), (360, -230, 90),
+    (470, -230, 150), (470, -10, 70), (470, 200, 170), (580, 200, 110), (580, 420, 70),
+    (690, 420, 150), (800, 420, 90), (800, 200, 170), (690, 200, 70), (690, -10, 130),
+    (800, -10, 70), (800, -230, 130), (690, -230, 90), (580, -230, 170), (580, -10, 200),
 ]
 
 TAG_ID = 0

@@ -13,6 +13,7 @@ capture_and_detect/data
 /rapid/backups/
 /calibration/calibration_runs
 /client_tokens.json
+.venv/
 /.idea
 
 # Westermo Lynx device config snapshot — kept local, not shared
