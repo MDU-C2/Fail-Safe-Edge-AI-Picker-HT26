@@ -1,18 +1,21 @@
 """
 Subscribe to gateway events over the WebSocket and print them.
 
-The WebSocket only works with the gateway in development mode; in
-strict mode the connection is refused.
+Strict mode: the Bearer token (--token, default the GATEWAY_TOKEN
+environment variable) goes in the upgrade request, as on the HTTP
+routes. Development mode: the client is ?client=<--client>.
 
 Usage (from the repository root):
     python gateway/scripts/watch_events.py
     python gateway/scripts/watch_events.py --client diagnostics --events control robot.rapid
+    python gateway/scripts/watch_events.py --url ws://169.254.219.127:8000/api/v1/events --token <diagnostics token>
 
 Needs: websockets
 """
 
 import argparse
 import json
+import os
 
 from websockets.sync.client import connect
 
@@ -38,13 +41,16 @@ def main() -> None:
     )
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Events WebSocket URL")
+    parser.add_argument("--token", default=os.environ.get("GATEWAY_TOKEN"), help="Bearer token (strict mode; default GATEWAY_TOKEN)")
     parser.add_argument("--client", default="primary", help="Development client id")
     parser.add_argument("--events", nargs="+", default=DEFAULT_EVENTS, help="Event names or prefixes")
 
     args = parser.parse_args()
 
-    with connect(f"{args.url}?client={args.client}") as websocket:
-        print(f"Connected as {args.client}", flush=True)
+    headers = {"Authorization": f"Bearer {args.token}"} if args.token else None
+
+    with connect(f"{args.url}?client={args.client}", additional_headers=headers) as websocket:
+        print("Connected" + ("" if args.token else f" as {args.client}"), flush=True)
 
         websocket.send(
             json.dumps(

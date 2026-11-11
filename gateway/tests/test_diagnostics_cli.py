@@ -215,7 +215,7 @@ def test_event_feed_receives_events(
         feed.stop.set()
 
 
-def test_event_feed_is_refused_in_strict_mode(
+def test_event_feed_receives_events_in_strict_mode(
     strict_gateway: Gateway,
 ) -> None:
     gateway = diagnostics_client(strict_gateway)
@@ -223,6 +223,45 @@ def test_event_feed_is_refused_in_strict_mode(
         url=gateway.events_url(),
         client="diagnostics",
         events=diag.EVENT_FAMILIES,
+        token=gateway.token,
+    )
+    feed.start()
+
+    try:
+        deadline = time.monotonic() + 10
+
+        while feed.state != "connected" or not feed.events_received:
+            assert time.monotonic() < deadline, feed.state
+            time.sleep(0.05)
+
+        admin = strict_gateway.client("admin")
+        admin.post("/control/acquire")
+        admin.post("/control/release")
+
+        def types() -> list[str]:
+            return [event.message["type"] for event in feed.events_received]
+
+        while "control.released" not in types():
+            assert time.monotonic() < deadline, types()
+            time.sleep(0.05)
+
+        assert "control.acquired" in types()
+
+    finally:
+        feed.stop.set()
+
+
+@pytest.mark.parametrize("token", [None, "not-a-token"], ids=["no-token", "unknown-token"])
+def test_event_feed_is_refused_in_strict_mode_without_valid_token(
+    strict_gateway: Gateway,
+    token: str | None,
+) -> None:
+    gateway = diagnostics_client(strict_gateway)
+    feed = diag.EventFeed(
+        url=gateway.events_url(),
+        client="diagnostics",
+        events=diag.EVENT_FAMILIES,
+        token=token,
     )
     feed.start()
 
@@ -237,13 +276,20 @@ def test_event_feed_is_refused_in_strict_mode(
         feed.stop.set()
 
 
-def test_events_command_refuses_strict_mode(
+def test_events_command_with_unknown_token_is_refused(
     strict_gateway: Gateway,
 ) -> None:
-    completed = run_tool(strict_gateway, "events")
+    completed = subprocess.run(
+        [sys.executable, str(TOOL), "--url", strict_gateway.api_url, "--token", "not-a-token", "events"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", "COLUMNS": "140"},
+        timeout=60,
+    )
 
     assert completed.returncode == 2
-    assert "strict mode" in completed.stderr
+    assert "refused" in completed.stderr
 
 
 # ================================================================

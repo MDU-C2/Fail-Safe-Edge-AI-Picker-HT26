@@ -59,6 +59,15 @@ public:
         const std::optional<std::string>& client_id
     ) const;
 
+    //
+    // Strict mode: the client of the "Authorization: Bearer <token>"
+    // header, or nothing for a missing, malformed or unknown token.
+    // Used by the events WebSocket.
+    //
+    std::optional<Identity> bearer_identity(
+        const http::Request& request
+    ) const;
+
     bool development() const {
         return development_;
     }

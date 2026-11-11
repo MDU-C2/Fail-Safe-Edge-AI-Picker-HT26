@@ -80,7 +80,7 @@ The Lynx is **already hosting the project's edge‑AI apps** via WeOS *app‑hos
 | `yololivetest` | `envoy-yololive-1.0` | YOLO live inference off the OAK (`OAK_TARGET=169.254.1.223`) | Created |
 | `yolowebtest` | `envoy-yoloweb-1.0` | YOLO + web viewer on port 8080 | Created |
 | `yolotest` | `yolophoto2` | YOLO still‑image test (own netns) | No image |
-| `gateway` | `gateway-cpp-0.3.0` (label `gatewaycpp`) | The C++ robot gateway, port 8000 ([gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md)) | Running (saved in startup-config, autostart) |
+| `gateway` | `gateway-cpp-0.4.0` (label `gatewaycpp`) | The C++ robot gateway, port 8000 ([gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md)) | Running (saved in startup-config, autostart) |
 
 `camnettest` (NCNN cam test, image `yoloncnn` no longer present) was removed on 2026-11-11 to make room: WeOS allows 5 apps. The same day the running config was saved to the startup config; that also made permanent an earlier unsaved change by someone else (`lynxpicker` had replaced the hello-world app `app1`: image `hello-lynx-1.0`, `cmd /hello.sh`, own netns, autostart).
 

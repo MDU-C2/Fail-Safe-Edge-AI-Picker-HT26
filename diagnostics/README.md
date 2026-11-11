@@ -48,10 +48,18 @@ mode needs.
 
 ## Events
 
-The events WebSocket (`/api/v1/events`) only works with the gateway in
-**development** mode; in strict mode the gateway refuses it, because
-token auth is not implemented for the WebSocket. `watch` then says so and
-only polls, and `events` exits with code 2.
+The events WebSocket (`/api/v1/events`) uses the same identity as the
+HTTP requests: in **strict** mode the Bearer token goes in the upgrade
+request's `Authorization` header (gateway 0.4.0 and later, both
+implementations), in **development** mode `?client=<--client>`. In strict
+mode without a token `watch` only polls and `events` exits with code 2;
+a rejected token shows as `refused` in the events panel (exit code 2 for
+`events`). So `--target lynx watch` shows the Lynx gateway's events live:
+
+```powershell
+python diagnostics/gateway_diag.py --target lynx watch
+python diagnostics/gateway_diag.py --target lynx events --events control robot.status
+```
 
 ## What it polls
 

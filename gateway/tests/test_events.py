@@ -1,4 +1,4 @@
-"""The events WebSocket (development mode only)."""
+"""The events WebSocket (development mode: ?client=, strict mode: Bearer token)."""
 
 import json
 import time
@@ -8,7 +8,7 @@ import pytest
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import ClientConnection, connect
 
-from gateway.tests.support import Gateway, expect
+from gateway.tests.support import Gateway, expect, token_for
 
 
 RECEIVE_TIMEOUT_SECONDS = 5.0
@@ -189,13 +189,68 @@ def test_unknown_development_client_is_refused(
             websocket.recv(timeout=RECEIVE_TIMEOUT_SECONDS)
 
 
-def test_strict_mode_refuses_websocket(
+def open_strict_events(
+    gateway: Gateway,
+    authorization: str | None,
+    query: str = "",
+) -> ClientConnection:
+    url = gateway.url.replace("http://", "ws://")
+    headers = {"Authorization": authorization} if authorization is not None else None
+
+    return connect(f"{url}/api/v1/events{query}", additional_headers=headers)
+
+
+def test_strict_mode_with_token(
     strict_gateway: Gateway,
 ) -> None:
     #
-    # Token auth is not implemented for the WebSocket yet, so
-    # strict mode closes every connection.
+    # The upgrade request carries the same Bearer token as the HTTP
+    # routes; events then flow as in development mode.
     #
+    authorization = f"Bearer {token_for('diagnostics')}"
+
+    with open_strict_events(strict_gateway, authorization) as websocket:
+        assert request(websocket, "subscribe", ["control", "calibration"])["type"] == "subscription.updated"
+
+        admin = strict_gateway.client("admin")
+
+        with admin.control():
+            expect(admin.post("/calibration", json={"units": "mm"}), 200)
+
+        assert wait_for(websocket, "control.acquired")["data"]["client_id"] == "admin"
+        assert wait_for(websocket, "calibration.updated")["data"]["updated_by"] == "admin"
+        assert wait_for(websocket, "control.released")["data"]["client_id"] == "admin"
+
+
+def test_strict_mode_preempted_client_is_told(
+    strict_gateway: Gateway,
+) -> None:
+    with open_strict_events(strict_gateway, f"Bearer {token_for('primary')}") as websocket:
+        expect(strict_gateway.client("primary").post("/control/acquire"), 200)
+        expect(strict_gateway.client("admin").post("/control/acquire"), 200)
+
+        assert wait_for(websocket, "control.revoked")["data"] == {"reason": "preempted", "new_controller": "admin"}
+
+        expect(strict_gateway.client("admin").post("/control/release"), 200)
+
+
+@pytest.mark.parametrize(
+    ("authorization", "query"),
+    [
+        (None, ""),
+        (None, "?client=admin"),
+        ("Bearer not-a-token", ""),
+        ("Bearer ", ""),
+        (f"Basic {token_for('admin')}", ""),
+        (token_for("admin"), ""),
+    ],
+    ids=["no-token", "client-query-ignored", "unknown-token", "empty-token", "wrong-scheme", "no-scheme"],
+)
+def test_strict_mode_refuses_without_valid_token(
+    strict_gateway: Gateway,
+    authorization: str | None,
+    query: str,
+) -> None:
     with pytest.raises((InvalidStatus, ConnectionClosed)):
-        with open_events(strict_gateway, "admin") as websocket:
+        with open_strict_events(strict_gateway, authorization, query) as websocket:
             websocket.recv(timeout=RECEIVE_TIMEOUT_SECONDS)

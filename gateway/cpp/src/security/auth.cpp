@@ -27,6 +27,45 @@ std::optional<Identity> Authenticator::development_identity(
     return registry_.identity(id, false);
 }
 
+namespace {
+
+//
+// As FastAPI's HTTPBearer(auto_error=False): anything but
+// "Bearer <credentials>" counts as no token.
+//
+std::optional<std::string> bearer_token(
+    const http::Request& request
+) {
+    if (const auto header = request.header("Authorization")) {
+        const std::string_view value = trim(*header);
+        const auto space = value.find(' ');
+
+        if (space != std::string_view::npos && iequals(value.substr(0, space), "bearer")) {
+            const std::string_view credentials = trim(value.substr(space + 1));
+
+            if (!credentials.empty()) {
+                return std::string(credentials);
+            }
+        }
+    }
+
+    return std::nullopt;
+}
+
+}  // namespace
+
+std::optional<Identity> Authenticator::bearer_identity(
+    const http::Request& request
+) const {
+    const auto token = bearer_token(request);
+
+    if (!token) {
+        return std::nullopt;
+    }
+
+    return registry_.authenticate(*token);
+}
+
 Identity Authenticator::identify(
     const http::Request& request
 ) const {
@@ -54,24 +93,7 @@ Identity Authenticator::identify(
     // Strict mode
     // ------------------------------------------------------------
 
-    //
-    // As FastAPI's HTTPBearer(auto_error=False): anything but
-    // "Bearer <credentials>" counts as no token.
-    //
-    std::optional<std::string> token;
-
-    if (const auto header = request.header("Authorization")) {
-        const std::string_view value = trim(*header);
-        const auto space = value.find(' ');
-
-        if (space != std::string_view::npos && iequals(value.substr(0, space), "bearer")) {
-            const std::string_view credentials = trim(value.substr(space + 1));
-
-            if (!credentials.empty()) {
-                token = std::string(credentials);
-            }
-        }
-    }
+    const auto token = bearer_token(request);
 
     const http::Headers challenge = {{"WWW-Authenticate", "Bearer"}};
 

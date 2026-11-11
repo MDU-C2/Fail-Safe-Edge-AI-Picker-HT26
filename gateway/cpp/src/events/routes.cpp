@@ -148,19 +148,18 @@ void add_event_routes(
     http::Router& router
 ) {
     //
-    // WS /events: development mode only (the client from ?client=,
-    // default the highest priority); strict mode refuses it, since
-    // token auth is not implemented for the WebSocket.
+    // WS /events: in development mode the client from ?client=
+    // (default the highest priority), in strict mode the Bearer
+    // token in the upgrade request's Authorization header, as on
+    // the HTTP routes (?client= is ignored). Otherwise refused.
     //
     router.websocket(
         app.settings.api_prefix + "/events",
         [&app](http::Request& request, const std::shared_ptr<http::WebSocket>& socket)
             -> std::optional<http::WebSocketCallbacks> {
-            if (!app.auth.development()) {
-                return std::nullopt;
-            }
-
-            const auto identity = app.auth.development_identity(request.query_value("client"));
+            const auto identity = app.auth.development()
+                ? app.auth.development_identity(request.query_value("client"))
+                : app.auth.bearer_identity(request);
 
             if (!identity) {
                 return std::nullopt;

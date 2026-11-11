@@ -22,8 +22,9 @@ Identity:
     development mode  X-Dev-Client: <--client> (default diagnostics);
                       the WebSocket uses ?client=<--client>.
 
-Events come from WS /api/v1/events, which the gateway only serves in
-development mode; in strict mode the dashboard says so and polls only.
+Events come from WS /api/v1/events: in strict mode with the same Bearer
+token in the upgrade request (without a token the dashboard polls only),
+in development mode as ?client=<--client>.
 
 Works against either implementation (Python or C++).
 
@@ -151,6 +152,7 @@ class Gateway:
         self.client = client
         self.verify = verify
         self.timeout = timeout
+        self.token = token or None
         self.has_token = bool(token)
 
         self.session = requests.Session()
@@ -745,14 +747,15 @@ class ReceivedEvent:
 @dataclass
 class EventFeed:
     """
-    Background WebSocket subscriber that reconnects on its own. Only
-    started against a development-mode gateway; strict mode refuses
-    the handshake.
+    Background WebSocket subscriber that reconnects on its own. It
+    sends ?client= (development mode) and, with a token, the Bearer
+    header (strict mode); the gateway uses whichever its mode needs.
     """
 
     url: str
     client: str
     events: list[str]
+    token: str | None = None
     verify: bool = True
     events_received: deque = field(default_factory=lambda: deque(maxlen=500))
     state: str = "not started"
@@ -777,6 +780,9 @@ class EventFeed:
 
         return context
 
+    def headers(self) -> dict | None:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else None
+
     def run(self) -> None:
         while not self.stop.is_set():
             self.state = "connecting"
@@ -786,6 +792,7 @@ class EventFeed:
                     f"{self.url}?client={self.client}",
                     open_timeout=5,
                     ssl=self.ssl_context(),
+                    additional_headers=self.headers(),
                 ) as websocket:
                     websocket.send(json.dumps({"action": "subscribe", "events": self.events}))
                     self.state = "connected"
@@ -807,7 +814,7 @@ class EventFeed:
                         self.wake.set()
 
             except InvalidStatus as error:
-                self.state = f"refused (HTTP {error.response.status_code}: strict mode or unknown --client)"
+                self.state = f"refused (HTTP {error.response.status_code}: missing or unknown token, or unknown --client)"
 
             except ConnectionClosed as error:
                 code = error.rcvd.code if error.rcvd else None
@@ -849,7 +856,7 @@ def events_panel(
 ) -> Panel:
     if feed is None:
         reason = (
-            "events need the gateway in development mode (the WebSocket refuses strict mode); polling only"
+            "strict mode without a token: no events (give --token / GATEWAY_DIAG_TOKEN); polling only"
             if mode == "strict"
             else "waiting for the gateway"
         )
@@ -1000,11 +1007,14 @@ def command_watch(
                     if view.intrinsics is None or not view.intrinsics.ok:
                         view.intrinsics = gateway.get("/camera/intrinsics")
 
-                    if feed is None and (health.data or {}).get("security_mode") == "development" and not args.no_events:
+                    mode = (health.data or {}).get("security_mode")
+
+                    if feed is None and not args.no_events and (mode == "development" or (mode == "strict" and gateway.has_token)):
                         feed = EventFeed(
                             url=gateway.events_url(),
                             client=gateway.client,
                             events=args.events,
+                            token=gateway.token,
                             verify=gateway.verify,
                         )
                         feed.start()
@@ -1044,16 +1054,16 @@ def command_events(
     console = Console(stderr=True)
     health = gateway.get("/health")
 
-    if health.ok and (health.data or {}).get("security_mode") == "strict":
-        console.print("[red]The gateway is in strict mode; its events WebSocket only works in development mode.[/red]")
+    if health.ok and (health.data or {}).get("security_mode") == "strict" and not gateway.has_token:
+        console.print("[red]The gateway is in strict mode: its events WebSocket needs a token (--token, GATEWAY_DIAG_TOKEN or client_tokens.json).[/red]")
         return 2
 
     url = f"{gateway.events_url()}?client={gateway.client}"
-    feed = EventFeed(url=gateway.events_url(), client=gateway.client, events=args.events, verify=gateway.verify)
+    feed = EventFeed(url=gateway.events_url(), client=gateway.client, events=args.events, token=gateway.token, verify=gateway.verify)
     out = Console()
 
     try:
-        with connect(url, open_timeout=5, ssl=feed.ssl_context()) as websocket:
+        with connect(url, open_timeout=5, ssl=feed.ssl_context(), additional_headers=feed.headers()) as websocket:
             websocket.send(json.dumps({"action": "subscribe", "events": args.events}))
             console.print(f"[dim]connected to {url}, subscribed to {' '.join(args.events)}[/dim]")
 
@@ -1075,7 +1085,7 @@ def command_events(
         return 0
 
     except InvalidStatus as error:
-        console.print(f"[red]refused: HTTP {error.response.status_code} (strict mode, or unknown --client)[/red]")
+        console.print(f"[red]refused: HTTP {error.response.status_code} (missing or unknown token, or unknown --client)[/red]")
         return 2
 
     except (OSError, TimeoutError) as error:
@@ -1158,7 +1168,7 @@ def parse_args(
     status = commands.add_parser("status", help="One snapshot; exit 0 ok, 1 degraded, 2 unreachable")
     status.add_argument("--json", action="store_true", help="Raw results as JSON")
 
-    events = commands.add_parser("events", help="Stream events (development mode only)")
+    events = commands.add_parser("events", help="Stream events (strict mode needs a token)")
     events.add_argument("--events", nargs="+", default=EVENT_FAMILIES, help="Event names or prefixes")
     events.add_argument("--json", action="store_true", help="One raw JSON message per line")
 

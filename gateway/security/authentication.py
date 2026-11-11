@@ -46,6 +46,31 @@ def get_development_identity(
     )
 
 
+def get_bearer_identity(
+    authorization: str | None,
+) -> Identity | None:
+    """
+    Strict mode: the client of the token in an
+    "Authorization: Bearer <token>" header value, or None for a
+    missing, malformed or unknown token. Parsed like FastAPI's
+    HTTPBearer; used by the events WebSocket, whose upgrade request
+    carries the same header as the HTTP routes.
+    """
+
+    if authorization is None:
+        return None
+
+    scheme, _, credentials = authorization.strip().partition(" ")
+    credentials = credentials.strip()
+
+    if scheme.lower() != "bearer" or not credentials:
+        return None
+
+    return get_client_registry().authenticate(
+        credentials
+    )
+
+
 def get_identity(
     settings: Annotated[
         Settings,

@@ -9,7 +9,7 @@ MDU robotics project course (DVA490/DVA474, HT2026): a fail-safe dish-picking sy
 Other contents:
 - [send_coordinate.py](send_coordinate.py) – standalone script that sends `{"x","y","z"}` (mm) as a JSON line over a raw TCP socket to the YuMi RAPID socket server (`192.168.1.10:5000`). It is not wired into the gateway yet.
 - [rapid/](rapid/) – the RAPID program for the YuMi, shared by the team and the gateway (see "RAPID program" below): the arm modules, the team's `CommServer` socket server, and `sim/GripperStub.mod` for RobotStudio. Used by [calibration/](calibration/), [capture_and_detect/](capture_and_detect/) and the gateway's RWS API. Other people work on it; do not change it unless asked.
-- [diagnostics/](diagnostics/) – `gateway_diag.py`, a read-only terminal tool acting as the `diagnostics` client (token from `--token`, `GATEWAY_DIAG_TOKEN` or `client_tokens.json`): `watch` (live `rich` dashboard of every read-only endpoint plus the event log, events only in development mode), `status` (snapshot, exit 0 ok / 1 degraded / 2 unreachable, `--json`), `events`, `get PATH`; `--target local|pi|lynx`. Tested by `gateway/tests/test_diagnostics_cli.py`; keep its panels in step with route or model changes.
+- [diagnostics/](diagnostics/) – `gateway_diag.py`, a read-only terminal tool acting as the `diagnostics` client (token from `--token`, `GATEWAY_DIAG_TOKEN` or `client_tokens.json`): `watch` (live `rich` dashboard of every read-only endpoint plus the event log; events need the token in strict mode), `status` (snapshot, exit 0 ok / 1 degraded / 2 unreachable, `--json`), `events`, `get PATH`; `--target local|pi|lynx`. Tested by `gateway/tests/test_diagnostics_cli.py`; keep its panels in step with route or model changes.
 - [threat_analysis/](threat_analysis/) – OWASP Threat Dragon STRIDE model. `threat_model.json` is the source of truth; the PDF is an export and must not be hand-edited.
 
 ## Commands
@@ -67,7 +67,7 @@ Client tools in [gateway/scripts/](gateway/scripts/) take `--url`, `--token` (st
 | `rws_move.py` | One RWS job for one arm (`--x --y --z --rx --ry --rz`, each optional: missing values come from the current tool0 pose, so `--rz 90` turns in place and `--z 300` only changes height; `--home`, `--grip [--force N]`/`--open`, `--gripper-to MM`, `--arm right`, `--no-wait` polls `/robot/rws/status`, `--speed` mm/s / `--acc` / `--ramp` % for moves and home); prints the pose (with rx/ry/rz) before and after. Defaults to the Pi gateway, i.e. the real YuMi |
 | `capture_images.py --count N` | Saves RGB / 16-bit depth / depth visualisation (`numpy`, `opencv-python`) |
 | `save_rgb.py` | Writes the latest RGB frame to `rgb.png` (Pillow) |
-| `watch_events.py` | Subscribes to the events WebSocket and prints events (development mode only) |
+| `watch_events.py` | Subscribes to the events WebSocket and prints events (`--token`/`GATEWAY_TOKEN` in strict mode, `--client` in development mode) |
 | `legacy_socket_client.py` | Sends `x,y,z[,rx,ry,rz]` / `HOME` / a pose list straight to the team's CommServer (`--right` for the right arm), polling `STATUS` until done, bypassing the gateway (default `localhost:5001`) |
 | `generate_token.py <client>` | Random token plus its `auth_clients.json` entry |
 | `smoke_test.py` | Checks a running gateway (either implementation) without moving the robot: health, OpenAPI, auth, camera frames/intrinsics, robot status, control lease; `--read-token`, `--read-only`, `--write-calibration` (replaces the stored calibration) |
@@ -153,7 +153,7 @@ The OAK producer takes its IP, FPS and RGB size from settings (`GATEWAY_CAMERA_I
 - Delivery matches by dotted prefix, so subscribing to `control` receives `control.acquired` and `control.renewed`.
 - `control.revoked` is sent straight to the preempted client regardless of its subscriptions.
 - Bad messages (invalid JSON, not an object, bad `events`, unknown action) get a `{"type": "error"}` reply and the connection stays open; it is unregistered from `event_manager` whenever the handler ends.
-- The WebSocket only works in `development` mode; in `strict` mode the connection is closed with 1008 because token auth is not implemented for it.
+- Identity as on the HTTP routes: in `development` mode the `?client=` query parameter, in `strict` mode the `Authorization: Bearer <token>` header of the upgrade request (`get_bearer_identity()` in `authentication.py`; `?client=` is ignored). A missing, malformed or unknown token closes the connection with 1008 before it is accepted. Each subscription is still checked against the client's permissions, so `diagnostics` (`robot.read`, `camera.read`) can subscribe to every family.
 
 ### Robot
 
