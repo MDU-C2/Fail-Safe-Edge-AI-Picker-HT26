@@ -293,10 +293,14 @@ see below).
   the same version again replaces it; older versions stay
   (`gateway-cpp-0.1.0`, the first test import, is still there; remove
   it in the web UI if needed).
-- **The Lynx's clock is at 1970** (no time source reachable on the lab
+- **The Lynx's clock starts at 1970** (no time source reachable on the lab
   network), so the gateway's timestamps (`X-Frame-Timestamp`, lease and
-  calibration times) are in January 1970. Lease timing is unaffected
-  (it runs on the monotonic clock).
+  calibration times) are in January 1970 until it is set. Lease timing is
+  unaffected (it runs on the monotonic clock). Set it by hand in local time
+  (timezone `Europe/Stockholm`, saved 2026-11-11) with the EXEC command
+  `date YYYY-MM-DD hh:mm:ss`, e.g. from the laptop (see
+  [lynx/DEPLOY.md](../../lynx/DEPLOY.md)); it was set on 2026-11-11 and is
+  most likely lost on a reboot.
 - **The robot needs a 192.168.125.x address on the Lynx.** The YuMi
   is cabled to the Lynx but only answers on `192.168.125.1`, and the
   Lynx had only its link-local address (DHCP gets no answer), so

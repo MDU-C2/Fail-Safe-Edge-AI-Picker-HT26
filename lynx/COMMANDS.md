@@ -66,7 +66,7 @@ status                      # list of active warnings/errors
 whoami  /  id  /  users     # who you are / unix ids / who's logged in
 show history                # command history
 system-information          # (same as 'show system-information')
-date                        # show/set system clock
+date [YYYY-MM-DD hh:mm[:ss]] # show/set system clock (local time, see DEPLOY.md)
 config-hash                 # SHA256 of the running config
 ```
 

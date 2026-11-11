@@ -166,8 +166,19 @@ does steps 2–4 this way for the gateway.
 
 ## Lynx specifics worth knowing
 
-- The clock is at **1970** (no time source on the lab network), so apps
-  see a wrong wall-clock time.
+- The clock starts at **1970** (no time source on the lab network), so apps
+  see a wrong wall-clock time until it is set. Set it in local time (the
+  timezone is `Europe/Stockholm`, set with `configure` → `system` →
+  `timezone Europe/Stockholm` → `leave` and saved 2026-11-11) with the EXEC
+  command `date YYYY-MM-DD hh:mm:ss`, e.g. from the laptop:
+
+  ```powershell
+  $t = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+  plink -ssh -batch -pw admin admin@169.254.219.127 "date $t"
+  ```
+
+  It changes no configuration, but is most likely lost on a reboot (set
+  2026-11-11); an NTP server on the lab network would make it stick.
 - The Lynx has two addresses on `vlan1`: `169.254.219.127/16`
   (link-local, DHCP gets no answer) and `192.168.125.20/24` (static,
   added and saved 2026-11-11). The YuMi only
