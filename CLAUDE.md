@@ -110,6 +110,7 @@ Clients (strict and development mode alike), ordered like the fail-safe chain so
 | `primary` | cloud model | 300 | `robot.read`, `robot.control`, `camera.read` |
 | `secondary` | Raspberry Pi model | 200 | same |
 | `tertiary` | Lynx model | 100 | same |
+| `operator` | team scripts (`calibration/`, `capture_and_detect/`, `rapid/tests/handover.py`, `gateway/scripts/reset_home.py`) with the well-known token `BAD_TOKEN_OPERATOR` | 50 | same as the tiers above |
 | `diagnostics` | monitoring | 10 | `robot.read`, `camera.read` |
 
 The plaintext tokens are in `client_tokens.json` at the repository root – git-ignored and deliberately outside `gateway/`, which the Dockerfile copies into the image. Never commit it or move it under `gateway/`. Scripts and `--real-robot` read the token from the `GATEWAY_TOKEN` environment variable (or `--token`).

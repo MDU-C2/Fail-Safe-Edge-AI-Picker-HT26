@@ -139,13 +139,13 @@ TEST(RepositoryClientsFile, IsValid) {
 
     EXPECT_EQ(registry.default_client_id(), "admin");
 
-    for (const char* client_id : {"admin", "primary", "secondary", "tertiary", "diagnostics"}) {
+    for (const char* client_id : {"admin", "primary", "secondary", "tertiary", "operator", "diagnostics"}) {
         EXPECT_TRUE(registry.identity(client_id, false).has_value()) << client_id;
     }
 
     EXPECT_TRUE(registry.identity("admin", false)->can("robot.program"));
 
-    for (const char* client_id : {"primary", "secondary", "tertiary", "diagnostics"}) {
+    for (const char* client_id : {"primary", "secondary", "tertiary", "operator", "diagnostics"}) {
         EXPECT_FALSE(registry.identity(client_id, false)->can("robot.program")) << client_id;
     }
 }

@@ -117,7 +117,7 @@ Change a Python route or model, then re-export the schema:
 | JSON | nlohmann/json 3.11.3 | |
 | SHA-256 | own, `src/util/sha256.cpp` | checked against hashlib |
 | Tests | GoogleTest 1.15.2 | |
-| OAK camera | depthai-core 3.10.0 | built from source, static, with the optional parts off (`docker/Dockerfile`, stage `depthai`; 41 MB installed, ~10 MB of it the camera firmware); its vcpkg dependencies are kept in `/opt/depthai/vcpkg` and looked up by our CMake, since a static depthai-core does not find them itself |
+| OAK camera | depthai-core 3.10.0 | built from source, static, with the optional parts off (`docker/Dockerfile`, stage `depthai`; 41 MB installed, ~10 MB of it the camera firmware), patched with `docker/depthai-memory.patch` so the 38 MB device firmware is unpacked only while the camera boots (upstream keeps ~125 MB of firmware copies in RAM for good); its vcpkg dependencies are kept in `/opt/depthai/vcpkg` and looked up by our CMake, since a static depthai-core does not find them itself |
 
 Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 
@@ -138,6 +138,11 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
   device; the wall clock only gives the reported timestamps.
 - **Frames are never copied.** The camera service keeps one shared,
   immutable buffer per frame; responses send from it.
+- **malloc tuned for a small device.** `main.cpp` sets glibc's
+  mmap threshold and trim threshold to 1 MB and at most 2 arenas,
+  so a freed frame goes back to the system at once instead of
+  staying in a per-thread heap; `GLIBC_TUNABLES=glibc.malloc.*`
+  overrides it.
 - **Same wire format.** `{"detail": ...}` errors with the same
   texts, 422 bodies in FastAPI's shape, datetimes as
   `2026-11-09T12:00:00.123456Z` (always six digits), and
@@ -154,7 +159,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 | M3 | Events WebSocket | done: `test_events` (+ a new test that 100 closed connections are all released) |
 | M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests, `--robotstudio` (18 passed against the virtual YuMi) |
-| M6 | OAK producer on a minimal depthai-core build, reconnect | works with the real camera: same intrinsics and depth as the Python gateway on the same scene (valid depth 71 → 95 % over the first 5 s, median 851 mm), `test_camera_contract` passes; C++ port of `test_oak_reconnect`. Open: `test_depth_has_valid_pixels` failed once (it reads the very first frame, before stereo settles); the camera reported a crash dump when the C++ gateway closed it; RAM (below) |
+| M6 | OAK producer on a minimal depthai-core build, reconnect | works with the real camera: same intrinsics and depth as the Python gateway on the same scene (valid depth 71 → 95 % over the first 5 s, median 851 mm), `test_camera_contract` passes; C++ port of `test_oak_reconnect`. RAM down from 198 MB to 43 MB peak (see "Memory with the camera"). Open: `test_depth_has_valid_pixels` failed twice (it reads depth about a second after the camera boots, when C++ still gives all zeros; whether Python passes it from a cold start is unchecked); the camera reported a crash dump when the C++ gateway closed it |
 | M7 | arm64/armv7 images, `.wmopkg`, WeOS seccomp check | open |
 
 ## Measurements
@@ -165,7 +170,94 @@ Linux arm64 Docker, 4 clients pulling frames (`tools/measure_gateway.py`):
 |---|---|---|
 | RSS, 640x480 mock | 58 MB | 3.1 MB |
 | RSS, real camera path | 262 MB idle, 303 MB peak (`import depthai`, laptop) | – |
-| RSS, real OAK at 1080p / 4 fps, 4 clients pulling frames | **531 MB** (550 MB peak) in production on the Pi, 33 threads | **198 MB** (12 threads); 176 MB with `GLIBC_TUNABLES=glibc.malloc.mmap_threshold=1048576:glibc.malloc.arena_max=2:glibc.malloc.trim_threshold=1048576`. Mostly a few large DepthAI blocks (77 MB, 38 MB, ...), the same idle and under load: next thing to shrink |
+| RSS, real OAK at 1080p / 4 fps, 4 clients pulling frames | **531 MB** (550 MB peak) in production on the Pi, 33 threads | **39 MB idle, 43 MB peak under load, 67 MB peak while the camera boots** (12 threads; depthai patch + the malloc settings `main.cpp` now sets). Of that 12.5 MB is the binary itself (file-backed), 7.5 MB heap, ~20 MB two frame sets. Before the patch: 198 MB, 176 MB with the malloc settings |
+| depthai host side without a camera (`tools/depthai_probe.cpp`) | – | upstream 114 MB after `dai::initialize()`, 153 MB while booting; **patched 24 MB, 62 MB while booting** |
 | Image | 860 MB | 2.9 MB at M2 (`FROM scratch`, one static binary: 2.0 MB at M2, 2.4 MB with WebSockets at M3) |
 | `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB without the camera |
 | Static release binary with depthai-core (OAK) | – (depthai's libraries alone 226 MB) | 15.4 MB (12.4 MB gzipped) |
+
+## Memory with the camera
+
+The first C++ build with the real OAK camera used 198 MB, more than
+WeOS gives all apps together by default (~125 MB on a 500 MB Lynx).
+Almost none of it was the gateway's own data. Now it uses 39 MB idle
+and 43 MB under load, measured on the laptop (arm64, Docker) with
+the camera at 1080p / 4 fps and 4 clients pulling frames:
+
+| | Before | Now |
+|---|---|---|
+| Idle | 198 MB | **39 MB** |
+| Peak under load | 198 MB | **43 MB** |
+| Peak while the camera boots | 153 MB in depthai alone | **67 MB** |
+| depthai without a camera (`tools/depthai_probe.cpp`) | 114 MB | **24 MB** |
+
+### Where it went
+
+About 125 MB were copies of the camera's firmware, which depthai-core
+keeps after the camera has booted, when nothing needs them:
+
+1. `dai::initialize()` unpacks the whole firmware archive on a
+   background thread and keeps it for the life of the process: the
+   38 MB main firmware, four patches for old OpenVINO versions and
+   two bootloaders, ~88 MB, whether a camera is ever connected or not.
+2. `ArchiveUtil::readEntry()` reads each file and then grows its
+   buffer to twice the size, zero-filled (so the memory is touched),
+   for a last read that returns nothing. That doubled buffer was the
+   largest block in the process (77 MB).
+3. Every boot copies the firmware again, adds a header with
+   `insert()` (doubling the buffer once more) and hands the result to
+   the `XLinkConnection`, which keeps its 38 MB copy for as long as
+   the camera stays connected.
+
+The rest was glibc's allocator: frames of several MB each are freed
+into per-thread heaps (up to 8 per core) instead of going back to the
+system, because the mmap threshold climbs to 32 MB after the first
+large frees.
+
+### What changed
+
+- **`docker/depthai-memory.patch`**, applied to depthai-core in the
+  Dockerfile's `depthai` stage (three files, ~60 lines): the firmware
+  is unpacked only when a camera boots, only the file needed, into
+  one exactly sized buffer with room for the header, moved (not
+  copied) into the connection and freed once the camera has booted.
+  A reconnect builds a new connection and unpacks it again, which
+  costs a moment of CPU. The patch's header has the details; when
+  updating depthai-core, check whether it still applies or is still
+  needed.
+- **`src/main.cpp` tunes malloc** at startup: mmap threshold and
+  trim threshold 1 MB, at most 2 arenas. A freed frame goes straight
+  back to the system. Setting `glibc.malloc.*` in `GLIBC_TUNABLES`
+  overrides it (with the old build these settings alone took 198 MB
+  to 176 MB).
+
+### What is left
+
+Of the 43 MB peak:
+
+| | |
+|---|---|
+| The binary itself (file-backed, reclaimable by the kernel) | 12.5 MB |
+| Heap (settings, clients, connections, depthai's state) | 7.5 MB |
+| Frames: two sets of 1080p BGR (6.2 MB) + depth (4.1 MB) | ~20 MB |
+| Thread stacks and the rest | ~3 MB |
+
+Frames are the only large item left, and they scale with the
+resolution: at 1280x720 a set is 4.6 MB instead of 10.3 MB. Going
+lower means changing `GATEWAY_CAMERA_RGB_WIDTH/HEIGHT`, which the
+clients would notice. The camera boot peak (67 MB) is the firmware
+being unpacked; it lasts a few seconds per (re)connect.
+
+### Measuring it again
+
+- Without a camera: `cmake --build gateway/cpp/build/dev --target
+  depthai_probe` in `dev.sh shell`, then run
+  `gateway/cpp/build/dev/depthai_probe`. It prints RSS and the malloc
+  heap after each step: `dai::initialize()`, the firmware unpack,
+  holding and freeing the boot image.
+- With the camera: start the release binary with
+  `GATEWAY_CAMERA_PROVIDER=oak`, pull frames from a few clients and
+  read `VmRSS`/`VmHWM` and the largest mappings in `/proc/<pid>/smaps`
+  (`tools/measure_gateway.py` does this for the mock camera). Only
+  one process can hold the camera, so the gateway on the Raspberry Pi
+  must be stopped meanwhile.

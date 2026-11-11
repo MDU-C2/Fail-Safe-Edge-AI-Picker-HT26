@@ -89,14 +89,14 @@ def test_repository_clients_file_is_valid() -> None:
 
     assert registry.default_client_id == "admin"
 
-    for client_id in ("admin", "primary", "secondary", "tertiary", "diagnostics"):
+    for client_id in ("admin", "primary", "secondary", "tertiary", "operator", "diagnostics"):
         assert registry.identity(client_id, authenticated=False) is not None
 
     admin = registry.identity("admin", authenticated=False)
 
     assert admin is not None and admin.can("robot.program")
 
-    for client_id in ("primary", "secondary", "tertiary", "diagnostics"):
+    for client_id in ("primary", "secondary", "tertiary", "operator", "diagnostics"):
         identity = registry.identity(client_id, authenticated=False)
 
         assert identity is not None and not identity.can("robot.program")

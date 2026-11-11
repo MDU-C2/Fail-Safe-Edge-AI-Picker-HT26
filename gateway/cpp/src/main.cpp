@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 
+#include <malloc.h>
 #include <pthread.h>
 
 #include "app.hpp"
@@ -75,12 +76,36 @@ Arguments parse_arguments(
     return arguments;
 }
 
+//
+// glibc's defaults suit a desktop, not a device with ~125 MB for all
+// apps (with the camera, before the depthai patch: 198 MB RSS with
+// them, 176 MB with these settings). Frames
+// (MBs each) go to mmap and back to the system as soon as they are
+// freed (by default the threshold climbs to 32 MB after the first
+// frames, so they stay in the heap), and two arenas instead of one
+// per core times 8 keep freed memory from piling up per thread.
+// Setting glibc.malloc.* in GLIBC_TUNABLES overrides this.
+//
+void tune_malloc() {
+    const char* tunables = std::getenv("GLIBC_TUNABLES");
+
+    if (tunables && std::strstr(tunables, "glibc.malloc.")) {
+        return;
+    }
+
+    mallopt(M_MMAP_THRESHOLD, 1024 * 1024);
+    mallopt(M_TRIM_THRESHOLD, 1024 * 1024);
+    mallopt(M_ARENA_MAX, 2);
+}
+
 }  // namespace
 
 int main(
     int argc,
     char** argv
 ) {
+    tune_malloc();
+
     const Arguments arguments = parse_arguments(argc, argv);
 
     //

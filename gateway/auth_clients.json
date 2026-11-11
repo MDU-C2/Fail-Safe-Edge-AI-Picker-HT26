@@ -33,6 +33,15 @@
         ],
         "control_priority": 100
     },
+    "operator": {
+        "token_hash": "872f20482f13e6a5c291b4c06186f4a07f949f0793b434c1ccb74dbda1a7fb21",
+        "permissions": [
+            "robot.read",
+            "robot.control",
+            "camera.read"
+        ],
+        "control_priority": 50
+    },
     "diagnostics": {
         "token_hash": "5ac01fb927105035a00d1cfbd583906a135e02113ea8a48c975d0a26b9d85e01",
         "permissions": [

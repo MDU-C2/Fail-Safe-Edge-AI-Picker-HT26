@@ -78,8 +78,15 @@ ARG DEPTHAI_VERSION=v3.10.0
 #
 ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 
+#
+# Keeps the device firmware out of RAM once the camera has booted
+# (~125 MB otherwise); see the patch's header.
+#
+COPY gateway/cpp/docker/depthai-memory.patch /tmp/depthai-memory.patch
+
 RUN git clone --depth 1 --branch "$DEPTHAI_VERSION" --recurse-submodules --shallow-submodules \
         https://github.com/luxonis/depthai-core.git /tmp/depthai-core \
+    && git -C /tmp/depthai-core apply /tmp/depthai-memory.patch \
     && cmake -S /tmp/depthai-core -B /tmp/depthai-build -G Ninja \
         -DCMAKE_BUILD_TYPE=MinSizeRel \
         -DCMAKE_C_FLAGS="-ffunction-sections -fdata-sections" \

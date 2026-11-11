@@ -130,6 +130,22 @@ if(GATEWAY_WITH_DEPTHAI)
     target_sources(gateway_core PRIVATE src/camera/depthai_device.cpp)
     target_link_libraries(gateway_core PUBLIC depthai::core)
     target_compile_definitions(gateway_core PUBLIC GATEWAY_WITH_DEPTHAI)
+
+    #
+    # tools/depthai_probe.cpp: depthai's RAM without a camera (only
+    # built on request).
+    #
+    add_executable(
+        depthai_probe
+        EXCLUDE_FROM_ALL
+        tools/depthai_probe.cpp
+    )
+
+    target_link_libraries(
+        depthai_probe
+        PRIVATE
+        depthai::core
+    )
 else()
     target_sources(gateway_core PRIVATE src/camera/no_depthai.cpp)
 endif()
