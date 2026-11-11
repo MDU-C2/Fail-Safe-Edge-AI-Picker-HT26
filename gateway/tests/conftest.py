@@ -144,6 +144,17 @@ def pytest_collection_modifyitems(
                     pytest.mark.skip(reason=f"not in the C++ gateway yet: {NOT_PORTED_TO_CPP[module]}")
                 )
 
+    else:
+        #
+        # The Python gateway is legacy and gets no new behaviour, so
+        # tests of what only the C++ gateway does skip it.
+        #
+        for item in items:
+            if "cpp_only" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="C++ gateway only: the Python gateway is legacy (no new features)")
+                )
+
     for option in ("robotstudio", "oak", "real_robot", "real_robot_gripper"):
         if config.getoption(option):
             continue

@@ -1,5 +1,10 @@
 # C++ gateway
 
+**This is the gateway's main implementation** (since 2026-11-11): new
+features, behaviour changes and fixes go here only. The Python gateway
+in `gateway/` is legacy and no longer updated; tests of behaviour it
+lacks are marked `@pytest.mark.cpp_only` (skipped with `--impl python`).
+
 A port of the Python gateway (`gateway/`) to C++, for devices with
 little RAM and storage: the target is the Westermo Lynx (about 500 MB
 RAM shared with other processes; WeOS gives all apps together 25 %
