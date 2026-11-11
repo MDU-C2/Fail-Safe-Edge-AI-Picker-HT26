@@ -188,8 +188,56 @@ Results on 2026-11-11 (gateway 0.3.0, real OAK at 1920x1080 / 4 fps):
 | Start to camera connected | 9 s on the first start, 26 s on a restart |
 | Restart | calibration on `/state` kept |
 | Load: 4 clients pulling RGB + depth for 30 s from the laptop | 22.5 frames/s (676 frames), 0 errors, gateway ~29 % CPU (~19 % idle) |
-| Memory | Lynx "used" 124 MB before the gateway ever ran, 161–163 MB with it running, idle and under load alike (147 MB just after stopping it); the WeOS CLI shows no per-process RSS. On the laptop the same binary uses 39 MB idle, 43 MB peak (see [README.md](README.md#memory-with-the-camera)) |
+| Memory and storage | see "Footprint on the Lynx" below |
 | Seccomp / AppArmor | WeOS's default profiles let it run as is (no extra capabilities) |
+
+## Footprint on the Lynx
+
+Measured on 2026-11-11 with gateway 0.3.0 running as app `gateway`,
+the real OAK at 1920x1080 / 4 fps, the robot reachable over RWS.
+
+**RAM.** WeOS shows no memory per app (`show metrics` has memory
+metrics off, `show processes` gives only VSZ, 204 MB here, which is
+address space, not memory), so this is the Lynx's own "used" memory
+(`show memory`, i.e. without page cache) with the app stopped and
+running, averaged over several samples:
+
+| Lynx state | Lynx "used" | Gateway's share |
+|---|---|---|
+| Gateway stopped | 131.6 MB | – |
+| Camera booting (peak of 12 samples over 15 s) | 185.1 MB | **+53.5 MB** |
+| Idle, camera streaming | 171–179 MB | **+40–47 MB** |
+| 4 clients pulling RGB + depth (22.3 frames/s for 40 s, 0 errors) | 159–168 MB | **+28–36 MB** |
+
+The share includes the container runtime (`conmon`/`crun`, ~1–2 MB).
+Page cache stayed at ~200 MB throughout: the binary's code (~12 MB,
+read from the image's squashfs) is cached, not "used", and reclaimable.
+Under load the gateway uses slightly less than idle: freed frames go
+straight back to the system (the malloc settings in `main.cpp`), while
+idle the newest frame set sits in memory. Within a few MB this matches
+the laptop measurement of the same binary (39 MB idle, 43 MB under
+load, 67 MB while booting; [README.md](README.md#memory-with-the-camera)).
+
+Against the Lynx's budget: 496 MB in total, app hosting limited to 50 %
+(~248 MB) for all apps together on this unit (WeOS default 25 %,
+~124 MB), the OS itself ~132 MB. The gateway takes about a fifth of the
+apps' share at its peak, against the Python gateway's 531 MB on the
+Raspberry Pi, more than the whole Lynx.
+
+**Storage.**
+
+| Where | What | Size |
+|---|---|---|
+| External media (SD card `mmcblk1p1`, 29.1 GB, 4 % used) | the image `gateway-cpp-0.3.0`: the imported `.wmopkg` (xz squashfs with the 15.4 MB static binary and the clients file) | **11.9 MB** (11 920 798 bytes, the package's size; WeOS lists no sizes for images on external media) |
+| External media, `app/gateway/state` | `calibration.json` (the `/state` share) | bytes to kB (at most 1 MB, the gateway's upload limit) |
+| Internal flash (`Config`, 14 MB jffs2, 5 % used) | the app definition in the startup config | well under 1 kB |
+| Primary / Secondary firmware (56 MB each) | – | untouched |
+
+For comparison, the Python gateway's package is 146 MB (104 MB with its
+junk removed), above the ~100 MB where web uploads to the Lynx fail.
+Each imported version takes another ~12 MB on the SD card until removed
+(`file app erase` cannot remove images on external media on WeOS 5.30,
+see below).
 
 ## Things found on the way
 

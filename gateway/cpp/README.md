@@ -179,7 +179,8 @@ Linux arm64 Docker, 4 clients pulling frames (`tools/measure_gateway.py`):
 | RSS, real OAK at 1080p / 4 fps, 4 clients pulling frames | **531 MB** (550 MB peak) in production on the Pi, 33 threads | **39 MB idle, 43 MB peak under load, 67 MB peak while the camera boots** (12 threads; depthai patch + the malloc settings `main.cpp` now sets). Of that 12.5 MB is the binary itself (file-backed), 7.5 MB heap, ~20 MB two frame sets. Before the patch: 198 MB, 176 MB with the malloc settings |
 | depthai host side without a camera (`tools/depthai_probe.cpp`) | – | upstream 114 MB after `dai::initialize()`, 153 MB while booting; **patched 24 MB, 62 MB while booting** |
 | Image | 860 MB | 2.9 MB at M2 (`FROM scratch`, one static binary: 2.0 MB at M2, 2.4 MB with WebSockets at M3) |
-| `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB without the camera |
+| `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB without the camera; **11.9 MB** with depthai-core (OAK), as deployed |
+| On the Westermo Lynx (WeOS 5.30, real OAK at 1080p / 4 fps) | not tried: a 146 MB package and 531 MB RAM (on the Pi), above the apps' ~248 MB share | **+40–47 MB** of the Lynx's RAM idle, +28–36 MB under load, +53.5 MB peak while the camera boots; 11.9 MB on its SD card ([LYNX.md](LYNX.md#footprint-on-the-lynx)) |
 | Static release binary with depthai-core (OAK) | – (depthai's libraries alone 226 MB) | 15.4 MB (12.4 MB gzipped) |
 
 ## Memory with the camera
