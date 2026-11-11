@@ -9,6 +9,7 @@ MDU robotics project course (DVA490/DVA474, HT2026): a fail-safe dish-picking sy
 Other contents:
 - [send_coordinate.py](send_coordinate.py) – standalone script that sends `{"x","y","z"}` (mm) as a JSON line over a raw TCP socket to the YuMi RAPID socket server (`192.168.1.10:5000`). It is not wired into the gateway yet.
 - [rapid/](rapid/) – the RAPID program for the YuMi, shared by the team and the gateway (see "RAPID program" below): the arm modules, the team's `CommServer` socket server, and `sim/GripperStub.mod` for RobotStudio. Used by [calibration/](calibration/), [capture_and_detect/](capture_and_detect/) and the gateway's RWS API. Other people work on it; do not change it unless asked.
+- [diagnostics/](diagnostics/) – `gateway_diag.py`, a read-only terminal tool acting as the `diagnostics` client (token from `--token`, `GATEWAY_DIAG_TOKEN` or `client_tokens.json`): `watch` (live `rich` dashboard of every read-only endpoint plus the event log, events only in development mode), `status` (snapshot, exit 0 ok / 1 degraded / 2 unreachable, `--json`), `events`, `get PATH`; `--target local|pi|lynx`. Tested by `gateway/tests/test_diagnostics_cli.py`; keep its panels in step with route or model changes.
 - [threat_analysis/](threat_analysis/) – OWASP Threat Dragon STRIDE model. `threat_model.json` is the source of truth; the PDF is an export and must not be hand-edited.
 
 ## Commands

@@ -5,7 +5,8 @@
 pytest
 websockets
 
-# gateway/scripts
+# gateway/scripts, diagnostics/
+rich
 numpy
 opencv-python
 pillow
