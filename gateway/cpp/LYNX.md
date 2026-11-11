@@ -32,7 +32,7 @@ the clients of `gateway/auth_clients.json`).
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
 | Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`; enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
@@ -82,6 +82,7 @@ powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1 [-Ver
 | `-Version` | from `CMakeLists.txt` | which `dist/gateway-cpp-<version>.wmopkg` |
 | `-App`, `-Label` | `gateway`, `gatewaycpp` | |
 | `-CameraIp`, `-Port` | `169.254.1.223`, `8000` | |
+| `-SafeZoneMin`, `-SafeZoneMax` | `[180,-400,50]`, `[800,500,700]` | the gateway's safe zone for RWS moves, as JSON lists (see [Safe zone](#safe-zone)) |
 | `-Autostart` | off | start the app when the Lynx boots |
 | `-Save` | off | `copy running-config startup-config`, so the app definition survives a reboot. This saves the **whole** running config, including anyone else's unsaved changes, hence opt-in |
 
@@ -131,6 +132,8 @@ share media external app/gateway/state as /state create
 environment GATEWAY_CAMERA_PROVIDER oak
 environment GATEWAY_CAMERA_IP 169.254.1.223
 environment GATEWAY_CALIBRATION_FILE /state/calibration.json
+environment GATEWAY_RWS_SAFE_ZONE_MIN [180,-400,50]
+environment GATEWAY_RWS_SAFE_ZONE_MAX [800,500,700]
 enable
 no autostart
 leave
@@ -164,6 +167,36 @@ Invoke-RestMethod http://169.254.219.127:8000/api/v1/health
 | Change a setting | `configure` → `app-hosting` → `app gateway` → `environment GATEWAY_<NAME> <value>` → `leave`, then `app-hosting restart gateway` |
 | New version | `dev.sh wmopkg`, then the deploy script (or import + `app-hosting label gateway-cpp-<new> gatewaycpp` + `app-hosting reload gatewaycpp`) |
 | Calibration file | `/state/calibration.json` in the app = `external/app/gateway/state` on the Lynx |
+
+### Safe zone
+
+The gateway refuses RWS moves whose target (tool0 in the base frame, mm)
+is outside the box `GATEWAY_RWS_SAFE_ZONE_MIN` .. `GATEWAY_RWS_SAFE_ZONE_MAX`
+with `ERR outside safe zone`, before anything is written to the robot
+(`home` is not checked). On the Lynx both are app environment variables,
+so the zone can be changed without a new package:
+
+```
+configure
+app-hosting
+app gateway
+environment GATEWAY_RWS_SAFE_ZONE_MIN [180,-400,50]
+environment GATEWAY_RWS_SAFE_ZONE_MAX [800,500,700]
+leave
+app-hosting restart gateway
+copy running-config startup-config    # keep it over a reboot (saves the whole running config)
+```
+
+Values are JSON lists of three numbers `[x,y,z]`, without spaces. A
+malformed value stops the gateway at startup (`show log app-gateway.log`),
+so check `/health` after the restart. The deploy script sets them from
+`-SafeZoneMin` / `-SafeZoneMax`, so pass the current values when
+redeploying after a change by hand.
+
+Current zone (since 2026-11-11): x 180..800, y -400..500, z 50..**700**.
+This matches the Pi's Python gateway, whose `gateway/.env` raised the top
+from the code default 600 to 700; before that the Lynx used the defaults
+(z up to 600).
 
 ## 5. Test
 

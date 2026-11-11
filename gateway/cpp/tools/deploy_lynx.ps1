@@ -19,7 +19,7 @@
       2. `file app import` it on the Lynx;
       3. move the image label (gatewaycpp) to it;
       4. define/update the app (image, cmd, host network, /state share,
-         GATEWAY_* environment);
+         GATEWAY_* environment, including the safe zone);
       5. restart the app and wait for /health.
     Nothing else on the Lynx is changed; images of older versions stay.
     The Lynx allows 5 apps; the script stops if the app cannot be created.
@@ -34,6 +34,11 @@ param(
     [string]$App = "gateway",
     [string]$Label = "gatewaycpp",
     [string]$CameraIp = "169.254.1.223",
+    # Gateway safe zone for RWS moves (tool0, base frame, mm), as JSON lists.
+    # Plain app environment, so it can be changed on the Lynx without a new
+    # package: see "Safe zone" in gateway/cpp/LYNX.md.
+    [string]$SafeZoneMin = "[180,-400,50]",
+    [string]$SafeZoneMax = "[800,500,700]",
     [int]$Port = 8000,
     [int]$ServePort = 8099,
     [switch]$Autostart,
@@ -147,6 +152,8 @@ $config = @(
     "environment GATEWAY_CAMERA_PROVIDER oak",
     "environment GATEWAY_CAMERA_IP $CameraIp",
     "environment GATEWAY_CALIBRATION_FILE /state/calibration.json",
+    "environment GATEWAY_RWS_SAFE_ZONE_MIN $SafeZoneMin",
+    "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
     "enable",
     $(if ($Autostart) { "autostart" } else { "no autostart" }),
     "leave"
