@@ -14,7 +14,7 @@ from cup_inventory import SelectionError
 from language_commands import LanguageController, scene_summary
 from local_llm import LLMError
 from robot_client import RobotClient, RobotCommandError
-from test_cup_selection import RobotDouble, detection, inventory
+from test_cup_selection import TRANSFER_JOB_COUNT, RobotDouble, detection, inventory
 from test_support_grid import temporary_grid
 
 
@@ -90,9 +90,9 @@ class LanguageCommandTests(unittest.TestCase):
         proposal = controller.propose("Pick up cup one and give it to the other hand")
         response = controller.confirm(proposal["token"])
         names = [job["name"] for job in robot.jobs]
-        self.assertEqual(len(names), 24)
-        self.assertEqual(len(response["jobs"]), 24)
-        self.assertEqual(names[0], "right_home_start")
+        self.assertEqual(len(names), TRANSFER_JOB_COUNT)
+        self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
+        self.assertEqual(names[:2], ["right_close_travel", "right_home_start"])
         self.assertLess(names.index("right_grip"), names.index("left_release"))
         self.assertEqual(names[-1], "right_home")
         self.assertIn("left_home", names)
@@ -115,15 +115,15 @@ class LanguageCommandTests(unittest.TestCase):
         self.assertEqual(capture.call_count, 1)
         result = controller.confirm(proposal["token"])
         self.assertEqual(result["action"], "goto_all")
-        self.assertEqual(len(result["jobs"]), 48)
-        self.assertEqual(len(robot.jobs), 48)
+        self.assertEqual(len(result["jobs"]), 2 * TRANSFER_JOB_COUNT)
+        self.assertEqual(len(robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertEqual([call.args[0] for call in capture.call_args_list],
                          ["scan", "verification", "verification"])
         interpreter.interpret.assert_called_once()
         self.assertIsNone(controller.pending)
         with self.assertRaisesRegex(SelectionError, "No pending"):
             controller.confirm(proposal["token"])
-        self.assertEqual(len(robot.jobs), 48)
+        self.assertEqual(len(robot.jobs), 2 * TRANSFER_JOB_COUNT)
 
     def test_grid_change_after_language_proposal_requires_new_confirmation_without_motion(self):
         controller, session, capture, robot, _ = self.controller()
@@ -446,7 +446,7 @@ class LanguageCommandTests(unittest.TestCase):
             proposal = controller.propose("Cup one")
             self.assertIn("Preview only", proposal["message"])
             response = controller.confirm(proposal["token"])
-            self.assertEqual(len(response["jobs"]), 24)
+            self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
             self.assertIn("no robot commands sent", response["message"])
             post.assert_not_called()
             get.assert_not_called()

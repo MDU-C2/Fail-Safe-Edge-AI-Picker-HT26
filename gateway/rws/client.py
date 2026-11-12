@@ -3,7 +3,7 @@ import re
 import secrets
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, Callable, Iterator
 
 import requests
@@ -92,7 +92,7 @@ class RwsClient:
         self._lock = threading.RLock()
         self._start_stop_lock = threading.Lock()
         self._program_lock = threading.Lock()
-        self._stop_generation_lock = threading.Lock()
+        self._stop_generation_lock = threading.RLock()
         self._stop_generation = secrets.randbits(48)
 
     # ============================================================
@@ -292,9 +292,9 @@ class RwsClient:
         state = self.collision_state()
         if state in {"INIT", "CONFIRMED"}:
             return state
-        if check_authorization is not None:
-            check_authorization()
-        self.post("/rw/panel/opmode", params={"action": "acknowledge"}, data={"opmode": "coldet"})
+        generation = self.stop_generation()
+        with self.dispatch_guard(generation, check_authorization):
+            self.post("/rw/panel/opmode", params={"action": "acknowledge"}, data={"opmode": "coldet"})
         state = self.collision_state()
         if state not in {"INIT", "CONFIRMED"}:
             raise RwsError(409, "Collision acknowledgement is not confirmed; inspect the FlexPendant. No start or home was sent")
@@ -308,9 +308,37 @@ class RwsClient:
         if self.stop_generation() != generation:
             raise RwsError(409, "A software stop interrupted program initialization; RAPID will not be started")
 
+    def invalidate_pending_dispatch(self) -> None:
+        """Immediate local fence; the watchdog sends/verifies stop separately."""
+        with self._stop_generation_lock:
+            self._stop_generation += 1
+
+    @contextmanager
+    def dispatch_guard(self, generation: int, authorization=None, *, serialize_stop=True):
+        """Serialize the final write against lease invalidation and software Stop.
+
+        The manager lock covers only dispatch, never the running movement.
+        Lock order is HTTP -> manager -> stop generation. Invalidation never
+        takes the HTTP lock, so a slow status read cannot prevent revocation.
+        """
+        scope = authorization.dispatch() if hasattr(authorization, "dispatch") else nullcontext()
+        stop_scope = self._stop_generation_lock if serialize_stop else nullcontext()
+        with self._lock, scope, stop_scope:
+            self.check_stop_generation(generation)
+            if authorization is not None:
+                authorization()
+            yield
+
+    def stop_and_verify(self) -> None:
+        self.stop()
+        self._wait_stopped()
+
     def stop_for_reset(self) -> None:
         """Internal stop, without cancelling this reset's explicit start request."""
         self.post("/rw/rapid/execution", params={"action": "stop"}, data={"stopmode": "stop"})
+        self._wait_stopped()
+
+    def _wait_stopped(self) -> None:
         deadline = time.monotonic() + 10
         while (self.execution_state() != "stopped" or any(
                 task.get("type") == "norm" and task.get("excstate") == "star"
@@ -344,7 +372,9 @@ class RwsClient:
                 raise RwsError(409, "Acknowledge the controller collision before starting RAPID")
             # Check after taking the HTTP lock: another read/mastership call
             # may have delayed dispatch while a Stop or lease expiry arrived.
-            with self._lock:
+            # _start_stop_lock already ensures an overlapping Stop is sent
+            # after this start. Let Stop announce its generation immediately.
+            with self.dispatch_guard(generation, check_authorization, serialize_stop=False):
                 self.check_stop_generation(generation)
                 if time.monotonic() >= deadline:
                     raise RwsError(409, "Program initialization exceeded its deadline; RAPID was not started")
@@ -457,9 +487,10 @@ class RwsClient:
     def start(
         self,
         reset_program_pointer: bool,
+        check_authorization=None,
     ) -> None:
         generation = self.stop_generation()
-        with self.program_change(), self._start_stop_lock, self._lock:
+        with self.program_change(), self._start_stop_lock:
             self.check_stop_generation(generation)
             if reset_program_pointer:
                 with self.mastership():
@@ -468,12 +499,12 @@ class RwsClient:
                         params={"action": "resetpp"},
                     )
 
-            self.check_stop_generation(generation)
-            self.post(
-                "/rw/rapid/execution",
-                params={"action": "start"},
-                data=START_ARGUMENTS,
-            )
+            with self.dispatch_guard(generation, check_authorization, serialize_stop=False):
+                self.post(
+                    "/rw/rapid/execution",
+                    params={"action": "start"},
+                    data=START_ARGUMENTS,
+                )
 
     def stop(self) -> None:
         with self._stop_generation_lock:

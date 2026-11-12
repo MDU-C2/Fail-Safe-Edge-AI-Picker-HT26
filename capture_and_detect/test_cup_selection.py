@@ -9,9 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from capture_and_detect_custom import handle_terminal
+from capture_and_detect import handle_terminal
 from cup_commands import CupSession
 from cup_inventory import SelectionError, atomic_json, build_inventory, selected_cup
+from handover_plan import handover_jobs
 from robot_client import RobotClient, RobotCommandError
 from recovery_journal import RecoveryJournal
 from test_support_grid import temporary_grid
@@ -33,6 +34,12 @@ def inventory(*, capture="scan-1", sequence=10, objects=None, calibration="cal-1
                                   "observed_at": "2026-10-16T12:00:00Z", "received_monotonic": 99},
                            calibration_id=calibration, gateway="http://offline.invalid/api/v1",
                            images={"annotated": "offline.jpg"}, model={"weights": "fixture"}, tag_offset=tag_offset)
+
+
+# Workflow fixtures count complete transfers; planner tests independently check
+# the exact jobs, geometry and dependencies.
+TRANSFER_JOB_COUNT = len(handover_jobs(inventory()["cups"][0],
+                                     place={"id": 1, "x": 420, "y": -200, "z": 230, "occupied": False}))
 
 
 class RobotDouble:
@@ -102,6 +109,42 @@ class CupSelectionTests(unittest.TestCase):
                 result = inventory(objects=objects)
                 self.assertTrue(all(not cup["selectable"] for cup in result["cups"]))
                 self.assertTrue(all(reason in cup["blocked_reason"] for cup in result["cups"]))
+
+    def test_fresh_handle_rotation_and_measured_opening_reach_the_pick_jobs(self):
+        base = dict(detection("CUP BASE", 100), diameter_mm=50)
+        handle = detection("CUP HANDLE", 120, x=520)
+        fresh = inventory(capture="verification-1", sequence=11,
+                          objects=[detection("CUP", 100), base, handle])
+        session, capture, robot, _ = self.session(fresh=fresh)
+        original = inventory()
+        original["cups"][0].update(diameter=55, aperture=95, rz=92, has_handle=True)
+        capture.side_effect = [(original, 90), (fresh, 99)]
+        session.scan()
+        jobs = self.select(session, action="goto")
+        bodies = {job["name"]: job["body"] for job in jobs}
+        self.assertEqual(bodies["left_open"],
+                         {"arm": "left", "wait": True, "action": "move", "position": 7.5})
+        for name in ("approach_cup", "descend_to_cup", "lift_cup"):
+            self.assertEqual(bodies[name]["rz"], 90)
+        self.assertEqual(bodies["left_handover"]["rz"], 180)
+        self.assertEqual(capture.call_count, 2)
+        self.assertEqual(robot.jobs, jobs)
+        geometry = session.inventory["cups"][0]["last_verification"]["grip_geometry"]
+        self.assertEqual(geometry, {"diameter": 50, "aperture": 90, "rz": 90, "has_handle": True})
+
+    def test_changed_grip_geometry_blocks_before_reserving_or_moving(self):
+        for changes in ({"rz": 90, "has_handle": True}, {"diameter": 50, "aperture": 90}):
+            with self.subTest(changes=changes):
+                fresh = inventory(capture="verification-1", sequence=11)
+                fresh["cups"][0].update(changes)
+                session, _, robot, _ = self.session(fresh=fresh)
+                before = session.placing_grid.snapshot()
+                session.scan()
+                with self.assertRaisesRegex(SelectionError, "grip geometry changed"):
+                    self.select(session, action="goto")
+                self.assertEqual(robot.jobs, [])
+                self.assertEqual(session.placing_grid.snapshot(), before)
+                self.assertFalse(session.scan_usable)
 
     def test_wrong_capture_unknown_and_invalid_ids_cannot_execute(self):
         cases = [{"capture_id": "old-scan"}, {"cup_id": 99}, {"cup_id": 0},
@@ -249,7 +292,7 @@ class CupSelectionTests(unittest.TestCase):
 
     def test_slow_ready_expires_initial_observation_and_blocks_without_second_capture(self):
         now = [100]
-        robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if count == 1 else None)
+        robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if robot.jobs[-1]["name"] == "left_ready" else None)
         session, capture, _, _ = self.session(robot=robot)
         session.clock = lambda: now[0]
         changed = inventory(capture="after-ready", sequence=12,
@@ -385,7 +428,7 @@ class CupSelectionTests(unittest.TestCase):
 
     def test_slow_initial_home_expires_initial_check_and_blocks_approach_without_recapture(self):
         now = [100]
-        robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if count == 1 else None)
+        robot = RobotDouble(after_move=lambda count: now.__setitem__(0, 130) if robot.jobs[-1]["name"] == "right_home_start" else None)
         session, capture, _, _ = self.session(robot=robot)
         session.clock = lambda: now[0]
         capture.side_effect = [(inventory(), 90), (inventory(capture="v1", sequence=11), 99),
@@ -394,7 +437,7 @@ class CupSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "old; motion blocked"):
             self.select(session, action="goto")
         self.assertEqual([job["name"] for job in robot.jobs],
-                         ["right_home_start", "left_open", "left_ready"])
+                         ["right_close_travel", "right_home_start", "left_close_travel", "left_ready"])
         self.assertEqual(capture.call_count, 2)
         self.assertTrue(session.motion_uncertain)
         self.assertFalse(session.scan_usable)
@@ -516,6 +559,8 @@ class CupSelectionTests(unittest.TestCase):
 
         def get(url, **options):
             arm = "right" if "/right/" in url else "left"
+            if url.endswith("/gripper"):
+                return response({"arm": arm, "position": 8.5})
             return response({"arm": arm, "joints": [0, -130, 30, 0, 40, 0],
                              "arm_angle": -135 if arm == "right" else 135})
 
@@ -524,11 +569,31 @@ class CupSelectionTests(unittest.TestCase):
             session.scan()
             jobs = self.select(session, action="goto")
         robot_calls = [(url.split("/api/v1")[1], body) for url, body in posted if "/robot/" in url]
-        self.assertEqual(robot_calls, [(job["endpoint"], job["body"]) for job in jobs])
-        self.assertEqual(read.call_count, 3)
+        self.assertEqual(len(robot_calls), len(jobs))
+        expected_by_arm = {arm: [job for job in jobs if job["body"]["arm"] == arm]
+                           for arm in ("left", "right")}
+        dispatched = []
+        for endpoint, body in robot_calls:
+            # Both arms can overlap; each arm must preserve every exact payload
+            # in its own order, including repeated home/gripper commands.
+            expected = expected_by_arm[body["arm"]].pop(0)
+            self.assertEqual((endpoint, body), (expected["endpoint"], expected["body"]))
+            dispatched.append(expected["name"])
+        self.assertTrue(all(not remaining for remaining in expected_by_arm.values()))
+        positions = {name: index for index, name in enumerate(dispatched)}
+        for job in jobs:
+            for predecessor in job.get("after", []):
+                self.assertLess(positions[predecessor], positions[job["name"]])
+        self.assertEqual(read.call_count, 5)
+        self.assertEqual(sum(call.args[0].endswith("/joints") for call in read.call_args_list), 3)
+        self.assertEqual(sum(call.args[0].endswith("/gripper") for call in read.call_args_list), 2)
         self.assertTrue(posted[0][0].endswith("/control/acquire"))
         self.assertTrue(posted[-1][0].endswith("/control/release"))
+        self.assertEqual(sum(url.endswith("/control/acquire") for url, _ in posted), 1)
+        self.assertEqual(sum(url.endswith("/control/release") for url, _ in posted), 1)
         self.assertEqual(session.inventory["cups"][0]["status"], "placed")
+        self.assertEqual(session.inventory["cups"][0]["grip_left_mm"], 8.5)
+        self.assertEqual(session.inventory["cups"][0]["grip_right_mm"], 8.5)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-import capture_and_detect_custom as app
+import capture_and_detect as app
 from camera_client import CameraError
 from cup_inventory import SelectionError
 
@@ -90,6 +90,9 @@ class DetectionStorageTests(unittest.TestCase):
         self.assertEqual(record["objects"][1]["bbox_xyxy"], [505, 95, 515, 105])
         self.assertEqual((cup["cup_detection_id"], cup["base_detection_id"]), (0, 1))
         self.assertEqual(cup["acceptance_reasons"], ["in_cup", "cup_height"])
+        self.assertEqual(record["objects"][1]["diameter_mm"], 12.4)
+        self.assertEqual(cup["diameter"], 12.4)
+        self.assertEqual(cup["aperture"], 52.4)
         self.assertNotEqual(scan["capture"], verification["capture"])
         for observation in (scan, verification):
             self.assertEqual(json.loads((self.out_dir / f"cups_{observation['capture']}.json").read_text()), observation)

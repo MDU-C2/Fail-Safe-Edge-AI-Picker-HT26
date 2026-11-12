@@ -1,0 +1,62 @@
+{
+  "description": "8-position layout outside the marked tray. P1, P7, P6 and P12 are omitted because reachability is unverified. Cells are 90 x 90 mm; IDs are P2-P5 and P8-P11. Empty starting records are not proof of clearance: run a fresh scan before use.",
+  "locations": [
+    {
+      "id": 2,
+      "x": 350,
+      "y": -260,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 3,
+      "x": 450,
+      "y": -260,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 4,
+      "x": 550,
+      "y": -260,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 5,
+      "x": 650,
+      "y": -260,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 8,
+      "x": 350,
+      "y": -370,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 9,
+      "x": 450,
+      "y": -370,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 10,
+      "x": 550,
+      "y": -370,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 11,
+      "x": 650,
+      "y": -370,
+      "z": 230,
+      "occupied": false
+    }
+  ],
+  "cell_size_mm": 90
+}

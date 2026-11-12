@@ -71,6 +71,47 @@ curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: applic
 
 With `GATEWAY_ROBOT_PROVIDER=mock` the robot service does not contact physical hardware.
 
+## Session fencing for the MacBook / Pi inference deployment
+
+Set `GATEWAY_CONTROL_REQUIRE_SESSION=true` for the Pi's single robot executor.
+Run **one gateway process / Uvicorn worker**: control ownership is managed in that
+process. The default remains `false` for existing clients. No inference-provider
+switch acquires, releases or transfers the executor's robot lease.
+
+`POST /api/v1/control/acquire` returns a new `lease.session_id` for every
+acquisition. Send it as `X-Control-Session` on renewal, release, and all protected
+robot/calibration actions. Renewal preserves the session. A stale supplied
+session is rejected even when mandatory sessions are disabled. Sharing a bearer
+token does not authorize a request from a previous acquisition.
+
+`GET /api/v1/control` reports `session_required`, `watchdog_enabled`,
+`recovery_required`, and `recovery_reason`. Check these before enabling the live
+executor. Startup requires deliberate recovery: inspect the robot, acquire a
+session, and use the existing explicit RAPID reset procedure. The verified reset
+clears both arms' pending flags and resets the program pointer before releasing
+the gateway recovery block. A failed reset leaves that block in place.
+
+In this mode an active watchdog uses a monotonic lease deadline. Expiry,
+preemption, or release during an outstanding robot action immediately fences
+pending dispatch, latches recovery, and requests a software stop through RWS.
+The stop result is verified; failure is reported as **UNCONFIRMED**. New movement
+and ordinary RAPID start remain blocked until verified reset. An explicit reset
+waits until any watchdog stop attempt has finished. A clean release after
+completed commands does not require another reset.
+
+The final arm request flag is serialized against lease invalidation and software
+Stop; long movements do not hold the lease manager lock. Legacy socket commands,
+`wait=false` jobs, and module upload/unload are refused in this mode. Install the
+RAPID modules in a stopped maintenance deployment before enabling session fencing.
+The existing explicit `reset` with `start=true` remains a separately reviewed
+initialization action; inference recovery never starts RAPID or opens grippers.
+
+These are application safeguards, not independent robot safety controls. Gateway
+or Pi loss can prevent the software stop from reaching the controller. Validate
+the controller-side stop and physical recovery procedure before live experiments.
+The new session/watchdog tests use fake RWS controllers; they do not demonstrate
+physical stopping performance.
+
 ## Tests
 
 ```bash

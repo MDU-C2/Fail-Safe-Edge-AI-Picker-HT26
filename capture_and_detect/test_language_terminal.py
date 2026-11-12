@@ -5,7 +5,7 @@ import io
 import unittest
 from unittest.mock import Mock, patch
 
-import capture_and_detect_custom as app
+import capture_and_detect as app
 from cup_inventory import SelectionError
 from cup_commands import CupSession
 from language_commands import LanguageController
@@ -85,7 +85,9 @@ class LanguageTerminalTests(unittest.TestCase):
             self.assertEqual(robot.jobs, [])
             self.assertEqual(language.pending["record"]["cup_ids"], [1, 2])
             app.handle_input(session, "confirm " + language.pending["token"], language)
-            self.assertEqual(len(robot.jobs), 48)
+            expected = sum(len(cup["last_verification"]["jobs"])
+                           for cup in session.inventory["cups"] if cup["id"] in (1, 2))
+            self.assertEqual(len(robot.jobs), expected)
             self.assertIsNone(language.pending)
             interpret.assert_not_called()
             post.assert_not_called()

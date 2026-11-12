@@ -3,8 +3,10 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import os
 import re
 import secrets
+import sys
 import threading
 import time
 import uuid
@@ -46,6 +48,7 @@ class WebController:
         self._started = self._closed = False
         self._request_ids = set()
         self._images = {}
+        self._resources = []
         self._proposal_deadline = None
         self._control_deadline = None
         self._execution_capture = None
@@ -60,6 +63,7 @@ class WebController:
             "stop_requested": False, "stop_in_flight": False, "stop": None,
             "robot_controls": {"status": None, "proposal": None, "home_speed": None},
             "saved_cups": {"enabled": False, "matcher_enabled": False, "cups": []},
+            "inference": None,
         }
         self._event_id = 0
 
@@ -67,6 +71,24 @@ class WebController:
         with self._lock:
             self._state.update(copy.deepcopy(fields))
             self._state["revision"] += 1
+
+    def attach_resource(self, resource):
+        """Register bounded workers even if later initialization fails."""
+        with self._lock:
+            if self._closed:
+                resource.close()
+                raise WebError("Controller is closed.")
+            self._resources.append(resource)
+
+    def publish_inference(self, snapshot):
+        # Worker callbacks publish only cached data. Polling the dashboard never
+        # waits for network inference, camera capture, or a model lock.
+        with self._lock:
+            current = self._state.get("inference")
+            if (current and current.get("session_id") == snapshot.get("session_id")
+                    and current.get("revision", -1) > snapshot.get("revision", -1)):
+                return
+            self._update(inference=snapshot)
 
     def event(self, message, level="info"):
         with self._lock:
@@ -92,7 +114,7 @@ class WebController:
         """Only copied application state: never wait for a camera/model/robot call."""
         state = self.state()
         keys = ("mode", "ready", "busy", "operation", "scan_usable", "recovery_required",
-                "stop_requested", "stop_in_flight", "stop", "progress", "batch", "motion", "message", "error")
+                "stop_requested", "stop_in_flight", "stop", "progress", "batch", "motion", "message", "error", "inference")
         result = {key: state[key] for key in keys}
         result["capture_id"] = (state.get("inventory") or {}).get("capture")
         result["source"] = "Cached application state; not a live robot status query."
@@ -126,8 +148,15 @@ class WebController:
             self.event(message)
         except BaseException as error:
             # Startup helpers historically use SystemExit for missing weights/token.
-            self._update(ready=False, error=str(error), message="Startup failed. Check the terminal and restart.")
-            self.event(f"Startup failed: {error}", "error")
+            detail = str(error) or type(error).__name__
+            for name in ("GATEWAY_TOKEN", "INFERENCE_TOKEN"):
+                token = os.environ.get(name)
+                if token:
+                    detail = detail.replace(token, "[redacted]")
+            detail = re.sub(r"(?i)(\bBearer\s+)[^\s'\"<>]+", r"\1[redacted]", detail)
+            self._update(ready=False, error=detail, message="Startup failed. Check the terminal and restart.")
+            self.event(f"Startup failed: {detail}", "error")
+            print(f"Startup failed: {detail}", file=sys.stderr, flush=True)
         finally:
             with self._lock:
                 self._normal_busy, self._normal_operation = False, None
@@ -175,15 +204,18 @@ class WebController:
                     saved["thumbnail_url"] = f"/api/saved-image/{saved['id']}"
             except (OSError, ValueError) as error:
                 saved_cups["error"] = str(error)
-        motion = {"speed": session.speed, "flip_speed": min(session.speed, FLIP_SPEED),
+        motion = {"speed": session.speed, "home_speed": session.home_speed,
+                  "flip_speed": min(session.speed, FLIP_SPEED),
                   "acceleration": 100, "flip_acceleration": FLIP_ACCELERATION,
                   "handover": session.motion_settings()["handover"]}
         grid = None
         if session.placing_grid is not None:
             try:
-                grid = {"locations": [{key: copy.deepcopy(place[key]) for key in
+                snapshot = session.placing_grid.snapshot()
+                grid = {"fingerprint": snapshot["fingerprint"],
+                        "locations": [{key: copy.deepcopy(place[key]) for key in
                         ("id", "x", "y", "z", "occupied", "reserved", "vision_blocked") if key in place}
-                        for place in session.placing_grid.snapshot()["locations"]]}
+                        for place in snapshot["locations"]]}
             except ValueError as error:
                 # A bad grid blocks picking through the session; hover and the
                 # status screen remain available so the operator can inspect it.
@@ -202,7 +234,9 @@ class WebController:
                 execution = cup.get("execution")
                 if execution:
                     completed = len(execution.get("completed_steps", []))
-                    progress = {"step": execution.get("pending_step") or execution.get("last_completed_step"),
+                    pending = self._pending_steps(execution)
+                    progress = {"step": " + ".join(pending) or execution.get("last_completed_step"),
+                                "pending_steps": pending,
                                 "completed": completed, "total": execution.get("total_steps", completed),
                                 "state": execution["state"]}
             batch = session.batch_progress
@@ -225,8 +259,10 @@ class WebController:
                     completed += (len(verified_jobs) if session.robot.dry_run and cup_id in completed_cups
                                   else len(execution.get("completed_steps", [])))
                 current_execution = by_id.get(current_id, {}).get("execution", {})
-                step = current_execution.get("pending_step") or current_execution.get("last_completed_step")
+                pending = self._pending_steps(current_execution)
+                step = " + ".join(pending) or current_execution.get("last_completed_step")
                 progress = {"step": step or ("preview_complete" if batch["state"] == "previewed" else "checking_cup"),
+                            "pending_steps": pending,
                             "completed": completed, "total": total, "state": batch["state"],
                             "batch": public_batch}
             image = inventory.get("images", {}).get("annotated")
@@ -236,7 +272,7 @@ class WebController:
             if "placement_observation" in inventory:
                 observation = inventory["placement_observation"]
                 public_inventory["placement_observation"] = {key: copy.deepcopy(observation[key]) for key in
-                    ("frame_count", "applied", "message", "released_ids", "slots") if key in observation}
+                    ("frame_count", "applied", "message", "released_ids", "slots", "cup_summary") if key in observation}
             public_inventory.update(cups=cups, image_url=(f"/api/image/{inventory['capture']}" if image else None))
         proposal = None
         deadline = None
@@ -252,6 +288,7 @@ class WebController:
                                        for place in (record.get("placement") or {}).get("locations", [])],
                         "excluded_cup_ids": list(record.get("excluded_cup_ids", [])),
                         "speed": record.get("speed", session.speed),
+                        "home_speed": record.get("home_speed", session.home_speed),
                         "flip_speed": record.get("flip_speed", min(session.speed, FLIP_SPEED)),
                         "handover": copy.deepcopy(record.get("handover")),
                         "description": record.get("description") or (
@@ -287,6 +324,13 @@ class WebController:
                            f"({progress['completed']}/{progress['total']} steps "
                            f"{'confirmed' if self.mode == 'live' else 'previewed'})")
 
+    @staticmethod
+    def _pending_steps(execution):
+        pending = execution.get("pending_steps")
+        if isinstance(pending, list):
+            return list(pending)
+        return [execution["pending_step"]] if execution.get("pending_step") else []
+
     def _prepare_progress(self, record):
         """Count the bound pure plans before dispatch, including not-yet-started cups."""
         inventory = self.session.inventory
@@ -303,7 +347,7 @@ class WebController:
                 raise SelectionError("The proposal has no matching placement destinations. Select again.")
             totals = {cup_id: len(handover_jobs(cups[cup_id], place=place,
                       tag_offset=self.session.tag_offset, speed=self.session.speed,
-                      handover_offset=self.session.handover_offset))
+                      home_speed=self.session.home_speed, handover_offset=self.session.handover_offset))
                       for cup_id, place in zip(ids, places)}
         self._execution_capture = record["capture_id"]
         self._execution_totals = totals
@@ -316,6 +360,7 @@ class WebController:
                   "cancel": set(), "recovery": {"acknowledged"}, "robot_status": set(), "speed": {"speed"},
                   "control_preview": {"action", "arm"}, "control_confirm": {"token", "acknowledged"},
                   "control_cancel": set(), "handover_offset": {"x", "y", "z"},
+                  "release_locations": {"fingerprint", "acknowledged"},
                   "save_cup": {"capture_id", "cup_id", "name"},
                   "pick_saved": {"id"}, "forget_cup": {"id"}}
         if operation not in fields or not isinstance(payload, dict) or set(payload) != fields[operation] | {"request_id"}:
@@ -350,6 +395,10 @@ class WebController:
             raise WebError("Invalid confirmation code.", 422)
         if operation == "recovery" and payload["acknowledged"] is not True:
             raise WebError("Inspect the robot and explicitly acknowledge recovery first.", 422)
+        if operation == "release_locations" and (payload["acknowledged"] is not True
+                or not isinstance(payload["fingerprint"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", payload["fingerprint"])):
+            raise WebError("Review the placement locations and confirm they are empty and both arms are stopped.", 422)
         if operation in ("speed", "control_preview"):
             try:
                 if operation == "speed":
@@ -406,7 +455,7 @@ class WebController:
                 return {"accepted": True}
             if self._state["busy"]:
                 raise WebError("The controller is busy. No extra action was queued.")
-            if self._state["stop_requested"] and operation not in ("recovery", "cancel", "robot_status", "control_cancel"):
+            if self._state["stop_requested"] and operation not in ("recovery", "cancel", "robot_status", "control_cancel", "release_locations"):
                 raise WebError("Software stop is latched. Inspect the robot and acknowledge recovery before a new action.")
             if len(self._request_ids) >= 10000:
                 raise WebError("Request limit reached. Restart the app when the robot is idle.")
@@ -421,6 +470,7 @@ class WebController:
                                   "cancel": "Cancelling the proposal…", "recovery": "Recording your acknowledgement…",
                                   "robot_status": "Reading controller status…", "speed": "Updating future movement speed…",
                                   "handover_offset": "Updating future handover alignment…",
+                                  "release_locations": "Releasing inspected placement locations…",
                                   "save_cup": "Saving a local cup reference…",
                                   "pick_saved": "Scanning the table and comparing the saved cup with the local vision model…",
                                   "forget_cup": "Removing the saved reference…",
@@ -494,7 +544,7 @@ class WebController:
             result = None
             if operation not in ("control_confirm", "robot_status"):
                 self.controls.cancel()
-            if operation in ("speed", "handover_offset", "control_preview", "control_confirm"):
+            if operation in ("speed", "handover_offset", "control_preview", "control_confirm", "release_locations"):
                 self.language.cancel()
             if operation == "start":
                 result = self.language.start()
@@ -544,6 +594,9 @@ class WebController:
                 result = self.controls.set_speed(payload["speed"])
             elif operation == "handover_offset":
                 result = self.controls.set_handover_offset(tuple(payload[a] for a in "xyz"))
+            elif operation == "release_locations":
+                result = self.session.release_locations(fingerprint=payload["fingerprint"],
+                                                        acknowledged=payload["acknowledged"])
             elif operation == "control_preview":
                 result = self.controls.propose(payload["action"], payload["arm"])
             elif operation == "control_confirm":
@@ -605,8 +658,12 @@ class WebController:
 
     def close(self):
         with self._lock:
+            if self._closed:
+                return
             self._closed = True
             self._update(ready=False)
         # Do not pretend closing a UI/server is a physical emergency stop.
         self._worker.shutdown(wait=True, cancel_futures=False)
         self._stop_worker.shutdown(wait=True, cancel_futures=False)
+        for resource in reversed(self._resources):
+            resource.close()

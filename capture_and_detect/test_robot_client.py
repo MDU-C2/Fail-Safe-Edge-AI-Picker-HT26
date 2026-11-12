@@ -30,6 +30,16 @@ def lease_response():
     }})
 
 
+def lynx_lease_response(expires="1970-01-05T21:47:52.401585Z",
+                        acquired="1970-01-05T21:47:47.401585Z"):
+    # Actual legacy Lynx clock format: no HTTP Date, acquired_at stays fixed
+    # while renewals advance expires_at. The initial duration is five seconds.
+    return response({"success": True, "lease": {
+        "active": True, "client_id": "operator", "acquired_at": acquired,
+        "expires_at": expires,
+    }})
+
+
 def done_response():
     return response({"accepted": True, "message": "DONE"})
 
@@ -282,6 +292,116 @@ class RobotClientTests(unittest.TestCase):
         }}, headers={"date": "Wed, 01 Jan 2020 00:00:00 GMT"})
         self.client.execute([move()])
         self.assertEqual(len(self.move_calls()), 1)
+
+    def test_home_accepts_unset_lynx_clock_without_date_header(self):
+        self.acquire_reply = lynx_lease_response()
+        with patch("robot_client.datetime", wraps=datetime) as wall_clock:
+            wall_clock.now.side_effect = AssertionError("Must not compare against the Mac clock")
+            self.client.execute_jobs([home("left"), home("right")])
+        self.assertEqual(self.endpoints(), ["/control/acquire", "/robot/rws/home",
+                                           "/robot/rws/home", "/control/release"])
+        self.assertEqual(self.get.call_count, 2)  # Both home joint positions still verified.
+
+    def test_lynx_acquisition_network_delay_can_expire_before_home(self):
+        self.acquire_reply = lynx_lease_response()
+        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
+            def delayed_reply(url, **options):
+                if url.endswith("/control/acquire"):
+                    clock.return_value = 105.1
+                return self.serve(url, **options)
+            self.post.side_effect = delayed_reply
+            with self.assertRaisesRegex(RobotCommandError, "expired control lease"):
+                self.client.execute_jobs([home("left")])
+        self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
+        self.get.assert_not_called()
+
+    def test_lynx_renewal_uses_original_clock_anchor_and_counts_reply_delay(self):
+        self.acquire_reply = lynx_lease_response()
+        self.renew_reply = lynx_lease_response(expires="1970-01-05T21:47:54.401585Z")
+        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
+            try:
+                self.client._take_control()
+                self.assertEqual(self.client._lease_deadline, 105.0)
+                clock.return_value = 102.0
+                def delayed_reply(url, **options):
+                    if url.endswith("/control/renew"):
+                        clock.return_value = 102.5
+                    return self.serve(url, **options)
+                self.post.side_effect = delayed_reply
+                self.client._take_control()
+                self.assertEqual(self.client._lease_deadline, 107.0)
+                clock.return_value = 107.0
+                with self.assertRaisesRegex(RobotCommandError, "last confirmed control lease expired"):
+                    self.client._check_lease()
+            finally:
+                self.client._release_control()
+        self.assertEqual(self.job_calls(), [])
+
+    def test_lynx_forward_clock_jump_does_not_lengthen_renewal(self):
+        self.acquire_reply = lynx_lease_response()
+        self.renew_reply = lynx_lease_response(expires="2026-11-11T11:08:31Z")
+        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
+            try:
+                self.client._take_control()
+                clock.return_value = 102.0
+                self.client._take_control()
+                self.assertEqual(self.client._lease_deadline, 107.0)
+            finally:
+                self.client._release_control()
+
+    def test_lynx_old_renewal_reply_cannot_revive_expired_lease(self):
+        self.acquire_reply = lynx_lease_response()
+        self.renew_reply = lynx_lease_response()
+        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
+            try:
+                self.client._take_control()
+                clock.return_value = 106.0
+                with self.assertRaisesRegex(RobotCommandError, "expired control lease"):
+                    self.client._take_control()
+                self.assertEqual(self.client._lease_deadline, 105.0)
+            finally:
+                self.client._release_control()
+
+    def test_lynx_invalid_initial_timestamps_block_home_and_release(self):
+        for acquired, expires in [
+            ("invalid", "1970-01-05T21:47:52Z"),
+            ("1970-01-05T21:47:47", "1970-01-05T21:47:52Z"),
+            ("1970-01-05T21:47:52Z", "1970-01-05T21:47:52Z"),
+            ("1970-01-05T21:47:53Z", "1970-01-05T21:47:52Z"),
+        ]:
+            with self.subTest(acquired=acquired, expires=expires):
+                self.post.reset_mock()
+                self.acquire_reply = lynx_lease_response(expires, acquired)
+                with self.assertRaises(RobotCommandError):
+                    self.client.execute_jobs([home("left")])
+                self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
+                self.assertIsNone(self.client._lease_clock_anchor)
+
+    def test_lynx_changed_or_missing_renewal_metadata_is_rejected(self):
+        for acquired, expires in [
+            ("1970-01-05T21:47:48.401585Z", "1970-01-05T21:47:54.401585Z"),
+            (None, "1970-01-05T21:47:54.401585Z"),
+            ("1970-01-05T21:47:47.401585Z", None),
+        ]:
+            with self.subTest(acquired=acquired, expires=expires):
+                self.acquire_reply = lynx_lease_response()
+                self.renew_reply = lynx_lease_response(expires, acquired)
+                try:
+                    self.client._take_control()
+                    with self.assertRaises(RobotCommandError):
+                        self.client._take_control()
+                finally:
+                    self.client._release_control()
+        self.assertEqual(self.job_calls(), [])
+
+    def test_new_acquisition_discards_previous_lynx_clock_anchor(self):
+        self.acquire_reply = lynx_lease_response()
+        self.client.execute_jobs([home("left")])
+        self.assertIsNone(self.client._lease_clock_anchor)
+        self.acquire_reply = lynx_lease_response(expires="2026-11-11T11:08:31Z",
+                                                acquired="2026-11-11T11:08:26Z")
+        self.client.execute_jobs([home("right")])
+        self.assertEqual(len(self.job_calls()), 2)
 
     def test_release_failure_does_not_mask_movement_failure(self):
         self.move_replies = [response({"accepted": False, "message": "ERR move failed"})]
@@ -546,6 +666,27 @@ class RobotClientTests(unittest.TestCase):
             self.assertEqual(self.get.call_count, index + 1)
             self.assertEqual(len(self.job_calls()), index + 1)
         self.client.execute_jobs([home("left"), home("right")], after_done=after)
+
+    def test_bounded_gripper_position_is_dispatched_under_the_same_lease(self):
+        for position in (0, 12.5, 25):
+            with self.subTest(position=position):
+                self.post.reset_mock()
+                body = {"arm": "left", "wait": True, "action": "move", "position": position}
+                self.client.execute_jobs([job("open above cup", "/robot/rws/gripper", body)])
+                self.assertEqual(self.endpoints(), ["/control/acquire", "/robot/rws/gripper", "/control/release"])
+                self.assertEqual(self.job_calls()[0].kwargs["json"], body)
+
+    def test_invalid_gripper_position_is_rejected_before_any_http(self):
+        base = {"arm": "left", "wait": True, "action": "move"}
+        invalid = [base, {**base, "action": "open", "position": 10},
+                   {**base, "action": "grip", "position": 10}, {**base, "position": 10, "force": 5}]
+        invalid.extend({**base, "position": value} for value in
+                       (None, True, "10", -0.1, 25.1, float("nan"), float("inf"), 10 ** 1000))
+        for body in invalid:
+            with self.subTest(body=body), self.assertRaises(RobotCommandError):
+                self.client.execute_jobs([job("invalid opening", "/robot/rws/gripper", body)])
+        self.post.assert_not_called()
+        self.get.assert_not_called()
 
 
 if __name__ == "__main__":

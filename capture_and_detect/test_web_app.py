@@ -113,6 +113,42 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertFalse(self.controller.session.stop_requested)
 
+    def test_location_release_endpoint_is_local_only_and_requires_inspection_ack(self):
+        grid = self.fixture.session.placing_grid
+        grid.reserve(grid.preview(1))
+        before = grid.path.read_bytes()
+        payload = {"request_id": uuid.uuid4().hex, "fingerprint": grid.snapshot()["fingerprint"],
+                   "acknowledged": True}
+        for headers in ({}, {"Origin": self.headers["Origin"]},
+                        dict(self.headers, Origin="http://untrusted.invalid")):
+            with self.subTest(headers=headers):
+                response = self.client.post("/api/release_locations", json=payload, headers=headers)
+                self.assertEqual(response.status_code, 403)
+        response = self.client.post("/api/release_locations", json=dict(payload, acknowledged=False),
+                                    headers=self.headers)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(grid.path.read_bytes(), before)
+        self.assertEqual(self.fixture.captures, [])
+        self.assertEqual(self.fixture.robot.jobs, [])
+
+    def test_location_release_endpoint_clears_slots_and_consumes_pending_selection(self):
+        self.proposal()
+        grid = self.fixture.session.placing_grid
+        grid.reserve(grid.preview(1))
+        request_id = uuid.uuid4().hex
+        payload = {"request_id": request_id, "fingerprint": grid.snapshot()["fingerprint"],
+                   "acknowledged": True}
+        state = self.post("release_locations", **payload)
+        self.assertIsNone(state["error"])
+        self.assertIsNone(state["proposal"])
+        self.assertFalse(state["scan_usable"])
+        self.assertFalse(any(slot["occupied"] or slot.get("reserved", False)
+                             for slot in grid.snapshot()["locations"]))
+        response = self.client.post("/api/release_locations", json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.fixture.captures, ["scan"])
+        self.assertEqual(self.fixture.robot.jobs, [])
+
     def test_confirm_endpoint_executes_once_and_duplicate_post_conflicts(self):
         proposal = self.proposal()
         request_id = uuid.uuid4().hex
@@ -134,10 +170,12 @@ class WebAppTests(unittest.TestCase):
         request_id = uuid.uuid4().hex
         state = self.post("confirm", **payload, request_id=request_id)
         self.assertIsNone(state["error"])
-        self.assertEqual(len(self.fixture.robot.jobs), 48)
+        expected = sum(len(cup["last_verification"]["jobs"])
+                       for cup in self.fixture.session.inventory["cups"] if cup["id"] in proposal["cup_ids"])
+        self.assertEqual(len(self.fixture.robot.jobs), expected)
         duplicate = self.client.post("/api/confirm", json=dict(payload, request_id=request_id), headers=self.headers)
         self.assertEqual(duplicate.status_code, 409)
-        self.assertEqual(len(self.fixture.robot.jobs), 48)
+        self.assertEqual(len(self.fixture.robot.jobs), expected)
 
     def test_batch_endpoint_rejects_injected_cup_ids_coordinates_and_unknown_capture(self):
         capture = self.post("scan")["inventory"]["capture"]

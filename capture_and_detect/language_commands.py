@@ -183,31 +183,55 @@ class LanguageController:
             raise SelectionError("The saved cup reference changed. Request a new preview.")
         return current
 
-    def _visual_match(self, reference, inventory):
+    def _visual_match(self, reference, inventory, *, audit=None, stage="proposal"):
         from named_cups import candidate_images
         if self.cup_matcher is None:
             raise SelectionError("Visual cup matching requires --llm and a local vision model.")
         before = inventory_fingerprint(inventory)
+        capture_id = inventory["capture"]
         candidates = candidate_images(inventory, self.named_cups.image_root)
         result = self.cup_matcher.match(reference["image_bytes"], candidates)
+        candidate_ids = [candidate["cup_id"] for candidate in candidates]
+        valid = (isinstance(result, dict) and set(result) == {"status", "cup_id", "reason"}
+                 and isinstance(result["status"], str)
+                 and result["status"] in ("match", "ambiguous", "not_found")
+                 and isinstance(result["reason"], str) and len(result["reason"]) <= 80
+                 and not any(ord(character) < 32 or 127 <= ord(character) <= 159
+                             for character in result["reason"])
+                 and ((result["status"] == "match" and type(result["cup_id"]) is int
+                       and result["cup_id"] in candidate_ids)
+                      or (result["status"] != "match" and result["cup_id"] is None)))
+        outcome = dict(result) if valid else {
+            "status": "invalid_response", "cup_id": None,
+            "reason": "Visual matcher returned an invalid response."}
+        if audit is not None:
+            # Only bounded, validated selection facts enter the audit. Never
+            # retain model payloads, image bytes, or arbitrary result fields.
+            audit.setdefault("visual_matches", []).append({
+                "stage": stage, "capture_id": capture_id,
+                "candidate_ids": candidate_ids, **outcome})
         self.session._check_stop()
         if before != inventory_fingerprint(inventory):
             raise SelectionError("The scan changed during visual matching. Request a new preview.")
-        ids = {c["cup_id"] for c in candidates}
-        if (not isinstance(result, dict) or result.get("status") != "match"
-                or type(result.get("cup_id")) is not int or result["cup_id"] not in ids):
-            reason = result.get("reason", "No unique visual match.") if isinstance(result, dict) else "Invalid visual response."
-            raise SelectionError(f"Cannot uniquely identify saved cup {reference['name']}: {reason} "
+        if not valid or outcome["status"] != "match":
+            explanation = {
+                "ambiguous": "the visual matcher could not establish one unique match",
+                "not_found": "the visual matcher found no matching candidate",
+                "invalid_response": "the visual matcher returned an invalid result",
+            }[outcome["status"]]
+            raise SelectionError(f"Cannot uniquely identify saved cup {reference['name']}: "
+                                 f"{outcome['status']} — {explanation}. "
+                                 f"Visual detail: {outcome['reason']} "
                                  "No movement requested. Review the scan and use a numbered cup if needed.")
         return result
 
     def propose_saved(self, cup_id):
         return self._propose("Operator requested a saved cup", saved_id=cup_id)
 
-    def _identity_check(self, binding):
+    def _identity_check(self, binding, *, audit=None):
         def check(fresh, target):
             reference = self._bound_reference(binding)
-            match = self._visual_match(reference, fresh)
+            match = self._visual_match(reference, fresh, audit=audit, stage="confirmation")
             self._bound_reference(binding)
             if match["cup_id"] != target["id"]:
                 raise SelectionError("The saved cup no longer matches the selected position. Request a new preview.")
@@ -258,7 +282,7 @@ class LanguageController:
                 settings_before = self.session.motion_settings()
                 fresh = self.session.scan()
                 record["capture_id"] = fresh["capture"]
-                match = self._visual_match(reference, fresh)
+                match = self._visual_match(reference, fresh, audit=record)
                 if self.session.inventory is not fresh:
                     raise SelectionError("The active scan changed during visual matching. Request a new preview.")
                 if settings_before != self.session.motion_settings():
@@ -330,6 +354,8 @@ class LanguageController:
                 raise SelectionError("Movement settings changed. Request a new preview.")
             description = ("pick with the left arm, hand to the right, place, and return both arms home"
                            if action in ("goto", "goto_all") else "move the left arm above it without gripping")
+            if self.session.left_only and action in ("goto", "goto_all"):
+                description = "pick, lift and replace at the original position, then return the left arm home"
             placement = preview["placement"]
             destinations = ""
             if placement:
@@ -342,8 +368,10 @@ class LanguageController:
             record.update(state="proposed", action=action, cup_id=target["id"] if target else None,
                           cup_ids=cup_ids, placement=placement, excluded_cup_ids=excluded,
                           speed=self.session.speed, flip_speed=min(self.session.speed, FLIP_SPEED),
+                          home_speed=self.session.home_speed,
                           motion_settings=motion_settings,
-                          handover=motion_settings["handover"] if action in ("goto", "goto_all") else None,
+                          handover=(motion_settings["handover"]
+                                    if action in ("goto", "goto_all") and not self.session.left_only else None),
                           description=description + "." + destinations + capacity)
             token = record["request_id"][:8]
             self._save(record)  # A proposal is unusable unless its audit was saved.
@@ -361,10 +389,12 @@ class LanguageController:
             named_text = (f"Saved cup: {record['saved_cup']['name']}. Visual match: {record['saved_cup']['match_reason']}\n"
                           "Compare the reference photo with the highlighted cup before confirming.\n"
                           if "saved_cup" in record else "")
+            home_text = (f"Automatic home: {record['home_speed']:g} mm/s.\n"
+                         if action in ("goto", "goto_all") else "")
             return {"kind": "proposal", "token": token,
                     "message": f"{mode}: cup(s) {', '.join(map(str, cup_ids))} — {record['description']}\n"
                                f"Normal speed: {self.session.speed:g} mm/s; cup turning: {record['flip_speed']:g} mm/s, 30% acceleration.\n"
-                               f"{alignment_text}{named_text}"
+                               f"{home_text}{alignment_text}{named_text}"
                                f"Scan: {scene['capture_id']}. Check its numbered image.\n"
                                f"Type confirm {token} within {self.proposal_ttl:g}s, or cancel."}
         except BaseException as error:
@@ -407,7 +437,7 @@ class LanguageController:
                 else:
                     options = {"placement": record["placement"]} if record["action"] == "goto" else {}
                     if "saved_cup" in record:
-                        options["identity_check"] = self._identity_check(record["saved_cup"])
+                        options["identity_check"] = self._identity_check(record["saved_cup"], audit=record)
                     jobs = self.session.execute_selection(action=record["action"],
                         capture_id=record["capture_id"], cup_id=record["cup_id"],
                         expected_motion=record["motion_settings"], **options)
@@ -415,7 +445,9 @@ class LanguageController:
                 self._save(record)
                 return {"kind": "result", "action": record["action"], "jobs": jobs,
                         "message": "Preview complete; no robot commands sent." if self.session.robot.dry_run else
-                        ("Robot reported pick, handover and placement complete; home poses checked. Scan again."
+                        (("Robot reported the cup replaced and the left arm home. Scan again."
+                          if self.session.left_only else
+                          "Robot reported pick, handover and placement complete; home poses checked. Scan again.")
                          if record["action"] in ("goto", "goto_all") else "Robot reported hover complete. Scan again.")}
             except BaseException as error:
                 record.update(state="blocked_or_interrupted", error=str(error))

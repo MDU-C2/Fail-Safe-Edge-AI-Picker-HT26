@@ -13,18 +13,27 @@ import time
 import uuid
 
 from web_controller import WebController, WebError
-from handover_plan import DEFAULT_SPEED
+from handover_plan import DEFAULT_SPEED, HOME_SPEED
 
 HERE = Path(__file__).resolve().parent
 
 
-def create_app(controller, *, port=8080, image_root=None):
-    # Optional web dependencies are never needed by the original terminal app.
+def create_app(controller, *, port=8080, image_root=None, allowed_origin=None):
+    # Optional web dependencies are never needed by terminal mode.
     from fastapi import FastAPI, Request
     from fastapi.responses import FileResponse, JSONResponse, Response
 
     root = Path(image_root).resolve() if image_root is not None else None
     hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    origins = {f"http://{host}" for host in hosts}
+    if allowed_origin is not None:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(allowed_origin)
+        if (parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username
+                or parsed.password or parsed.path or parsed.query or parsed.fragment):
+            raise ValueError("Dashboard origin must be an exact http(s) origin without a path or credentials.")
+        hosts.add(parsed.netloc.lower())
+        origins.add(allowed_origin)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -42,11 +51,12 @@ def create_app(controller, *, port=8080, image_root=None):
         if host not in hosts:
             return JSONResponse({"detail": "Use the local dashboard address printed in the terminal."}, status_code=403)
         origin = request.headers.get("origin")
-        if origin is not None and origin != f"http://{host}":
+        valid_origin = origin in origins and origin.rsplit("://", 1)[-1].lower() == host if origin else False
+        if origin is not None and not valid_origin:
             return JSONResponse({"detail": "Cross-origin requests are not allowed."}, status_code=403)
         if request.method not in ("GET", "HEAD"):
             token = request.headers.get("x-csrf-token", "")
-            if origin != f"http://{host}" or not hmac.compare_digest(token.encode("utf-8"), controller.state()["csrf_token"].encode("utf-8")):
+            if not valid_origin or not hmac.compare_digest(token.encode("utf-8"), controller.state()["csrf_token"].encode("utf-8")):
                 return JSONResponse({"detail": "Reload the local dashboard before sending a command."}, status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -157,7 +167,7 @@ class DemoLanguage:
         return {"action": action, "selector": selector, "cup_id": cup_id, "message": message}
 
 
-def demo_factory(directory, *, speed=DEFAULT_SPEED):
+def demo_factory(directory, *, speed=None):
     """Use real selection/planning checks and a dry-run robot with synthetic cups."""
     def factory(controller):
         from cup_commands import CupSession
@@ -207,8 +217,9 @@ def demo_factory(directory, *, speed=DEFAULT_SPEED):
 def hardware_factory(args):
     def factory(controller):
         # Deferred imports keep demo and tests independent of YOLO/OpenCV.
-        from capture_and_detect_custom import (load_token, Calibration, load_model, Detector,
+        from capture_and_detect import (load_token, Calibration,
                                                CaptureStore, CaptureService)
+        from inference_integration import create_detector, create_robot
         from camera_client import CameraClient
         from cup_commands import CupSession
         from language_commands import LanguageController
@@ -219,14 +230,16 @@ def hardware_factory(args):
         from recovery_journal import RecoveryJournal
         from robot_client import RobotClient
 
-        controller.event("Loading calibration and detection model…")
+        controller.event("Loading gateway credentials and calibration…")
         headers = {"Authorization": f"Bearer {load_token()}"}
         api = args.gateway.rstrip("/") + "/api/v1"
         camera = CameraClient(api, headers)
         calibration = Calibration(args.calibration)
-        model, weights = load_model()
         controller.event("Reading camera configuration from the Pi…")
-        detector = Detector(model, calibration, camera.intrinsics(), args.conf)
+        intrinsics = camera.intrinsics()
+        controller.event("Loading detection model…")
+        detector, weights = create_detector(args, calibration, intrinsics,
+            on_update=controller.publish_inference, register_resource=controller.attach_resource)
         store = CaptureStore(args.output)
         grid = PlacingGrid(args.placing_grid)
         captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
@@ -238,7 +251,7 @@ def hardware_factory(args):
         def save(inventory):
             store.save(inventory)
             controller.publish_session()
-        session = CupSession(capture, save, RobotClient(api, headers, dry_run=not args.live),
+        session = CupSession(capture, save, create_robot(args, api, headers),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
                      recovery=recovery, placing_grid=grid)
@@ -274,6 +287,7 @@ class ProcessLock:
 
 
 def main(argv=None):
+    from inference_integration import add_inference_arguments, validate_inference_arguments
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--demo", action="store_true", help="Sample cups only; no camera, model or robot connection (default without --gateway)")
@@ -287,26 +301,29 @@ def main(argv=None):
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration.json"))
     parser.add_argument("--placing-grid", default=str(HERE / "placing_grid.json"),
-                        help="Placement JSON shared with the original program; occupancy is preserved")
+                        help="Placement JSON shared with terminal mode; occupancy is preserved")
     parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table in mm (default 0)")
-    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Placement cell width in mm (default 80; 20..200)")
+    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Fallback cell width in mm (default 80; 20..200); the grid file's cell_size_mm takes precedence")
     parser.add_argument("--conf", type=float, default=0.5)
-    parser.add_argument("--speed", type=float, default=DEFAULT_SPEED,
-                        help=f"Normal robot speed in mm/s (default {DEFAULT_SPEED}); home capped at 200; picking/turning at 100")
+    parser.add_argument("--speed", type=float, default=None,
+                        help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
+                             f"normal {DEFAULT_SPEED}, automatic home {HOME_SPEED}; cup flips are capped at 100")
     parser.add_argument("--max-result-age", type=float, default=15)
     parser.add_argument("--match-mm", type=float, default=20)
     parser.add_argument("--match-px", type=float, default=40)
+    add_inference_arguments(parser)
     args = parser.parse_args(argv)
+    validate_inference_arguments(args, parser)
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be between 1024 and 65535")
     if args.demo and (args.gateway or args.live):
         parser.error("--demo cannot be combined with --gateway or --live")
     if args.live and not args.gateway:
         parser.error("--live requires --gateway")
-    for name in ("conf", "speed", "max_result_age", "match_mm", "match_px"):
+    for name in ("conf", "max_result_age", "match_mm", "match_px"):
         if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
-    if args.conf > 1 or not 1 <= args.speed <= 1500:
+    if args.conf > 1 or (args.speed is not None and (not math.isfinite(args.speed) or not 1 <= args.speed <= 1500)):
         parser.error("Confidence must be at most 1; speed must be between 1 and 1500 mm/s")
     if not math.isfinite(args.grid_table_z) or not math.isfinite(args.grid_cell_size) or not 20 <= args.grid_cell_size <= 200:
         parser.error("--grid-table-z must be finite; --grid-cell-size must be 20..200 mm")

@@ -1,0 +1,89 @@
+{
+  "description": "Expanded 12-position layout. Run with --grid-cell-size 100. Centres are spaced 105 mm in X and 140 mm in Y. A fresh scan must confirm each location before use.",
+  "locations": [
+    {
+      "id": 1,
+      "x": 420,
+      "y": -100,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 2,
+      "x": 525,
+      "y": -100,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 3,
+      "x": 630,
+      "y": -100,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 4,
+      "x": 735,
+      "y": -100,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 5,
+      "x": 420,
+      "y": -240,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 6,
+      "x": 525,
+      "y": -240,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 7,
+      "x": 630,
+      "y": -240,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 8,
+      "x": 735,
+      "y": -240,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 9,
+      "x": 420,
+      "y": -380,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 10,
+      "x": 525,
+      "y": -380,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 11,
+      "x": 630,
+      "y": -380,
+      "z": 230,
+      "occupied": false
+    },
+    {
+      "id": 12,
+      "x": 735,
+      "y": -380,
+      "z": 230,
+      "occupied": false
+    }
+  ]
+}

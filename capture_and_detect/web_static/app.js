@@ -17,6 +17,7 @@
   let imageLoaded = false;
   let cardsKey = "";
   let eventsKey = "";
+  let inferenceEventsKey = "";
   let placementsKey = "";
   let savedCupsKey = "";
   let saveSelectionKey = "";
@@ -26,6 +27,8 @@
   let controlDeadline = 0;
   let speedDirty = false;
   let handoverDirty = false;
+  let releaseReview = null;
+  let releaseMessage = "";
   let transientError = "";
 
   const text = (id, value) => { const el = dom[id]; const next = value == null ? "" : String(value); if (el.textContent !== next) el.textContent = next; };
@@ -44,6 +47,8 @@
   const placementStatus = (location) => location.reserved ? "reserved" : location.vision_blocked ? "unknown" : location.occupied ? "occupied" : placementAvailable(location) ? "available" : "unknown";
   const availableLocations = () => placementLocations().filter(placementAvailable);
   const gridReady = () => Boolean(state?.placement_grid && !state.placement_grid.error && Array.isArray(state.placement_grid.locations));
+  const releaseActionable = () => idle() && !state?.stop_in_flight && gridReady() && placementLocations().length > 0 && typeof state.placement_grid.fingerprint === "string" && state.placement_grid.fingerprint.length > 0;
+  const releaseContext = (snapshot) => JSON.stringify([snapshot?.instance_id, snapshot?.placement_grid?.fingerprint, snapshot?.stop_requested, snapshot?.recovery_required, snapshot?.stop]);
   const selectedIds = () => state?.proposal?.action === "goto_all" ? (state.proposal.cup_ids || []) : [state?.proposal?.cup_id ?? selectedId];
   const speedText = (value) => Number.isFinite(value) ? `${value} mm/s` : "unavailable";
   const accelerationText = (value) => Number.isFinite(value) ? `${value}% acceleration` : "acceleration unavailable";
@@ -89,7 +94,7 @@
     }
     dom["mode-panel"].classList.toggle("live", mode === "live");
     text("mode-footer", mode === "demo" ? "Local demo · no physical movement" : "One controller · one action at a time");
-    text("motion-summary", `Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)}`);
+    text("motion-summary", `Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · Sequence home ${speedText(state?.motion?.home_speed)}`);
   }
 
   function renderConnection() {
@@ -100,6 +105,112 @@
     const error = transientError || asMessage(state?.error);
     text("error-banner", error);
     hide("error-banner", !error);
+  }
+
+  // Provider evidence comes only from the controller, never from probes or browser counters.
+  const inferenceObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const inferenceString = (value, fallback = "") => typeof value === "string" && value.trim() ? value : fallback;
+  const inferenceCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const inferenceProvider = (value) => ({ mac: "MacBook", pi: "Raspberry Pi", local: "Local model" })[value] || "Unknown";
+  const inferenceTime = (value) => typeof value === "string" && value.trim() ? clockText(value) : "";
+
+  function renderInference() {
+    const snapshot = inferenceObject(state?.inference);
+    const demo = state?.mode === "demo";
+    const enabled = !demo && snapshot?.enabled === true && snapshot.state !== "local_only";
+    const localProvider = ["pi", "local"].includes(snapshot?.local_provider) ? snapshot.local_provider
+      : snapshot?.selected_provider === "local" ? "local" : "pi";
+    const permittedProviders = enabled ? ["mac", localProvider] : [localProvider];
+    const stale = !connected && Boolean(state);
+    const knownStates = {
+      mac_preferred: ["MAC PREFERRED", "Waiting for a result", "neutral"],
+      mac_active: ["MAC ACTIVE", "MacBook supplied the latest accepted result.", "mac"],
+      switching_to_pi: ["SWITCHING TO PI", "Waiting for a Raspberry Pi result.", "switching"],
+      pi_active: ["PI ACTIVE", "Raspberry Pi supplied the latest accepted result.", "pi"],
+      mac_recovering: ["CHECKING MAC", `${inferenceProvider(localProvider)} remains selected while the MacBook is checked.`, "switching"],
+      mac_probing: ["CHECKING MAC", "Checking whether the MacBook can accept requests again.", "switching"],
+      mac_ready: ["MAC PREFERRED", "Waiting for the first accepted MacBook result.", "neutral"],
+      failback_pending: ["MAC RETURN PENDING", "Recovery checks passed. The source will change at a request boundary.", "switching"],
+      switching_to_mac: ["SWITCHING TO MAC", "Waiting for a new MacBook result.", "switching"],
+      local_ready: ["LOCAL READY", "Waiting for a local inference result.", "neutral"],
+      local_active: ["LOCAL ACTIVE", "Local inference is selected.", "neutral"],
+      unavailable: ["INFERENCE UNAVAILABLE", "No provider result is available for the current request.", "error"],
+      audit_failed: ["RECORDING FAILED", "Inference records could not be saved. Check the controller before continuing.", "error"],
+      stopped: ["INFERENCE STOPPED", "Inference processing has stopped.", "neutral"],
+    };
+    if (localProvider === "local") {
+      knownStates.switching_to_pi = ["SWITCHING TO LOCAL", "Waiting for a local inference result.", "switching"];
+    }
+    const labels = enabled || (!demo && snapshot && ["unavailable", "audit_failed", "stopped"].includes(snapshot.state))
+      ? (Object.hasOwn(knownStates, snapshot.state) ? knownStates[snapshot.state] : ["STATUS UNKNOWN", "Waiting for a recognized provider status.", "neutral"])
+      : demo ? ["DEMO · NO FALLBACK", "The sample scene does not use MacBook or Raspberry Pi inference.", "neutral"]
+      : snapshot ? ["LOCAL ONLY · NO FALLBACK", `${inferenceProvider(localProvider)} supplies inference. MacBook fallback is not enabled in this controller.`, "neutral"]
+      : ["STATUS UNAVAILABLE", "This controller has not reported inference-source status. Fallback is not confirmed.", "neutral"];
+    dom["inference-panel"].dataset.tone = stale ? "stale" : labels[2];
+    text("inference-badge", stale ? "STALE · DISCONNECTED" : !state ? "CONNECTING" : labels[0]);
+    hide("inference-stale", !stale);
+    text("inference-reason", !state ? "Waiting for controller status." : enabled ? inferenceString(snapshot.reason, labels[1]) : labels[1]);
+
+    const candidate = inferenceObject(snapshot?.last_result);
+    const result = !demo && candidate && permittedProviders.includes(candidate.provider) ? candidate : null;
+    text("inference-provider", result ? inferenceProvider(result.provider) : demo ? "Sample scene" : "No accepted result");
+    const acceptedTime = inferenceTime(result?.accepted_at);
+    const duration = Number.isFinite(result?.duration_ms) && result.duration_ms >= 0
+      ? result.duration_ms < 1000 ? `${Math.round(result.duration_ms)} ms` : `${(result.duration_ms / 1000).toFixed(2)} s`
+      : "duration unavailable";
+    text("inference-result-time", result ? `${stale ? "Last known: " : ""}${acceptedTime ? `Accepted at ${acceptedTime}` : "Acceptance time unavailable"} · ${duration}`
+      : demo ? "No inference result is produced in demo mode." : "A selected provider is not evidence of a completed result.");
+    text("inference-observation", inferenceString(result?.observation_id, "None accepted"));
+    text("inference-request-id", inferenceString(result?.request_id, "None accepted"));
+    const selected = !demo && permittedProviders.includes(snapshot?.selected_provider) ? inferenceProvider(snapshot.selected_provider)
+      : demo ? "Sample scene" : "Unavailable";
+    const inFlight = !demo && permittedProviders.includes(snapshot?.in_flight_provider) ? inferenceProvider(snapshot.in_flight_provider) : "None reported";
+    text("inference-selected", `${stale ? "Last known: " : ""}${selected}`);
+    text("inference-requested", `${stale ? "Last known: " : ""}${inFlight}`);
+    const counters = inferenceObject(snapshot?.counters);
+    const countLabel = (provider) => inferenceCount(counters?.[provider]) ?? "—";
+    const localCount = `${localProvider === "pi" ? "Pi" : "Local"} ${countLabel(localProvider)}`;
+    text("inference-counters", demo ? "Not applicable" : enabled ? `Mac ${countLabel("mac")} · ${localCount}`
+      : snapshot && snapshot.selected_provider === localProvider ? localCount : "Unavailable");
+
+    const recovery = inferenceObject(snapshot?.recovery);
+    const successes = inferenceCount(recovery?.successes);
+    const required = inferenceCount(recovery?.required);
+    const recovering = enabled && ["pi_active", "local_active", "mac_recovering", "mac_probing", "failback_pending", "switching_to_mac"].includes(snapshot.state) && required > 0 && successes !== null;
+    hide("inference-recovery", !recovering);
+    // next_probe_at is a coordinator monotonic deadline, not a wall-clock time.
+    text("inference-recovery", recovering ? `${stale ? "Last known " : ""}Mac recovery checks: ${successes}/${required}${recovery.ready === true ? " · ready for the next request boundary" : ""}. These checks do not replace the last accepted result.` : "");
+
+    // Render the server's bounded history. Refresh/reconnection never fabricates events.
+    const events = !demo && Array.isArray(snapshot?.events) ? snapshot.events.filter((event) => inferenceObject(event) && typeof event.message === "string").slice(-8).reverse() : [];
+    const key = JSON.stringify([snapshot?.session_id, enabled, demo, events]);
+    text("inference-event-count", events.length);
+    text("inference-history-note", demo ? "Demo mode does not exercise inference failover."
+      : "Accepted results and this history come from the controller. Recovery checks do not count as accepted results.");
+    if (inferenceEventsKey === key) return;
+    inferenceEventsKey = key;
+    dom["inference-events"].replaceChildren();
+    if (!events.length) {
+      const empty = document.createElement("li");
+      empty.className = "inference-event-empty";
+      empty.textContent = demo ? "No inference-source events in demo mode." : "No source events reported.";
+      dom["inference-events"].append(empty);
+      return;
+    }
+    events.forEach((event) => {
+      const item = document.createElement("li");
+      item.className = "inference-event";
+      item.dataset.level = ["warning", "error", "info"].includes(event.level) ? event.level : "info";
+      const time = document.createElement("time");
+      time.textContent = inferenceTime(event.time) || "Time unknown";
+      if (inferenceTime(event.time)) time.dateTime = event.time;
+      const message = document.createElement("span");
+      message.textContent = event.message;
+      const evidence = [inferenceString(event.observation_id), inferenceString(event.request_id)].filter(Boolean);
+      if (evidence.length) item.title = evidence.join(" · ");
+      item.append(time, message);
+      dom["inference-events"].append(item);
+    });
   }
 
   function renderStop() {
@@ -261,6 +372,39 @@
     });
   }
 
+  function placementCupSummary(summary) {
+    if (!summary || !Number.isInteger(summary.assigned_count) || summary.assigned_count < 0
+        || !Array.isArray(summary.location_ids)
+        || !summary.location_ids.every((id) => Number.isInteger(id) && id > 0)
+        || new Set(summary.location_ids).size !== summary.location_ids.length
+        || summary.location_ids.length > summary.assigned_count
+        || (summary.assigned_count > 0 && !summary.location_ids.length)) return "";
+    const count = summary.assigned_count;
+    const cells = summary.location_ids.length;
+    let message = count ? `Last frame: ${count} cup${count === 1 ? "" : "s"} confidently located in ${cells} cell${cells === 1 ? "" : "s"}: ${summary.location_ids.map((id) => `P${id}`).join(", ")}.`
+      : "No cups confidently assigned to grid cells in the last frame.";
+    if (summary.stable_cell_counts === false) {
+      const minimum = summary.min_assigned_count;
+      const maximum = summary.max_assigned_count;
+      const range = Number.isInteger(minimum) && Number.isInteger(maximum)
+        && minimum >= 0 && minimum <= count && count <= maximum && minimum < maximum
+        ? ` (${minimum}–${maximum} confidently assigned cups)` : "";
+      message += ` Cup assignments changed across the scan${range}. Blocks from all frames are retained.`;
+    }
+    return message;
+  }
+
+  function placementCameraLabel(camera, fallback) {
+    const evidence = Array.isArray(camera?.evidence) ? camera.evidence : [];
+    const labels = [];
+    if (Number.isInteger(camera?.cup_count) && camera.cup_count > 0) {
+      labels.push(`${camera.cup_count} cup${camera.cup_count === 1 ? "" : "s"}`);
+    } else if (evidence.includes("cup")) labels.push("cup seen earlier");
+    if (evidence.includes("detected_object")) labels.push("detected object");
+    if (evidence.includes("raised_depth") && !labels.length) labels.push("depth check");
+    return labels.length ? labels.join(" + ") : fallback;
+  }
+
   function renderPlacements() {
     const grid = state?.placement_grid;
     const locations = placementLocations();
@@ -276,7 +420,7 @@
     text("placement-next", ready ? (available.length ? `Next: location ${available[0].id}` : "No available locations") : "Grid unavailable");
     text("placement-summary", grid?.error ? asMessage(grid.error) : !ready ? "Placement grid unavailable. Picking is blocked until the controller loads it." : `${available.length} available · ${occupied} occupied · ${reserved} reserved · ${unknown} unknown / blocked${!connected ? " · view may be stale" : ""}`);
     dom["placement-summary"].classList.toggle("has-error", !ready);
-    const observationMessage = observation ? [asMessage(observation.message), released.length ? `${released.length} location${released.length === 1 ? "" : "s"} released: ${released.join(", ")}.` : "", observation.applied === false ? "Saved location status was not updated." : ""].filter(Boolean).join(" ") : state?.mode === "demo" ? "Sample placement status. This demo does not check a camera." : "No placement camera check in this scan.";
+    const observationMessage = observation ? [placementCupSummary(observation.cup_summary), asMessage(observation.message), released.length ? `${released.length} location${released.length === 1 ? "" : "s"} released: ${released.join(", ")}.` : "", observation.applied === false ? "Saved location status was not updated." : ""].filter(Boolean).join(" ") : state?.mode === "demo" ? "Sample placement status. This demo does not check a camera." : "No placement camera check in this scan.";
     text("placement-observation", observationMessage);
     text("placement-snapshot", state?.inventory ? `Last scan only${clockText(state.inventory.saved_at) ? ` · ${clockText(state.inventory.saved_at)}` : ""}. Scan again after removing a cup; this view does not update continuously.` : "Scan checks the placement area. Remove a cup and scan again to update its location.");
     const key = JSON.stringify([grid, observation, state?.proposal?.placements]);
@@ -288,7 +432,8 @@
       const status = placementStatus(location);
       const camera = observations.find((item) => item.id === location.id);
       const cameraState = ["clear", "occupied", "unknown"].includes(camera?.state) ? camera.state : "not checked";
-      const cameraDescription = `Camera: ${cameraState}${camera?.reason ? ` (${asMessage(camera.reason)})` : ""}`;
+      const cameraLabelText = placementCameraLabel(camera, cameraState);
+      const cameraDescription = `Camera: ${cameraLabelText}${camera?.reason ? ` (${asMessage(camera.reason)})` : ""}`;
       const slot = document.createElement("div");
       slot.className = `placement-slot ${status}${proposed.includes(location.id) ? " proposed" : ""}`;
       slot.setAttribute("role", "listitem");
@@ -302,7 +447,7 @@
       if (camera) {
         const cameraLabel = document.createElement("span");
         cameraLabel.className = "placement-camera-state";
-        cameraLabel.textContent = `Camera: ${cameraState}`;
+        cameraLabel.textContent = `Camera: ${cameraLabelText}`;
         slot.append(cameraLabel);
       }
       dom["placement-grid"].append(slot);
@@ -335,7 +480,8 @@
     const motion = state?.motion;
     const normal = `Normal: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(motion?.acceleration)}`;
     const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
-    text("proposal-motion", proposal.action === "hover" ? normal : `${normal}. ${flip}.`);
+    const home = `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`;
+    text("proposal-motion", proposal.action === "hover" ? normal : `${normal}. ${flip}. ${home}.`);
     const transfer = ["goto", "goto_all"].includes(proposal.action);
     const handover = proposal.handover;
     hide("proposal-handover", !transfer);
@@ -432,10 +578,12 @@
     if (!speedDirty && document.activeElement !== dom["robot-speed-input"]) dom["robot-speed-input"].value = Number.isFinite(currentSpeed) ? String(currentSpeed) : "";
     const enteredSpeed = Number(dom["robot-speed-input"].value);
     const validSpeed = dom["robot-speed-input"].value.trim() !== "" && Number.isFinite(enteredSpeed) && enteredSpeed >= 1 && enteredSpeed <= 1500;
+    const speedChanged = enteredSpeed !== currentSpeed || Math.min(enteredSpeed, 200) !== state?.motion?.home_speed;
     dom["robot-speed-input"].disabled = !enabled;
-    dom["robot-speed-button"].disabled = !enabled || !validSpeed || enteredSpeed === currentSpeed;
-    text("robot-speed-current", `Normal ${speedText(currentSpeed)} · Cup flip ${speedText(state?.motion?.flip_speed)}.`);
+    dom["robot-speed-button"].disabled = !enabled || !validSpeed || !speedChanged;
+    text("robot-speed-current", `Normal ${speedText(currentSpeed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · Sequence home ${speedText(state?.motion?.home_speed)}.`);
     renderHandoverControls();
+    renderReleaseLocations();
     text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
     dom["robot-status-button"].disabled = !idle() || Boolean(state?.stop_in_flight);
     text("robot-status-button", state?.busy && state.operation === "robot_status" ? "Reading controller…" : "Refresh robot status");
@@ -466,6 +614,30 @@
       text("robot-control-confirm", state?.mode === "live" ? "Confirm robot action" : "Run preview only");
     }
     updateControlCountdown();
+  }
+
+  function cancelReleaseReview(message = "") {
+    releaseReview = null;
+    releaseMessage = message;
+    dom["release-locations-ack"].checked = false;
+  }
+
+  function renderReleaseLocations() {
+    const enabled = releaseActionable();
+    if (releaseReview && (!enabled || releaseReview.context !== releaseContext(state))) {
+      cancelReleaseReview("The controller or placement status changed. Review the locations again before clearing them.");
+    }
+    const locations = placementLocations();
+    const occupied = locations.filter((location) => location.occupied).length;
+    const reserved = locations.filter((location) => location.reserved).length;
+    const blocked = locations.filter((location) => location.vision_blocked).length;
+    text("release-locations-status", releaseMessage || (!connected ? "Reconnect to review the placement locations." : !gridReady() || !locations.length ? "Load a valid, nonempty placement grid before clearing locations." : !enabled ? "Wait for the current operation to finish before reviewing locations." : `${locations.length} locations · ${occupied} occupied · ${reserved} reserved · ${blocked} camera-blocked. Counts can overlap.`));
+    dom["release-locations-button"].disabled = !enabled || Boolean(releaseReview);
+    hide("release-locations-review", !releaseReview);
+    dom["release-locations-ack"].disabled = !enabled || !releaseReview;
+    dom["release-locations-confirm"].disabled = !enabled || !releaseReview || !dom["release-locations-ack"].checked;
+    dom["release-locations-cancel"].disabled = !releaseReview;
+    if (releaseReview) text("release-locations-description", `Mark all ${releaseReview.count} placement locations available: ${releaseReview.labels.join(", ")}. This clears their occupied, reserved and camera-blocked records. Their positions stay the same.`);
   }
 
   function renderHandoverControls() {
@@ -606,6 +778,7 @@
   function render() {
     renderMode();
     renderConnection();
+    renderInference();
     renderStop();
     renderInventory();
     renderSelection();
@@ -628,6 +801,9 @@
       if (number < appliedPoll) return;
       appliedPoll = number;
       if (!state) transientError = "";
+      if (releaseReview && (!incoming.ready || incoming.busy || incoming.stop_in_flight || releaseReview.context !== releaseContext(incoming))) {
+        cancelReleaseReview("The controller or placement status changed. Review the locations again before clearing them.");
+      }
       if (state && incoming.instance_id !== state.instance_id) {
         selectedId = null;
         selectedCapture = null;
@@ -658,6 +834,7 @@
       if (number < appliedPoll) return;
       appliedPoll = number;
       connected = false;
+      if (releaseReview) cancelReleaseReview("Connection lost. Review the current placement locations after reconnecting.");
       if (!state) transientError = "Could not reach the local controller. Keep the web app process running and this page will reconnect.";
       render();
     } finally {
@@ -668,8 +845,9 @@
   async function post(path, payload = {}) {
     const stopping = path === "/api/stop";
     const adminMutation = ["/api/speed", "/api/handover_offset", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
-    const permitted = stopping ? canStop() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
+    const permitted = stopping ? canStop() : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
     if (!permitted || !state?.csrf_token) return;
+    if (releaseReview) cancelReleaseReview();
     const instance = state.instance_id;
     quickGeneration += 1;
     hide("quick-panel", true);
@@ -803,6 +981,27 @@
     if (!dom["recovery-button"].disabled) post("/api/recovery", { acknowledged: true });
   });
   dom["robot-speed-input"].addEventListener("input", () => { speedDirty = true; renderRobotControls(); });
+  dom["release-locations-button"].addEventListener("click", () => {
+    if (dom["release-locations-button"].disabled || !releaseActionable()) return;
+    releaseReview = {
+      fingerprint: state.placement_grid.fingerprint,
+      context: releaseContext(state),
+      count: placementLocations().length,
+      labels: placementLocations().map((location) => `P${location.id}`),
+    };
+    releaseMessage = "";
+    dom["release-locations-ack"].checked = false;
+    renderReleaseLocations();
+  });
+  dom["release-locations-ack"].addEventListener("change", renderReleaseLocations);
+  dom["release-locations-cancel"].addEventListener("click", () => {
+    cancelReleaseReview();
+    renderReleaseLocations();
+  });
+  dom["release-locations-confirm"].addEventListener("click", () => {
+    if (dom["release-locations-confirm"].disabled || !releaseReview || !releaseActionable() || releaseReview.context !== releaseContext(state)) return;
+    post("/api/release_locations", { fingerprint: releaseReview.fingerprint, acknowledged: true });
+  });
   dom["robot-speed-form"].addEventListener("submit", (event) => {
     event.preventDefault();
     if (!dom["robot-speed-button"].disabled) post("/api/speed", { speed: Number(dom["robot-speed-input"].value) });

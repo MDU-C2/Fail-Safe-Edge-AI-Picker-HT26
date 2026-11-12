@@ -11,7 +11,8 @@ from fastapi import (
     status,
 )
 
-from gateway.control.router import get_control_manager, require_control
+from gateway.control.router import get_control_manager, require_control, robot_authorization
+from gateway.control.manager import ControlConflict
 from gateway.events.manager import event_manager
 from gateway.models.rws import (
     RapidModuleUpload,
@@ -153,18 +154,7 @@ async def run(
 
 def lease_guard(identity: Identity):
     """Bind long initialization to this exact lease, allowing renewal only."""
-    manager = get_control_manager()
-    initial = manager.get()
-    if initial is None or initial.client_id != identity.client_id:
-        raise HTTPException(status_code=409, detail="The control lease is no longer active")
-
-    def check():
-        current = manager.get()
-        if (current is None or current.client_id != initial.client_id
-                or current.acquired_at != initial.acquired_at):
-            raise RwsError(409, "The initialization control lease expired or changed; no further control action will be sent")
-
-    return check
+    return robot_authorization(identity, manager=get_control_manager())
 
 
 # ================================================================
@@ -206,6 +196,8 @@ async def put_rapid_module(
         Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
+    if get_control_manager().require_session:
+        raise HTTPException(status_code=409, detail="Module changes are disabled in session-fenced operation; use a stopped maintenance deployment")
     check_source(
         module,
         upload.source,
@@ -249,6 +241,8 @@ async def delete_rapid_module(
         Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
+    if get_control_manager().require_session:
+        raise HTTPException(status_code=409, detail="Module changes are disabled in session-fenced operation; use a stopped maintenance deployment")
     await run(
         require_stopped_task,
         task,
@@ -308,6 +302,7 @@ async def start_rapid(
     await run(
         rws_client.start,
         request.reset_program_pointer,
+        robot_authorization(identity, require_clear=True),
     )
 
     await event_manager.publish(
@@ -373,9 +368,20 @@ async def reset_rapid(
     identity: Annotated[Identity, Depends(require_control("robot.control"))],
     request: Annotated[RapidResetRequest, Body()] = RapidResetRequest(),
 ) -> RapidStatus:
+    manager = get_control_manager()
+    authorization = lease_guard(identity)
+    generation = rws_client.stop_generation()
     try:
-        await run(rws_motion.reset_program, request.start, request.stop_generation, lease_guard(identity))
-    except MotionConflict as error:
+        manager.ensure_reset_allowed()
+        # The operator reset is tracked too: release during reset cannot grant
+        # another session permission to finish initialization.
+        def reset():
+            with authorization.operation():
+                rws_motion.reset_program(request.start, request.stop_generation, authorization)
+                with rws_client.dispatch_guard(generation, authorization):
+                    manager.clear_recovery(authorization)
+        await run(reset)
+    except (MotionConflict, ControlConflict) as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     await event_manager.publish("robot.rapid.reset", {"by": identity.client_id, "started": request.start})
     return await run(read_status)

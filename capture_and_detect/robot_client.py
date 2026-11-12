@@ -1,4 +1,4 @@
-"""Sequential RWS arm and gripper jobs with control-lease renewal.
+"""Guarded RWS arm and gripper jobs with shared control-lease renewal.
 
 Importing this module never contacts the gateway. A failed or timed-out command
 is never retried: it may already have reached the physical controller. Closing
@@ -8,6 +8,7 @@ software stop; it is not a hardware emergency stop.
 
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
@@ -35,14 +36,18 @@ class RobotClient:
     HOME_ARM_ANGLES = {"left": 135, "right": -135}
     HOME_TOLERANCE_DEGREES = 1.0
 
-    def __init__(self, api: str, headers: Mapping[str, str], dry_run: bool = False):
+    def __init__(self, api: str, headers: Mapping[str, str], dry_run: bool = False, *, require_session: bool = False):
         self.api = api.rstrip("/")
         self.headers = dict(headers)
         self.dry_run = dry_run
+        self.require_session = require_session
+        self._control_session = None
         self._owned_lease = False
         self._release_needed = False
         self._lease_error: Optional[RobotCommandError] = None
         self._lease_deadline: Optional[float] = None
+        self._lease_request_started: Optional[float] = None
+        self._lease_clock_anchor = None
         self._renew_after = 1.0
         self._execution_lock = threading.Lock()
         self._lease_lock = threading.RLock()
@@ -225,11 +230,18 @@ class RobotClient:
 
     def _post(self, endpoint: str, *, move: Optional[dict] = None,
               allow_conflict: bool = False):
-        options = {"headers": self.headers, "timeout": self.CONTROL_TIMEOUT}
+        headers = dict(self.headers)
+        # An acquisition creates a new session. All subsequent mutations carry
+        # that exact session, including renew/release and the separate Stop call.
+        if endpoint != "/control/acquire" and self._control_session is not None:
+            headers["X-Control-Session"] = self._control_session
+        options = {"headers": headers, "timeout": self.CONTROL_TIMEOUT}
         if move is not None:
             options.update(json=move, timeout=self.COMMAND_TIMEOUT)
         response = None
         try:
+            if endpoint in ("/control/acquire", "/control/renew"):
+                self._lease_request_started = time.monotonic()
             response = requests.post(f"{self.api}{endpoint}", **options)
             if allow_conflict and response.status_code == 409:
                 return None, None
@@ -264,26 +276,65 @@ class RobotClient:
                 or lease.get("active") is not True):
             raise RobotCommandError(f"Gateway did not confirm an active control lease: {reply}")
 
-        self._renew_after = 1.0
-        self._lease_deadline = None
+        session_id = lease.get("session_id")
+        if session_id is not None and (not isinstance(session_id, str) or not 1 <= len(session_id) <= 128
+                                       or any(not (c.isascii() and (c.isalnum() or c in "-_")) for c in session_id)):
+            raise RobotCommandError("Gateway returned an invalid execution session.")
+        if self.require_session and not session_id:
+            raise RobotCommandError("Gateway does not support execution sessions. Update and configure the Pi gateway before live fallback operation.")
+        if self._owned_lease and self._control_session is not None and session_id != self._control_session:
+            raise RobotCommandError("The execution session changed during lease renewal; no further commands will be sent.")
+        self._control_session = session_id
+
+        renew_after, deadline = 1.0, None
+        anchor = self._lease_clock_anchor
         expires_at = lease.get("expires_at")
+        if expires_at is None and anchor is not None:
+            raise RobotCommandError("Gateway omitted lease expiry during renewal.")
         if expires_at is not None:
             try:
                 expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
                 if expires.tzinfo is None:
                     raise ValueError("lease expiry has no timezone")
-                # Prefer the gateway clock to tolerate a Pi/Mac clock difference.
                 date_header = next((value for key, value in response_headers.items()
                                     if key.lower() == "date"), None)
-                server_now = (parsedate_to_datetime(date_header) if date_header
-                              else datetime.now(timezone.utc))
-                remaining = (expires - server_now).total_seconds()
+                now = time.monotonic()
+                if anchor is not None or (not date_header and lease.get("acquired_at") is not None):
+                    # Lynx may have an unset UTC clock and omit HTTP Date. Bind
+                    # its acquisition timestamp to our request START, so all
+                    # request/response latency consumes the lease budget.
+                    acquired = datetime.fromisoformat(str(lease.get("acquired_at")).replace("Z", "+00:00"))
+                    if acquired.tzinfo is None or self._lease_request_started is None:
+                        raise ValueError("lease acquisition has no clock reference")
+                    if anchor is None:
+                        if self._owned_lease:
+                            raise ValueError("cannot establish acquisition clock during renewal")
+                        duration = (expires - acquired).total_seconds()
+                        if duration <= 0:
+                            raise RobotCommandError("Gateway returned an expired control lease.")
+                        anchor = (acquired, self._lease_request_started, duration)
+                    if acquired != anchor[0]:
+                        raise ValueError("lease acquisition changed during renewal")
+                    # Renewals preserve acquired_at. Never treat the growing
+                    # acquired-to-expiry span as a new duration. Cap a forward
+                    # server-clock jump at the original lease length as well.
+                    deadline = min(anchor[1] + (expires - anchor[0]).total_seconds(),
+                                   self._lease_request_started + anchor[2])
+                    remaining = deadline - now
+                else:
+                    # Gateways with HTTP Date retain their server-clock path.
+                    server_now = (parsedate_to_datetime(date_header) if date_header
+                                  else datetime.now(timezone.utc))
+                    remaining = (expires - server_now).total_seconds()
+                    deadline = now + remaining
             except (TypeError, ValueError, OverflowError) as exc:
                 raise RobotCommandError("Gateway returned an invalid lease expiry.") from exc
             if remaining <= 0:
                 raise RobotCommandError("Gateway returned an expired control lease.")
-            self._renew_after = max(0.01, min(2.0, remaining / 3.0))
-            self._lease_deadline = time.monotonic() + remaining
+            renew_after = max(0.01, min(2.0, remaining / 3.0))
+        self._renew_after = renew_after
+        self._lease_deadline = deadline
+        self._lease_clock_anchor = anchor
         self._owned_lease = True
 
     def _take_control(self) -> None:
@@ -300,6 +351,8 @@ class RobotClient:
                 self._record_lease(reply, response)
                 return
             self._owned_lease = False
+            self._control_session = None
+            self._lease_clock_anchor = None
         reply, response = self._post("/control/acquire")
         # Even if expiry metadata is invalid, release a confirmed acquisition.
         self._release_needed = (reply.get("success") is True
@@ -330,6 +383,9 @@ class RobotClient:
             self._owned_lease = False
             self._release_needed = False
             self._lease_deadline = None
+            self._lease_request_started = None
+            self._lease_clock_anchor = None
+            self._control_session = None
 
     def _renew_loop(self, stop: threading.Event) -> None:
         while not stop.wait(self._renew_after):
@@ -399,10 +455,16 @@ class RobotClient:
 
     @classmethod
     def _validate_job(cls, job):
-        if not isinstance(job, dict) or set(job) != {"name", "endpoint", "body"}:
-            raise RobotCommandError("Each job must contain exactly name, endpoint and body.")
+        if (not isinstance(job, dict) or not {"name", "endpoint", "body"} <= set(job)
+                or set(job) - {"name", "endpoint", "body", "after"}):
+            raise RobotCommandError("Each job must contain name, endpoint and body, and optional after dependencies.")
         if not isinstance(job["name"], str) or not job["name"].strip():
             raise RobotCommandError("Each job requires a nonempty step name.")
+        if "after" in job:
+            after = job["after"]
+            if (not isinstance(after, list) or any(not isinstance(name, str) or not name.strip() for name in after)
+                    or len(after) != len(set(after)) or job["name"] in after):
+                raise RobotCommandError("Step dependencies must be distinct other step names.")
         endpoint = job["endpoint"]
         if endpoint == cls.MOVE_ENDPOINT:
             body = cls._validate_motion(job["body"])
@@ -410,21 +472,222 @@ class RobotClient:
             body = cls._validate_motion(job["body"], home=True)
         elif endpoint == cls.GRIPPER_ENDPOINT:
             body = job["body"]
-            if (not isinstance(body, dict) or set(body) != {"arm", "wait", "action"}
+            if (not isinstance(body, dict) or not {"arm", "wait", "action"} <= body.keys()
+                    or body.keys() - {"arm", "wait", "action", "position"}
                     or body["arm"] not in ("left", "right") or body["wait"] is not True
-                    or body["action"] not in ("open", "grip")):
+                    or body["action"] not in ("open", "grip", "move")):
                 raise RobotCommandError(
-                    "Gripper jobs require only arm='left' or 'right', wait=True, "
-                    "and action='open' or 'grip'."
+                    "Gripper jobs require arm='left' or 'right', wait=True, "
+                    "and action='open', 'grip' or 'move'; only move accepts position."
                 )
+            if (body["action"] == "move") != ("position" in body):
+                raise RobotCommandError("Gripper position is required for move and forbidden for open/grip.")
+            if "position" in body:
+                value = body["position"]
+                try:
+                    valid = (not isinstance(value, bool) and isinstance(value, (int, float))
+                             and math.isfinite(value) and 0 <= value <= 25)
+                except OverflowError:
+                    valid = False
+                if not valid:
+                    raise RobotCommandError("Gripper position must be a finite number from 0 to 25 mm.")
             body = dict(body)
         else:
             raise RobotCommandError("Only RWS move, home and gripper endpoints are supported.")
-        return {"name": job["name"], "endpoint": endpoint, "body": body}
+        result = {"name": job["name"], "endpoint": endpoint, "body": body}
+        if "after" in job:
+            result["after"] = list(job["after"])
+        return result
 
     @staticmethod
     def _copy_job(job):
-        return {**job, "body": dict(job["body"])}
+        result = {**job, "body": dict(job["body"])}
+        if "after" in job:
+            result["after"] = list(job["after"])
+        return result
+
+    @staticmethod
+    def _job_dependencies(jobs):
+        """Validate the whole graph before acquiring control or dispatching.
+
+        Legacy plans remain serial. Explicit plans keep each arm's list order
+        in addition to their handover barriers, with one active job per arm.
+        """
+        if not any("after" in job for job in jobs):
+            return None
+        if not all("after" in job for job in jobs):
+            raise RobotCommandError("Parallel plans must specify dependencies for every step.")
+        names = {job["name"] for job in jobs}
+        if len(names) != len(jobs):
+            raise RobotCommandError("Parallel plans require unique step names.")
+        dependencies, previous = {}, {}
+        for job in jobs:
+            required = set(job["after"])
+            if not required <= names:
+                raise RobotCommandError(f"Step '{job['name']}' has an unknown dependency.")
+            arm = job["body"]["arm"]
+            if arm in previous:
+                required.add(previous[arm])
+            dependencies[job["name"]] = required
+            previous[arm] = job["name"]
+        remaining, confirmed = dict(dependencies), set()
+        while remaining:
+            ready = {name for name, required in remaining.items() if required <= confirmed}
+            if not ready:
+                raise RobotCommandError("Step dependencies contain a cycle or conflict with arm order.")
+            confirmed.update(ready)
+            remaining = {name: required for name, required in remaining.items() if name not in ready}
+        return dependencies
+
+    def _perform_job(self, job):
+        """One blocking request; confirmation never infers or retries motion."""
+        self._check_stop()
+        self._check_lease()
+        reply, _ = self._post(job["endpoint"], move=job["body"])
+        self._check_stop()
+        print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
+              f" -> {reply} ({job['name']})")
+        if reply.get("accepted") is not True or reply.get("message") != "DONE":
+            raise RobotCommandError(
+                f"Step '{job['name']}' did not report successful completion: {reply}. "
+                "No further commands will be sent."
+            )
+        if job["endpoint"] == self.HOME_ENDPOINT:
+            self._verify_home(job["body"]["arm"])
+        self._check_stop()
+
+    def _before_job(self, index, job, callback):
+        if callback is None:
+            return job
+        try:
+            replacement = callback(index, self._copy_job(job))
+            return job if replacement is None else self._validate_job(replacement)
+        except Exception as exc:
+            raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
+
+    def _after_job(self, index, job, callback):
+        if callback is not None:
+            try:
+                callback(index, self._copy_job(job))
+            except Exception as exc:
+                raise RobotCommandError(
+                    f"Post-command check failed after '{job['name']}' reported DONE: {exc}. "
+                    "No further commands will be sent."
+                ) from exc
+
+    def _execute_parallel_jobs(self, jobs, dependencies, before_send, after_done):
+        """Overlap independent arms while keeping callbacks on this thread.
+
+        Only requests already submitted may finish after a peer fails. Drain
+        those requests and record confirmed completions before releasing the
+        shared lease; no dependent or later job is dispatched after failure.
+        """
+        pending = dict(enumerate(jobs))
+        active, completed, reported = {}, set(), set()
+        aborted = threading.Event()
+        failure_lock, failures = threading.Lock(), []
+
+        def check():
+            with failure_lock:
+                if failures:
+                    raise failures[0]
+            self._check_stop()
+            self._check_lease()
+
+        def run(job):
+            try:
+                if aborted.is_set():
+                    raise RobotCommandError("Another step failed; no further commands will be sent.")
+                self._perform_job(job)
+            except BaseException as error:
+                with failure_lock:
+                    if not failures:
+                        failures.append(error)
+                    aborted.set()
+                raise
+
+        pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="robot-arm")
+        try:
+            while pending or active:
+                check()
+                for future in list(active):
+                    if not future.done():
+                        continue
+                    index, job = active[future]
+                    future.result()
+                    reported.add(index)  # A failed persistence callback is never retried.
+                    self._after_job(index, job, after_done)
+                    completed.add(job["name"])
+                    del active[future]
+                check()
+                busy_arms = {job["body"]["arm"] for _, job in active.values()}
+                for index, job in list(pending.items()):
+                    if job["body"]["arm"] in busy_arms or not dependencies[job["name"]] <= completed:
+                        continue
+                    check()
+                    candidate = self._before_job(index, job, before_send)
+                    if (candidate["name"] != job["name"] or candidate["body"]["arm"] != job["body"]["arm"]
+                            or candidate.get("after") != job["after"]):
+                        raise RobotCommandError("Pre-command replacement changed the parallel step identity or dependencies.")
+                    check()
+                    future = pool.submit(run, candidate)
+                    active[future] = (index, candidate)
+                    busy_arms.add(candidate["body"]["arm"])
+                    del pending[index]
+                if active:
+                    wait(active, timeout=0.05, return_when=FIRST_COMPLETED)
+                elif pending:
+                    raise RobotCommandError("No executable step remains in the parallel plan.")
+        except BaseException:
+            aborted.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+            # A peer may have completed while the failure was being handled.
+            # Record that fact, but never mask the original failure or schedule
+            # another job. Failed/unconfirmed steps remain pending for recovery.
+            for future, (index, job) in active.items():
+                if index in reported or future.cancelled():
+                    continue
+                try:
+                    future.result()
+                    reported.add(index)
+                    self._after_job(index, job, after_done)
+                except BaseException:
+                    pass
+            raise
+        finally:
+            aborted.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+
+    def read_gripper_position(self, arm):
+        """Optional read-only telemetry; unknown readings never trigger a retry.
+
+        The reported finger position does not prove that a cup is held. No HTTP
+        is sent in dry-run mode, and a software stop remains an execution error.
+        """
+        if arm not in ("left", "right"):
+            raise RobotCommandError("Gripper telemetry requires arm='left' or 'right'.")
+        self._check_stop()
+        if self.dry_run:
+            return None
+        response = None
+        position = None
+        try:
+            response = requests.get(f"{self.api}/robot/arms/{arm}/gripper", headers=self.headers,
+                                    timeout=self.CONTROL_TIMEOUT)
+            response.raise_for_status()
+            reply = response.json()
+            value = reply.get("position") if isinstance(reply, dict) else None
+            if (isinstance(reply, dict) and reply.get("arm") == arm
+                    and not isinstance(value, bool) and isinstance(value, (int, float))
+                    and math.isfinite(value) and 0 <= value <= 25):
+                position = float(value)
+        except (requests.RequestException, ValueError, OverflowError):
+            pass
+        finally:
+            if response is not None:
+                response.close()
+        self._check_stop()
+        return position
 
     def _verify_home(self, arm):
         """Independently confirm the deployed controller reached the expected home pose."""
@@ -491,7 +754,7 @@ class RobotClient:
     def execute_jobs(self, jobs: list[dict],
                      before_send: Optional[Callable[[int, dict], Optional[dict]]] = None,
                      after_done: Optional[Callable[[int, dict], None]] = None) -> None:
-        """Run named jobs sequentially under one renewed control lease.
+        """Run named jobs under one renewed control lease.
 
         Validate the complete plan before acquiring control. Every job requires
         wait=True and an exact accepted=True / DONE response. No failed command
@@ -500,11 +763,14 @@ class RobotClient:
         which is validated before dispatch. after_done runs only after confirmed
         completion (and measured home joints for home jobs); raising from either
         hook prevents all later jobs. Dry-run validates and prints the plan
-        without HTTP or either hook.
+        without HTTP or either hook. Plans with explicit ``after`` dependencies
+        may overlap different arms. Per-arm order remains sequential, and hooks
+        always run on the coordinator thread with original plan indices.
         """
         if not isinstance(jobs, list):
             raise RobotCommandError("Provide a list of named RWS jobs.")
         jobs = [self._validate_job(job) for job in jobs]
+        dependencies = self._job_dependencies(jobs)
         if not jobs:
             return
         self._check_stop()
@@ -518,6 +784,8 @@ class RobotClient:
                     self._check_stop()
                     print(f"DRY RUN: POST {job['endpoint']} "
                           f"{json.dumps(job['body'], sort_keys=True)} ({job['name']})")
+                    if dependencies is not None:
+                        print(f"  after: {', '.join(sorted(dependencies[job['name']])) or 'start'}")
                 self._check_stop()
                 return
             with self._lease_lock:
@@ -528,38 +796,19 @@ class RobotClient:
             self._check_stop()
             renewal = threading.Thread(target=self._renew_loop, args=(stop,), daemon=True)
             renewal.start()
+            if dependencies is not None:
+                self._execute_parallel_jobs(jobs, dependencies, before_send, after_done)
+                self._check_stop()
+                self._check_lease()
+                return
             for index, job in enumerate(jobs):
                 self._check_stop()
                 self._check_lease()
-                if before_send is not None:
-                    try:
-                        replacement = before_send(index, self._copy_job(job))
-                        if replacement is not None:
-                            job = self._validate_job(replacement)
-                    except Exception as exc:
-                        raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
+                job = self._before_job(index, job, before_send)
                 self._check_lease()
                 self._check_stop()
-                reply, _ = self._post(job["endpoint"], move=job["body"])
-                self._check_stop()
-                print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
-                      f" -> {reply} ({job['name']})")
-                if reply.get("accepted") is not True or reply.get("message") != "DONE":
-                    raise RobotCommandError(
-                        f"Step '{job['name']}' did not report successful completion: {reply}. "
-                        "No further commands will be sent."
-                    )
-                if job["endpoint"] == self.HOME_ENDPOINT:
-                    self._verify_home(job["body"]["arm"])
-                self._check_stop()
-                if after_done is not None:
-                    try:
-                        after_done(index, self._copy_job(job))
-                    except Exception as exc:
-                        raise RobotCommandError(
-                            f"Post-command check failed after '{job['name']}' reported DONE: {exc}. "
-                            "No further commands will be sent."
-                        ) from exc
+                self._perform_job(job)
+                self._after_job(index, job, after_done)
                 self._check_lease()
                 self._check_stop()
         finally:

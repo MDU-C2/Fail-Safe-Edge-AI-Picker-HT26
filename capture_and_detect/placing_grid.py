@@ -108,6 +108,10 @@ class PlacingGrid:
                                   parse_constant=_invalid_constant)
             if not isinstance(value, dict) or not isinstance(value.get("locations"), list):
                 raise ValueError("Expected an object containing a locations list")
+            if "cell_size_mm" in value:
+                size = value["cell_size_mm"]
+                if not finite_number(size) or not 20 <= size <= 200:
+                    raise ValueError("cell_size_mm must be a finite number from 20 to 200 mm")
             ids = set()
             positions = set()
             for location in value["locations"]:
@@ -127,7 +131,10 @@ class PlacingGrid:
 
     @staticmethod
     def _snapshot(value):
-        return {"fingerprint": _fingerprint(value), "locations": copy.deepcopy(value["locations"])}
+        snapshot = {"fingerprint": _fingerprint(value), "locations": copy.deepcopy(value["locations"])}
+        if "cell_size_mm" in value:
+            snapshot["cell_size_mm"] = value["cell_size_mm"]
+        return snapshot
 
     def snapshot(self):
         with self._locked():
@@ -178,6 +185,9 @@ class PlacingGrid:
                 raise SelectionError("Placement grid changed during observation. Scan again.")
             if snapshot["locations"] != value["locations"]:
                 raise SelectionError("Placement observation snapshot does not match the grid. Scan again.")
+            if (("cell_size_mm" in snapshot) != ("cell_size_mm" in value)
+                    or snapshot.get("cell_size_mm") != value.get("cell_size_mm")):
+                raise SelectionError("Placement observation cell size does not match the grid. Scan again.")
             ids = {location["id"] for location in value["locations"]}
             if (not isinstance(states, dict)
                     or any(type(key) is not int or key < 1 for key in states)

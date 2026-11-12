@@ -5,27 +5,21 @@
       "x": 400,
       "y": -200,
       "z": 230,
-      "occupied": true,
-      "reserved": true,
-      "reservation_id": "8001a615120849c7816a3cc66f15f6b1"
+      "occupied": false
     },
     {
       "id": 2,
       "x": 480,
       "y": -200,
       "z": 230,
-      "occupied": true,
-      "reserved": true,
-      "reservation_id": "c347f2ac0ffe4390b4ca94ec5bf863ce"
+      "occupied": false
     },
     {
       "id": 3,
       "x": 560,
       "y": -200,
       "z": 230,
-      "occupied": true,
-      "reserved": true,
-      "reservation_id": "b772b4184224412f92ffd5a8ca7c08ab"
+      "occupied": false
     },
     {
       "id": 4,
@@ -39,8 +33,7 @@
       "x": 400,
       "y": -280,
       "z": 230,
-      "occupied": false,
-      "vision_blocked": true
+      "occupied": false
     },
     {
       "id": 6,
@@ -68,8 +61,7 @@
       "x": 400,
       "y": -360,
       "z": 230,
-      "occupied": false,
-      "vision_blocked": true
+      "occupied": false
     },
     {
       "id": 10,
