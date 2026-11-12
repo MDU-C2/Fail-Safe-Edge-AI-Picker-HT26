@@ -16,6 +16,7 @@ from gateway.rws.client import RwsError
 from gateway.rws.motion import (
     MotionConflict,
     MotionSpeed,
+    PathPoint,
     RwsMotion,
     orient_zyx,
 )
@@ -131,6 +132,7 @@ def test_control_with_lease_reaches_controller(
         ("/robot/rws/home", {"arm": "right"}),
         ("/robot/rws/home", {"wait": False}),
         ("/robot/rws/gripper", {"action": "grip"}),
+        ("/robot/rws/path", {"points": [{"x": 400, "y": 100, "z": 300, "rx": 180, "ry": 0, "rz": 180}]}),
     ],
 )
 def test_rws_moves_need_permission_and_lease(
@@ -220,6 +222,37 @@ def test_rws_home_and_gripper_are_validated(
 
     with operator.control():
         expect(operator.post(path, json=body), 422)
+
+
+POINT = {"x": 400, "y": 100, "z": 300, "rx": 180, "ry": 0, "rz": 180}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"points": []},
+        {"points": [POINT] * 9},
+        {"points": [{"x": 400, "y": 100, "z": 300}]},
+        {"points": [{**POINT, "speed": 0}]},
+        {"points": [{**POINT, "speed": 2000}]},
+        {"points": [{**POINT, "zone": -1}]},
+        {"points": [{**POINT, "zone": 101}]},
+        {"points": [POINT], "zone": 200},
+        {"points": [POINT], "max_acceleration": 0},
+        {"points": [POINT], "max_acceleration": 50},
+        {"points": [POINT], "arm": "middle"},
+        {"points": [POINT], "ramp": 5},
+    ],
+)
+def test_rws_path_is_validated(
+    gateway: Gateway,
+    body: dict,
+) -> None:
+    operator = gateway.client("operator")
+
+    with operator.control():
+        expect(operator.post("/robot/rws/path", json=body), 422)
 
 
 @pytest.mark.parametrize(
@@ -326,6 +359,13 @@ class FakeArmTasks:
                 ("move_ramp", "100"),
                 ("grip_pos", "25"),
                 ("grip_force", "20"),
+                ("path_len", "0"),
+                ("path_pos", "[" + ",".join(["[0,0,0]"] * 8) + "]"),
+                ("path_rot", "[" + ",".join(["[1,0,0,0]"] * 8) + "]"),
+                ("path_lin", "[" + ",".join(["FALSE"] * 8) + "]"),
+                ("path_speed", "[" + ",".join(["50"] * 8) + "]"),
+                ("path_zone", "[" + ",".join(["10"] * 8) + "]"),
+                ("path_acc", "0"),
             )
         }
 
@@ -363,6 +403,16 @@ class FakeArmTasks:
     ) -> None:
         x = float(self.symbols[f"target_pos_{arm}"].strip("[]").split(",")[0])
 
+        #
+        # A path job: every point must be in reach, as RAPID's
+        # RunPath checks them all first.
+        #
+        length = int(self.symbols.get(f"path_len_{arm}", "0"))
+
+        if length > 0 and self.symbols[f"go_home_{arm}"] != "TRUE" and self.symbols[f"grip_cmd_{arm}"] == '""':
+            points = self.symbols[f"path_pos_{arm}"][2:-2].split("],[")[:length]
+            x = max(float(point.split(",")[0]) for point in points)
+
         self.symbols[f"move_ok_{arm}"] = (
             "TRUE"
             if self.symbols[f"go_home_{arm}"] == "TRUE"
@@ -370,6 +420,9 @@ class FakeArmTasks:
             or x < 800
             else "FALSE"
         )
+
+        if f"path_len_{arm}" in self.symbols:
+            self.symbols[f"path_len_{arm}"] = "0"
 
         self.symbols[f"grip_cmd_{arm}"] = '""'
         self.symbols[f"move_request_{arm}"] = "FALSE"
@@ -673,3 +726,133 @@ def test_rws_motion_status_reports_a_failed_job() -> None:
 
     with pytest.raises(MotionConflict, match="not loaded in T_ROB_L"):
         arms.status("left")
+
+
+# ================================================================
+# Path jobs
+# ================================================================
+
+def path_points(
+    *positions: tuple[float, float, float],
+    **options,
+) -> list[PathPoint]:
+    return [
+        PathPoint(position=position, rotation=(180.0, 0.0, 180.0), **options)
+        for position in positions
+    ]
+
+
+def test_rws_motion_path_writes_padded_arrays_and_length_last() -> None:
+    controller = FakeArmTasks()
+
+    points = [
+        PathPoint((400.0, 100.0, 450.0), (180.0, 0.0, 180.0), speed=250.0),
+        PathPoint((500.0, 100.0, 409.0), (180.0, 0.0, 180.0), zone=20.0),
+        PathPoint((500.0, 100.0, 234.0), (180.0, 0.0, 180.0), linear=True, speed=40.0),
+    ]
+
+    result = motion(controller).path(
+        "left",
+        points,
+        zone=5.0,
+        max_acceleration=2.0,
+        speed=MotionSpeed(150.0, 60.0, 40.0),
+    )
+
+    assert (result.accepted, result.message) == (True, "DONE")
+
+    written = {name: value for _, name, value in controller.writes}
+
+    assert written["path_pos_left"] == (
+        "[[400.000000,100.000000,450.000000],[500.000000,100.000000,409.000000],"
+        "[500.000000,100.000000,234.000000]," + ",".join(["[0,0,0]"] * 5) + "]"
+    )
+    assert written["path_lin_left"] == "[FALSE,FALSE,TRUE," + ",".join(["FALSE"] * 5) + "]"
+
+    #
+    # Per point speed and zone, else the path's.
+    #
+    assert written["path_speed_left"].startswith("[250.000000,150.000000,40.000000,150.000000,")
+    assert written["path_zone_left"].startswith("[5.000000,20.000000,5.000000,5.000000,")
+    assert written["path_acc_left"] == "2.000000"
+    assert written["move_acc_left"] == "60.000000"
+    assert written["move_ramp_left"] == "40.000000"
+    assert written["path_rot_left"].count("],[") == 7
+
+    #
+    # path_len is what makes it a path job, so it goes last, then
+    # move_request.
+    #
+    assert [name for _, name, _ in controller.writes[-2:]] == ["path_len_left", "move_request_left"]
+    assert written["path_len_left"] == "3"
+
+    assert not any(name.endswith("_right") for _, name, _ in controller.writes)
+
+
+def test_rws_motion_path_without_limit_writes_zero() -> None:
+    controller = FakeArmTasks()
+
+    assert motion(controller).path("right", path_points((420.0, -150.0, 300.0))).message == "DONE"
+
+    assert controller.symbols["path_acc_right"] == "0.000000"
+    assert controller.symbols["path_len_right"] == "0"
+
+
+def test_rws_motion_path_refuses_any_point_outside_the_safe_zone() -> None:
+    controller = FakeArmTasks()
+
+    result = motion(controller).path(
+        "left",
+        path_points((400.0, 100.0, 300.0), (400.0, 100.0, 900.0)),
+    )
+
+    assert (result.accepted, result.message) == (False, "ERR outside safe zone")
+    assert controller.writes == []
+
+
+def test_rws_motion_path_reports_an_unreachable_point() -> None:
+    result = motion(FakeArmTasks()).path(
+        "left",
+        path_points((400.0, 100.0, 300.0), (900.0, 0.0, 300.0)),
+    )
+
+    assert (result.accepted, result.message) == (False, "ERR move failed")
+
+
+def test_rws_motion_path_needs_the_path_variables() -> None:
+    controller = FakeArmTasks()
+
+    del controller.symbols["path_len_left"]
+
+    with pytest.raises(MotionConflict, match="no path variables"):
+        motion(controller).path("left", path_points((400.0, 100.0, 300.0)))
+
+    assert controller.writes == []
+
+    #
+    # Single moves still work on such a program; they only clear
+    # path_len where it exists.
+    #
+    assert motion(controller).move("left", (400.0, 150.0, 320.0), None).message == "DONE"
+
+    assert not any(name == "path_len_left" for _, name, _ in controller.writes)
+
+
+def test_rws_motion_move_clears_a_stale_path_job() -> None:
+    controller = FakeArmTasks()
+
+    controller.symbols["path_len_left"] = "3"
+
+    assert motion(controller).move("left", (400.0, 150.0, 320.0), None).message == "DONE"
+
+    assert ("T_ROB_L", "path_len_left", "0") in controller.writes
+
+
+def test_rws_motion_path_length_is_checked() -> None:
+    arms = motion(FakeArmTasks())
+
+    with pytest.raises(ValueError):
+        arms.path("left", [])
+
+    with pytest.raises(ValueError):
+        arms.path("left", path_points(*[(400.0, 100.0, 300.0)] * 9))

@@ -211,7 +211,7 @@ def hardware_factory(args):
         session = CupSession(capture, save, RobotClient(api, headers, dry_run=not args.live),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                     recovery=recovery)
+                     recovery=recovery, smooth=not args.classic_moves)
         interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url) if args.llm else NoLanguage()
         return session, LanguageController(session, interpreter, audit_dir=store.folder / "language")
     return factory
@@ -255,6 +255,8 @@ def main(argv=None):
     parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration.json"))
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--speed", type=float, default=50)
+    parser.add_argument("--classic-moves", action="store_true",
+                        help="One stop per waypoint (for a RAPID program without path jobs)")
     parser.add_argument("--max-result-age", type=float, default=15)
     parser.add_argument("--match-mm", type=float, default=20)
     parser.add_argument("--match-px", type=float, default=40)

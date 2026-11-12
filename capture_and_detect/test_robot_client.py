@@ -54,6 +54,19 @@ def home(arm):
     return job(f"{arm} home", "/robot/rws/home", {"arm": arm, "wait": True, "speed": 50})
 
 
+def path_point(**overrides):
+    result = {"x": 400, "y": 100, "z": 409, "rx": 180, "ry": 0, "rz": 180}
+    result.update(overrides)
+    return result
+
+
+def path_body(*points, **overrides):
+    result = {"arm": "left", "wait": True, "points": list(points) or [path_point()],
+              "zone": 10, "speed": 250, "acceleration": 60, "ramp": 40}
+    result.update(overrides)
+    return result
+
+
 class FastRenewClient(RobotClient):
     def _record_lease(self, reply, reply_headers):
         super()._record_lease(reply, reply_headers)
@@ -92,7 +105,7 @@ class RobotClientTests(unittest.TestCase):
             result = self.renew_reply or lease_response()
         elif url.endswith("/control/release"):
             result = self.release_reply or response({"success": True, "lease": {"active": False}})
-        elif url.endswith(("/robot/rws/move", "/robot/rws/gripper", "/robot/rws/home")):
+        elif url.endswith(("/robot/rws/move", "/robot/rws/gripper", "/robot/rws/home", "/robot/rws/path")):
             if self.movement:
                 self.movement()
             result = self.move_replies.pop(0) if self.move_replies else done_response()
@@ -419,6 +432,158 @@ class RobotClientTests(unittest.TestCase):
                 with self.assertRaises(RobotCommandError):
                     self.client.execute_jobs([job(), invalid])
         self.post.assert_not_called()
+
+    def grouped(self, name, arm, group, **body):
+        return {"name": name, "endpoint": "/robot/rws/path", "group": group,
+                "body": path_body(arm=arm, **body)}
+
+    def test_grouped_jobs_on_both_arms_run_at_the_same_time(self):
+        barrier = threading.Barrier(2, timeout=2)
+        events = []
+
+        def movement():
+            # Only passes if the left and right jobs are in flight together.
+            barrier.wait()
+            events.append("moved")
+
+        self.movement = movement
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g")]
+        self.client.execute_jobs(jobs)
+        self.assertEqual(events, ["moved", "moved"])
+
+    def test_first_hooks_of_a_stage_run_in_order_before_anything_is_sent(self):
+        order = []
+        self.movement = lambda: order.append("sent")
+
+        def before(index, job):
+            order.append(f"before {job['name']}")
+
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("left_b", "left", "g"),
+                self.grouped("right_a", "right", "g")]
+        self.client.execute_jobs(jobs, before_send=before)
+        self.assertEqual(order[:3], ["before left_a", "before right_a", "sent"])
+        self.assertEqual(sorted(order), sorted(["before left_a", "before right_a", "before left_b",
+                                                "sent", "sent", "sent"]))
+
+    def test_next_stage_waits_for_both_lanes(self):
+        lock = threading.Lock()
+        in_flight = []
+        overlaps = []
+
+        def movement():
+            with lock:
+                in_flight.append(1)
+                overlaps.append(len(in_flight))
+            time.sleep(0.05)
+            with lock:
+                in_flight.pop()
+
+        self.movement = movement
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g"),
+                job("after", "/robot/rws/path", path_body(arm="left"))]
+        self.client.execute_jobs(jobs)
+        self.assertEqual(len(self.job_calls()), 3)
+        # The two grouped jobs overlapped; the next job started alone.
+        self.assertEqual(max(overlaps[:2]), 2)
+        self.assertEqual(overlaps[2], 1)
+
+    def test_failure_in_one_lane_stops_the_other_lane_after_its_running_job(self):
+        right_a_sent = threading.Event()
+
+        def movement():
+            if self.post.call_args.kwargs["json"]["zone"] == 1:
+                right_a_sent.set()
+                time.sleep(0.3)   # still moving when the left lane fails
+
+        def before(index, job):
+            if job["name"] == "left_a":
+                right_a_sent.wait(2)
+                raise RuntimeError("camera says no")
+
+        self.movement = movement
+        # Jobs are told apart by their zone.
+        jobs = [self.grouped("right_a", "right", "g", zone=1), self.grouped("right_b", "right", "g", zone=2),
+                self.grouped("left_x", "left", "g", zone=3), self.grouped("left_a", "left", "g", zone=4),
+                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
+        with self.assertRaisesRegex(RobotCommandError, "camera says no"):
+            self.client.execute_jobs(jobs, before_send=before)
+        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
+        # right_a was waited for; right_b, left_a and the next stage never went out.
+        self.assertEqual(sent, [1, 3])
+
+    def test_a_reported_failure_in_one_lane_raises_and_sends_nothing_more(self):
+        def movement():
+            if self.post.call_args.kwargs["json"]["zone"] == 1:
+                time.sleep(0.1)   # the right lane is still moving when the left fails
+
+        self.movement = movement
+        self.move_replies = [response({"accepted": False, "message": "ERR move failed"}), done_response()]
+        jobs = [self.grouped("left_a", "left", "g", zone=0), self.grouped("right_a", "right", "g", zone=1),
+                self.grouped("right_b", "right", "g", zone=2),
+                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
+        with self.assertRaisesRegex(RobotCommandError, "did not report successful completion"):
+            self.client.execute_jobs(jobs)
+        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
+        self.assertNotIn(2, sent)
+        self.assertNotIn(5, sent)
+
+    def test_grouped_jobs_must_name_their_arm_and_replacements_keep_arm_and_group(self):
+        no_arm = {"name": "x", "endpoint": "/robot/rws/home", "group": "g", "body": {"wait": True}}
+        with self.assertRaisesRegex(RobotCommandError, "must name its arm"):
+            self.client.execute_jobs([no_arm])
+        with self.assertRaisesRegex(RobotCommandError, "nonempty string"):
+            self.client.execute_jobs([{**self.grouped("a", "left", "g"), "group": ""}])
+        self.post.assert_not_called()
+
+        for change in ({"body": path_body(arm="right")}, {"group": "other"}):
+            with self.subTest(change=change):
+                self.post.reset_mock()
+                with self.assertRaisesRegex(RobotCommandError, "may not change its arm or group"):
+                    self.client.execute_jobs(
+                        [self.grouped("a", "left", "g"), self.grouped("b", "right", "g")],
+                        before_send=lambda index, job, change=change: {**job, **change} if index == 0 else None)
+                self.assertEqual(self.job_calls(), [])
+
+    def test_dry_run_marks_jobs_that_run_together(self):
+        dry = RobotClient("http://test/api/v1/", {"Authorization": "Bearer test"}, dry_run=True)
+        dry.execute_jobs([self.grouped("left_a", "left", "pick"), self.grouped("right_a", "right", "pick")])
+        self.assertIn("(left_a) [together: pick]", self.stdout.getvalue())
+        self.post.assert_not_called()
+
+    def test_a_refusal_shows_the_gateways_reason(self):
+        refused = response({"detail": "RAPID is not running"}, status=409)
+        self.move_replies = [refused]
+        with self.assertRaisesRegex(RobotCommandError, "Gateway says: RAPID is not running"):
+            self.client.execute_jobs([job("a", "/robot/rws/path", path_body())])
+
+    def test_path_jobs_are_validated_before_acquisition(self):
+        def path(body):
+            return job("path", "/robot/rws/path", body)
+        invalid = [
+            path_body(arm="middle"), path_body(wait=False), path_body(points=[]),
+            path_body(points=[path_point()] * 9), path_body(points="400,100,409"),
+            path_body(path_point(z=float("nan"))), path_body(path_point(rx=None)),
+            path_body({"x": 400, "y": 100, "z": 409}), path_body(path_point(linear=1)),
+            path_body(path_point(speed=0)), path_body(path_point(zone=101)),
+            path_body(path_point(command="HOME")), path_body(zone=-1),
+            path_body(max_acceleration=0), path_body(max_acceleration=21),
+            path_body(acceleration=10), path_body(command="HOME"),
+        ]
+        for body in invalid:
+            with self.subTest(body=body):
+                with self.assertRaises(RobotCommandError):
+                    self.client.execute_jobs([job(), path(body)])
+        self.post.assert_not_called()
+
+    def test_valid_path_job_passes_validation_unchanged(self):
+        body = path_body(path_point(speed=250, zone=20),
+                         path_point(z=234, linear=True, speed=50),
+                         max_acceleration=1.5)
+        checked = RobotClient._validate_job(job("approach cup", "/robot/rws/path", body))
+        self.assertEqual(checked["body"], body)
+        # A deep copy: changing the plan later cannot change the validated job.
+        body["points"][0]["x"] = 9999
+        self.assertEqual(checked["body"]["points"][0]["x"], 400)
 
     def test_named_jobs_require_list_and_empty_plan_does_nothing(self):
         for invalid in (None, job(), "HOME", (job(),)):

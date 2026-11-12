@@ -527,6 +527,51 @@ def test_rws_moves_the_virtual_robot(
     assert_position(arm_pose(operator), second)
 
 
+def test_rws_path_moves_through_every_point(
+    load_program: LoadProgram,
+) -> None:
+    operator = load_program(RWS_PROGRAM)
+
+    assert expect(operator.post("/robot/rws/home"), 200) == DONE
+
+    rx, ry, rz = TARGET_ROTATION
+    above = (TARGET[0], TARGET[1], TARGET[2] + 40.0)
+    points = [
+        {**dict(zip(("x", "y", "z"), above)), "rx": rx, "ry": ry, "rz": rz, "speed": 200},
+        {**dict(zip(("x", "y", "z"), TARGET)), "rx": rx, "ry": ry, "rz": rz, "linear": True, "speed": 50},
+    ]
+
+    #
+    # The whole arrays go over RWS in one write each, and RAPID
+    # blends through the first point and stops at the last.
+    #
+    body = {"points": points, "zone": 10, "max_acceleration": 2.0, "acceleration": 60, "ramp": 40}
+
+    assert expect(operator.post("/robot/rws/path", json=body), 200) == DONE
+
+    pose = arm_pose(operator)
+
+    assert_position(pose, TARGET)
+    assert same_orientation(pose, orient_zyx(rz, ry, rx)), pose
+
+    #
+    # One unreachable point refuses the whole path before moving.
+    #
+    bad = {"points": [{**points[0]}, {"x": UNREACHABLE[0], "y": UNREACHABLE[1], "z": UNREACHABLE[2],
+                                      "rx": rx, "ry": ry, "rz": rz}]}
+
+    assert expect(operator.post("/robot/rws/path", json=bad), 200) == MOVE_FAILED
+
+    assert_position(arm_pose(operator), TARGET)
+
+    #
+    # A single move afterwards is still a single move.
+    #
+    assert rws_move(operator, above) == DONE
+
+    assert_position(arm_pose(operator), above)
+
+
 def test_rws_moves_the_right_arm(
     load_program: LoadProgram,
 ) -> None:

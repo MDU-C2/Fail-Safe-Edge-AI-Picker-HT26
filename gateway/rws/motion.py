@@ -5,6 +5,7 @@ from typing import Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
+from gateway.models.rws import MAX_PATH_POINTS
 from gateway.rws.client import (
     RwsClient,
     RwsError,
@@ -51,6 +52,7 @@ NEWER_VARIABLES = {
     "move_speed": "speed variables",
     "grip_pos": "gripper position variables",
     "grip_force": "gripper force variables",
+    "path_len": "path variables",
 }
 
 
@@ -72,6 +74,20 @@ class MotionSpeed(NamedTuple):
     speed: float
     acceleration: float
     ramp: float
+
+
+class PathPoint(NamedTuple):
+    """One point of a path job (see RwsMotion.path).
+
+    rotation is (rx, ry, rz) in degrees; speed (mm/s) and zone (mm)
+    None take the path's own.
+    """
+
+    position: tuple[float, float, float]
+    rotation: tuple[float, float, float]
+    linear: bool = False
+    speed: float | None = None
+    zone: float | None = None
 
 
 class MotionConflict(Exception):
@@ -133,12 +149,19 @@ def rapid_array(
     return "[" + ",".join(f"{value:.6f}" for value in values) + "]"
 
 
+def rapid_list(
+    items: list[str],
+) -> str:
+    return "[" + ",".join(items) + "]"
+
+
 class RwsMotion:
     """Commands the arm tasks of the RAPID program over Robot Web
     Services.
 
     Uses the PERS variables of rapid/SharedVars.mod: the
-    job is written first (target, go_home or grip_cmd, for moves
+    job is written first (target, path_* for a path, go_home or
+    grip_cmd, for moves
     and home the speed: move_speed, move_acc, move_ramp, for the
     gripper grip_force or grip_pos), then
     move_request_<arm> is set to TRUE. The arm task does the job,
@@ -201,12 +224,86 @@ class RwsMotion:
             "go_home": "FALSE",
             "grip_cmd": '""',
             **self._speed_values(speed),
+            #
+            # A path job left behind (RAPID stopped half way) would
+            # otherwise run instead of this move. Older programs
+            # have no path_len and skip it.
+            #
+            "path_len": "0",
         }
 
         if rotation is not None:
             rx, ry, rz = rotation
 
             values["target_rot"] = rapid_array(orient_zyx(rz, ry, rx))
+
+        return self._run(arm, values, wait, {"path_len"})
+
+    def path(
+        self,
+        arm: Arm,
+        points: list[PathPoint],
+        zone: float = 10.0,
+        max_acceleration: float | None = None,
+        wait: bool = True,
+        speed: MotionSpeed | None = None,
+    ) -> CommandResponse:
+        """Run points in one job, blended through the middle ones.
+
+        The arm stops only at the last point, so a path through
+        several waypoints is one smooth motion instead of a stop at
+        each. zone is the default blend radius in mm, speed.speed
+        the default TCP speed of the points; max_acceleration is
+        RAPID PathAccLim in m/s2 (None: no limit). The arm task
+        checks every point is reachable before it moves at all.
+        """
+
+        if not 1 <= len(points) <= MAX_PATH_POINTS:
+            raise ValueError(f"A path has 1 to {MAX_PATH_POINTS} points")
+
+        if not all(self.in_safe_zone(point.position) for point in points):
+            return CommandResponse(
+                accepted=False,
+                message="ERR outside safe zone",
+            )
+
+        speed = speed or self.default_speed
+        padding = MAX_PATH_POINTS - len(points)
+
+        positions = [rapid_array(point.position) for point in points]
+        rotations = [
+            rapid_array(orient_zyx(rz, ry, rx))
+            for rx, ry, rz in (point.rotation for point in points)
+        ]
+        linear = ["TRUE" if point.linear else "FALSE" for point in points]
+        speeds = [
+            f"{speed.speed if point.speed is None else point.speed:.6f}"
+            for point in points
+        ]
+        zones = [
+            f"{zone if point.zone is None else point.zone:.6f}"
+            for point in points
+        ]
+
+        values = {
+            "go_home": "FALSE",
+            "grip_cmd": '""',
+            **self._speed_values(speed),
+            #
+            # RWS writes whole arrays, so they are padded to the
+            # size declared in SharedVars.mod.
+            #
+            "path_pos": rapid_list(positions + ["[0,0,0]"] * padding),
+            "path_rot": rapid_list(rotations + ["[1,0,0,0]"] * padding),
+            "path_lin": rapid_list(linear + ["FALSE"] * padding),
+            "path_speed": rapid_list(speeds + [f"{speed.speed:.6f}"] * padding),
+            "path_zone": rapid_list(zones + [f"{zone:.6f}"] * padding),
+            "path_acc": f"{max_acceleration or 0:.6f}",
+            #
+            # Last: path_len > 0 is what makes it a path job.
+            #
+            "path_len": str(len(points)),
+        }
 
         return self._run(arm, values, wait)
 

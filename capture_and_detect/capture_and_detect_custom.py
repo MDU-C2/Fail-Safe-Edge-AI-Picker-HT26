@@ -399,6 +399,8 @@ def main(argv=None):
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
     parser.add_argument("--speed", type=positive, default=50.0, help="Requested speed for terminal moves, mm/s (1..1500; default 50)")
+    parser.add_argument("--classic-moves", action="store_true",
+                        help="One stop per waypoint (for a RAPID program without path jobs)")
     parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
     parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
     parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")
@@ -446,7 +448,7 @@ def main(argv=None):
         session = CupSession(captures.capture, store.save, RobotClient(api, headers, dry_run=args.dry_run),
                              calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                              max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                             recovery=recovery)
+                             recovery=recovery, smooth=not args.classic_moves)
         language = LanguageController(session, interpreter, audit_dir=store.folder / "language") if args.llm else None
     except (OSError, ValueError, KeyError, CameraError) as error:
         log(f"Startup failed: {error}")

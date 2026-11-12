@@ -5,6 +5,7 @@ import copy
 import io
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -63,19 +64,31 @@ class CupSelectionTests(unittest.TestCase):
         self.output = redirect_stdout(io.StringIO())
         self.output.__enter__()
         self.addCleanup(self.output.__exit__, None, None, None)
+        # Never the team's real placing_grid.json: a copy per test.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.grid_file = Path(directory.name) / "placing_grid.json"
+        shutil.copy(Path(__file__).resolve().parent / "placing_grid.json", self.grid_file)
 
-    def session(self, *, fresh=None, started=99, robot=None, save=None, recovery=None):
-        original = inventory()
+    def grid(self):
+        return json.loads(self.grid_file.read_text())["locations"]
+
+    def session(self, *, fresh=None, started=99, robot=None, save=None, recovery=None, smooth=False,
+                objects=None):
+        original = inventory(objects=objects)
         if fresh is None:
-            fresh = inventory(capture="verification-1", sequence=11)
+            fresh = inventory(capture="verification-1", sequence=11, objects=objects)
         after_ready = copy.deepcopy(fresh)
         after_ready["capture"] = "verification-after-ready"
         after_ready["frame"]["sequence"] += 1
         capture = Mock(side_effect=[(original, 90), (fresh, started), (after_ready, started)])
         robot = robot if robot is not None else RobotDouble()
         save = save if save is not None else Mock()
+        # Most tests here pin the classic one-stop-per-waypoint plan's step names;
+        # the smooth plan has its own tests below.
         session = CupSession(capture, save, robot, "cal-1", clock=lambda: 100,
-                             max_result_age=10, recovery=recovery)
+                             max_result_age=10, recovery=recovery, smooth=smooth,
+                             place_file=self.grid_file)
         return session, capture, robot, save
 
     def select(self, session, **changes):
@@ -411,6 +424,150 @@ class CupSelectionTests(unittest.TestCase):
                     self.select(session, action="goto")
                     self.assertEqual(robot.jobs[-1]["name"], "right_home")
                     self.assertFalse(session.motion_uncertain)
+
+    def test_smooth_plan_age_limit_stops_before_reaching_the_cup_but_not_after_grip(self):
+        # The smooth approach_cup path ends at the cup, so a stale image must
+        # stop it before it starts, or stop the grip once it has arrived.
+        for delayed_step, should_fail, stopped_at in (("left_open", True, "left_open"),
+                                                      ("approach_cup", True, "approach_cup"),
+                                                      ("grip_cup", False, None)):
+            with self.subTest(delayed_step=delayed_step):
+                now = [100]
+                robot = RobotDouble()
+                robot.after_move = lambda count: now.__setitem__(0, 130) if robot.jobs[-1]["name"] == delayed_step else None
+                session, _, _, _ = self.session(robot=robot, smooth=True)
+                session.clock = lambda: now[0]
+                session.scan()
+                if should_fail:
+                    with self.assertRaisesRegex(SelectionError, "old; motion blocked"):
+                        self.select(session, action="goto")
+                    self.assertEqual(robot.jobs[-1]["name"], stopped_at)
+                    self.assertTrue(session.motion_uncertain)
+                else:
+                    self.select(session, action="goto")
+                    self.assertEqual(robot.jobs[-1]["name"], "right_home")
+                    self.assertFalse(session.motion_uncertain)
+
+    def test_smooth_goto_rechecks_at_ready_and_runs_path_jobs(self):
+        session, capture, robot, _ = self.session(smooth=True)
+        session.scan()
+        self.select(session, action="goto")
+        names = [job["name"] for job in robot.jobs]
+        self.assertEqual(names[:4], ["right_home_start", "left_ready", "left_open", "approach_cup"])
+        self.assertEqual(names[-1], "right_home")
+        # scan, verification before motion, and the recheck at ready.
+        self.assertEqual(capture.call_count, 3)
+        self.assertIn("/robot/rws/path", {job["endpoint"] for job in robot.jobs})
+        self.assertNotIn("/robot/rws/move", {job["endpoint"] for job in robot.jobs})
+        self.assertEqual(session.inventory["cups"][0]["status"], "placed")
+
+    def test_smooth_left_arm_waits_when_other_cups_remain_and_homes_after_the_last(self):
+        two_cups = [detection("CUP", 100), detection("CUP BASE", 100, detection_id=1),
+                    detection("CUP", 300, x=600), detection("CUP BASE", 300, x=600, detection_id=2)]
+        for objects, homes in ((two_cups, False), (None, True)):
+            with self.subTest(cups=2 if objects else 1):
+                session, _, robot, _ = self.session(smooth=True, objects=objects)
+                session.scan()
+                self.select(session, action="goto")
+                names = [job["name"] for job in robot.jobs]
+                self.assertEqual("left_home" in names, homes)
+                self.assertEqual(names[-1], "right_home")
+                if not homes:
+                    left = [name for name, job in zip(names, robot.jobs) if job["body"]["arm"] == "left"]
+                    self.assertEqual(left[-1], "left_clear")
+
+    def test_bookkeeping_keeps_both_running_steps_of_a_grouped_stage(self):
+        saved = []
+
+        class OverlappingRobot(RobotDouble):
+            # Starts both jobs of a two-job stage before either finishes, like
+            # RobotClient with grouped jobs.
+            def execute_jobs(self, jobs, before_send=None, after_done=None):
+                index = 0
+                while index < len(jobs):
+                    group = jobs[index].get("group")
+                    stage = [index]
+                    while group and index + len(stage) < len(jobs) and jobs[index + len(stage)].get("group") == group:
+                        stage.append(index + len(stage))
+                    sent = [before_send(i, copy.deepcopy(jobs[i])) or jobs[i] for i in stage]
+                    for i, job in zip(stage, sent):
+                        self.jobs.append(job)
+                        after_done(i, job)
+                    index += len(stage)
+
+        session, _, robot, _ = self.session(smooth=True, robot=OverlappingRobot(),
+                                            save=Mock(side_effect=lambda inv: saved.append(copy.deepcopy(inv))))
+        session.scan()
+        self.select(session, action="goto")
+        executions = [inv["cups"][0]["execution"] for inv in saved if "execution" in inv["cups"][0]]
+        # While the three "pick" jobs were all running, all three were recorded.
+        self.assertTrue(any(set(e.get("pending_steps", {})) == {"approach_cup", "grip_cup", "right_to_via"}
+                            for e in executions))
+        # After the first of them finished, the others are still pending.
+        after_first = next(e for e in executions if e.get("last_completed_step") == "approach_cup")
+        self.assertEqual(set(after_first["pending_steps"]), {"grip_cup", "right_to_via"})
+        self.assertIn(after_first["pending_step"], after_first["pending_steps"])
+        final = executions[-1]
+        self.assertEqual(final["state"], "completed")
+        self.assertNotIn("pending_steps", final)
+        self.assertNotIn("pending_step", final)
+
+    def test_smooth_goto_places_on_the_first_free_grid_spot_and_marks_it_after_release(self):
+        grid = json.loads(self.grid_file.read_text())
+        grid["locations"][0]["occupied"] = True          # spot 1 taken: spot 2 is next
+        self.grid_file.write_text(json.dumps(grid))
+        spot = grid["locations"][1]
+        marked_when = []
+
+        class WatchingRobot(RobotDouble):
+            def execute_jobs(inner, jobs, before_send=None, after_done=None):
+                def after(index, job):
+                    after_done(index, job)
+                    taken = [p["id"] for p in json.loads(self.grid_file.read_text())["locations"] if p["occupied"]]
+                    marked_when.append((job["name"], spot["id"] in taken))
+                return RobotDouble.execute_jobs(inner, jobs, before_send=before_send, after_done=after)
+
+        session, _, robot, _ = self.session(smooth=True, robot=WatchingRobot())
+        session.scan()
+        self.select(session, action="goto")
+        place = next(j for j in robot.jobs if j["name"] == "right_place")["body"]["points"][0]
+        self.assertEqual((place["x"], place["y"], place["z"]), (spot["x"], spot["y"], spot["z"]))
+        # Occupied only from the moment the right gripper has let go there.
+        flags = dict(marked_when)
+        self.assertFalse(flags["right_place"])
+        self.assertTrue(flags["right_release"])
+        self.assertEqual([p["id"] for p in self.grid() if p["occupied"]], [1, spot["id"]])
+        execution = session.inventory["cups"][0]["execution"]
+        self.assertEqual((execution["place_id"], execution["placed_at"]), (spot["id"], spot["id"]))
+
+    def test_smooth_goto_refuses_before_any_motion_when_the_grid_is_full(self):
+        grid = json.loads(self.grid_file.read_text())
+        for spot in grid["locations"]:
+            spot["occupied"] = True
+        self.grid_file.write_text(json.dumps(grid))
+        session, capture, robot, _ = self.session(smooth=True)
+        session.scan()
+        with self.assertRaisesRegex(SelectionError, "All place locations are occupied"):
+            self.select(session, action="goto")
+        self.assertEqual(robot.jobs, [])
+        self.assertEqual(capture.call_count, 1)        # not even a verification image
+
+    def test_spot_stays_free_when_the_run_stops_before_the_release(self):
+        session, _, robot, _ = self.session(
+            smooth=True, robot=RobotDouble(error=RobotCommandError("stopped"), error_at="right_place"))
+        session.scan()
+        with self.assertRaises(Exception):
+            self.select(session, action="goto")
+        self.assertEqual([p["id"] for p in self.grid() if p["occupied"]], [])
+        self.assertEqual(session.inventory["cups"][0]["execution"]["place_id"], 1)
+
+    def test_hover_and_classic_goto_do_not_touch_the_grid(self):
+        for smooth, action in ((True, "hover"), (False, "goto")):
+            with self.subTest(smooth=smooth, action=action):
+                session, _, _, _ = self.session(smooth=smooth)
+                session.scan()
+                self.select(session, action=action)
+                self.assertEqual([p["id"] for p in self.grid() if p["occupied"]], [])
 
     def test_failure_to_save_progress_after_gripping_does_not_release_or_home(self):
         robot = RobotDouble()

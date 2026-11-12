@@ -16,6 +16,7 @@ from gateway.models.rws import (
     RwsGripperRequest,
     RwsMotionRequest,
     RwsMoveRequest,
+    RwsPathRequest,
 )
 from gateway.robot.service import COMMAND_STATES
 from gateway.rws.client import RwsError
@@ -24,6 +25,7 @@ from gateway.rws.motion import (
     MotionConflict,
     MotionSpeed,
     MotionTimeout,
+    PathPoint,
     rws_motion,
 )
 from gateway.security.authentication import require_permission
@@ -161,6 +163,54 @@ async def move(
         request.arm,
         (request.x, request.y, request.z),
         rotation,
+        request.wait,
+        motion_speed(request),
+    )
+
+
+@router.post(
+    "/path",
+    response_model=CommandResponse,
+    summary="Move an arm through several points without stopping",
+    description=(
+        "One job with 1 to 8 points (tool0 in wobj0, mm and degrees, "
+        "rx/ry/rz required). The arm blends through the middle points "
+        "(zone, mm, per point or the request's, default 10; 0 stops "
+        "there) and stops only at the last. linear=true moves in a "
+        "straight line to the point (MoveL), otherwise a joint move. "
+        "speed per point or the request's, in mm/s; acceleration and "
+        "ramp as for /move. max_acceleration limits the TCP "
+        "acceleration in m/s2 (RAPID PathAccLim), e.g. while carrying "
+        "a cup. Every point must be in the safe zone (ERR outside safe "
+        "zone, nothing is sent) and reachable (ERR move failed, the arm "
+        "does not move). 409 if the RAPID program has no path "
+        "variables (upload rapid/ again). wait as for /move."
+    ),
+)
+async def path(
+    request: RwsPathRequest,
+    _: Annotated[
+        Identity,
+        Depends(require_control("robot.control")),
+    ],
+) -> CommandResponse:
+    points = [
+        PathPoint(
+            position=(point.x, point.y, point.z),
+            rotation=(point.rx, point.ry, point.rz),
+            linear=point.linear,
+            speed=point.speed,
+            zone=point.zone,
+        )
+        for point in request.points
+    ]
+
+    return await run(
+        rws_motion.path,
+        request.arm,
+        points,
+        request.zone,
+        request.max_acceleration,
         request.wait,
         motion_speed(request),
     )
