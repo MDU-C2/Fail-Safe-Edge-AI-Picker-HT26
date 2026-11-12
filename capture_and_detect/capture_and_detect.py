@@ -88,6 +88,7 @@ HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster th
 HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
 LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
+PICK_SPEED = 100           # mm/s: left arm down to the cup, up with it, and to the hand-over
 FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
@@ -99,6 +100,11 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
 PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base; 115 with the tray)
+# Test (--camera-z): grip height from each cup's own camera z (cups.json "z", CUP BASE) instead of PICK_Z.
+# Picked cups read base z ~35, so z + 35 gives the tested 70 for a typical cup.
+CAMERA_Z_OFFSET = 35       # TCP height above the cup's camera base z
+CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
+USE_CAMERA_Z = False       # set by --camera-z
 TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
 GRIP_MARGIN = 40           # left jaws open to the cup base diameter + this (mm)
@@ -275,11 +281,13 @@ class Arm:
                           "speed": speed, "acceleration": acceleration, "ramp": RAMP})
         self.last = (flange, rotation)
 
-    def goto(self, x, y, z, rz=LEFT_DOWN[2]):
+    def goto(self, x, y, z, rz=LEFT_DOWN[2], speed=SPEED, pick=False):
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
-        at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
+        at height z (robot mm), gripper down and turned to rz degrees about the vertical:
+        the flange is GRIPPER_TCP_Z above the TCP. pick=True: going down to grip (may go below Z_MIN)."""
         ox, oy, _ = self.offset
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), (LEFT_DOWN[0], LEFT_DOWN[1], rz), pick=(z == PICK_Z))
+        rotation = (LEFT_DOWN[0], LEFT_DOWN[1], rz)
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), rotation, speed, pick=pick or z == PICK_Z)
 
     def gripper(self, action):
         """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
@@ -369,23 +377,38 @@ class Handover:
         cup["grip_right_mm"] = self.grip_right_mm
         return not self.abort.is_set()
 
+    @staticmethod
+    def pick_z(cup):
+        """Grip height: PICK_Z, or with --camera-z the cup's camera z + CAMERA_Z_OFFSET (not below CAMERA_Z_FLOOR)."""
+        if not USE_CAMERA_Z:
+            return PICK_Z
+        z = round(cup["z"] + CAMERA_Z_OFFSET, 1)
+        log(f"    camera z: base {cup['z']} + {CAMERA_Z_OFFSET} = grip at {z} (fixed would be {PICK_Z})")
+        if z < CAMERA_Z_FLOOR:
+            log(f"    camera z {z} below the floor {CAMERA_Z_FLOOR}: using {CAMERA_Z_FLOOR}")
+            z = CAMERA_Z_FLOOR
+        return z
+
     def _pick(self, cup):
-        x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
+        x, y = cup["x"], cup["y"]                  # grip height: PICK_Z, or the cup's camera z (--camera-z)
         rz = cup.get("rz", LEFT_DOWN[2])           # jaws at 90 degrees to the handle (set_grip_rotation)
+        z = self.pick_z(cup)
+        cup["pick_z"] = z
         arm = self.left
         arm.gripper("grip")                        # closed while it travels
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
-        arm.goto(x, y, TRAVEL_Z, rz)
+        arm.goto(x, y, TRAVEL_Z, rz)               # above the cup, jaws turned to the handle
         arm.open_left_to(cup.get("aperture"))      # only here, right above the cup
-        arm.goto(x, y, PICK_Z, rz)
+        arm.goto(x, y, z, rz, PICK_SPEED, pick=True)   # slow down to the cup
         arm.gripper("grip")
         cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
-        arm.goto(x, y, TRAVEL_Z, rz)
+        arm.goto(x, y, TRAVEL_Z, rz, PICK_SPEED)   # slow up with the cup
 
     def _pick_only_job(self, cup):
         arm = self.left
         self._pick(cup)
-        arm.goto(cup["x"], cup["y"], PICK_Z, cup.get("rz", LEFT_DOWN[2]))       # put it back where it stood
+        arm.goto(cup["x"], cup["y"], cup.get("pick_z", PICK_Z), cup.get("rz", LEFT_DOWN[2]),
+                 pick=True)                        # put it back where it stood
         arm.gripper("open")
         arm.goto(cup["x"], cup["y"], TRAVEL_Z, cup.get("rz", LEFT_DOWN[2]))
         arm.gripper("grip")                        # closed on the way home
@@ -395,7 +418,7 @@ class Handover:
         arm = self.left
         self._pick(cup)
         self.left_has_cup.set()                    # -> right: come to the hand-over
-        arm.move(HANDOVER_L, LEFT_DOWN)
+        arm.move(HANDOVER_L, LEFT_DOWN, PICK_SPEED)   # slow to the hand-over, holding the cup
         self.at_handover.set()                     # -> right: come and take it
         self._wait_for(self.right_has_cup)
         arm.gripper("open")
@@ -765,7 +788,13 @@ def main():
     parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold")
     parser.add_argument("--left-only", action="store_true",
                         help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
+    parser.add_argument("--camera-z", action="store_true",
+                        help=f"TEST: grip height from each cup's camera z + {CAMERA_Z_OFFSET} instead of PICK_Z {PICK_Z}")
     args = parser.parse_args()
+    global USE_CAMERA_Z
+    USE_CAMERA_Z = args.camera_z
+    if USE_CAMERA_Z:
+        log(f"--camera-z: grip height = cup camera z + {CAMERA_Z_OFFSET}, not below {CAMERA_Z_FLOOR}")
 
     gateway = Gateway(args.gateway, load_token())
     store = CaptureStore(args.output)

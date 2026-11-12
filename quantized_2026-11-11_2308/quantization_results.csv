@@ -1,0 +1,5 @@
+model,size MB,ms/image (Colab CPU),objects found,same as best.pt,precision vs best.pt,recall vs best.pt,F1 vs best.pt
+best.pt,6.013,57.931,107,107,1.0,1.0,1.0
+NCNN FP32,11.473,98.728,109,107,0.982,1.0,0.991
+NCNN FP16,5.819,94.506,109,107,0.982,1.0,0.991
+NCNN INT8,3.035,87.374,104,103,0.99,0.963,0.976
