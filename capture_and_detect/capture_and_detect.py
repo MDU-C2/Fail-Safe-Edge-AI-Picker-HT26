@@ -81,7 +81,7 @@ GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 450               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
@@ -102,7 +102,7 @@ GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
 PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
 TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
-GRIP_MARGIN = 40           # left jaws open to the cup base diameter + this (mm)
+GRIP_MARGIN = 70           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
                            # except going down to grip (pick) or to put the cup down (place)
@@ -391,8 +391,8 @@ class Handover:
         arm.goto(cup["x"], cup["y"], PICK_Z, cup.get("rz", LEFT_DOWN[2]))       # put it back where it stood
         arm.gripper("open")
         arm.goto(cup["x"], cup["y"], TRAVEL_Z, cup.get("rz", LEFT_DOWN[2]))
-        arm.gripper("grip")                        # closed on the way home
-        arm.home()                                 # up first, then home
+        #arm.gripper("grip")                        # closed on the way home
+        #arm.home()                                 # up first, then home
 
     def _left_job(self, cup):
         arm = self.left
@@ -404,9 +404,9 @@ class Handover:
         arm.gripper("open")
         arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
         self.left_clear.set()                      # -> right: you can pull it down
-        self._wait_for(self.right_away)            # the way home could cross the right arm
-        arm.gripper("grip")                        # closed on the way home
-        arm.home()                               # out of the camera view for the next capture
+        #self._wait_for(self.right_away)            # the way home could cross the right arm
+        #arm.gripper("grip")                        # closed on the way home
+        #arm.home()                               # out of the camera view for the next capture
 
     def _right_job(self, place):
         arm = self.right
@@ -429,12 +429,12 @@ class Handover:
         half = tuple((a + b) / 2 for a, b in zip(R_BELOW, above))
         arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
         arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
-        self.right_away.set()                      # -> left: you can go home
+        #self.right_away.set()                      # -> left: you can go home
         arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
         arm.gripper("open")
         arm.move(above, RIGHT_DOWN)
-        arm.gripper("grip")                        # closed on the way home
-        arm.home()                               # out of the picking area for the next cup
+        #arm.gripper("grip")                        # closed on the way home
+        #arm.home()                               # out of the picking area for the next cup
 
     def _wait_for(self, event):
         """Wait for the other arm, but stop if it failed."""

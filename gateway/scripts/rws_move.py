@@ -48,7 +48,7 @@ import time
 import requests
 
 
-DEFAULT_URL = "http://169.254.125.202:8000/api/v1"
+DEFAULT_URL = "http://192.168.125.20:8000/api/v1"
 DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
 
 #
