@@ -81,7 +81,7 @@ GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 350               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # % of max acceleration (20..100)
 RAMP = 100                 # % how fast the acceleration builds up (10..100)
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
@@ -98,7 +98,7 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
+PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base; 115 with the tray)
 TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
 GRIP_MARGIN = 40           # left jaws open to the cup base diameter + this (mm)
