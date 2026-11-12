@@ -65,6 +65,8 @@ import numpy as np
 import requests
 from ultralytics import YOLO
 
+import depth_average                               # depth of several frames, mask edge left out
+
 # ================================================================
 # Settings
 # ================================================================
@@ -75,7 +77,7 @@ KEEP_CLASSES = ["CUP", "CUP BASE", "CUP HANDLE"]
 CUP_Z_MIN, CUP_Z_MAX = -30, 150  # robot Z (mm) of a CUP BASE on a cup standing on the table (was 10; a mug read -15)
 
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
-              "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px"]
+              "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px", "robot_z_frames_mm"]
 
 GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm", "status"]
 
@@ -102,10 +104,11 @@ GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
 PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base; 115 with the tray)
 # Test (--camera-z): grip height from each cup's own camera z (cups.json "z", CUP BASE) instead of PICK_Z.
 # Picked cups read base z ~35, so z + 35 gives the tested 70 for a typical cup.
-CAMERA_Z_OFFSET = 35       # TCP height above the cup's camera base z
+CAMERA_Z_OFFSET = 20       # TCP height above the cup's camera base z
 CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
 USE_CAMERA_Z = False       # set by --camera-z
-TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
+DEPTH_FRAMES = 5           # depth = pixel-by-pixel median of this many camera frames (depth_average.py)
+TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
 GRIP_MARGIN = 70           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
@@ -507,8 +510,9 @@ class Detector:
         self.classes = [i for i, n in model.names.items() if n in KEEP_CLASSES]
         log("Detecting:", [model.names[i] for i in self.classes])
 
-    def analyse(self, rgb, depth):
-        """Run YOLO on one frame; return (list of objects, annotated image)."""
+    def analyse(self, rgb, depth, depths=()):
+        """Run YOLO on one frame; return (list of objects, annotated image).
+        depth: the averaged depth used; depths: the single frames it came from (Z per frame is saved too)."""
         result = self.model.predict(rgb, conf=self.conf, classes=self.classes,
                                     retina_masks=True, verbose=False)[0]
         objects, keep, boxes = [], [], []
@@ -518,7 +522,7 @@ class Detector:
             if mask.any():
                 keep.append(j)
                 boxes.append(box.xyxy[0].tolist())
-                objects.append(self.describe(self.model.names[int(box.cls)], float(box.conf), mask, depth))
+                objects.append(self.describe(self.model.names[int(box.cls)], float(box.conf), mask, depth, depths))
         mark_cup_bases(objects, boxes)
 
         annotated = result[keep].plot() if keep else rgb.copy()
@@ -527,21 +531,33 @@ class Detector:
                            cv2.MARKER_CROSS, 25, 3)
         return objects, annotated
 
-    def describe(self, name, confidence, mask, depth):
-        """Mask centre (u, v), median depth inside the mask -> camera and robot mm."""
+    def to_robot(self, u, v, z):
+        """Pixel (u, v) at camera distance z -> (camera x, y) and robot (x, y, z), mm (pinhole model)."""
+        x = (u - self.K["cx"]) * z / self.K["fx"]
+        y = (v - self.K["cy"]) * z / self.K["fy"]
+        return x, y, self.calibration.to_robot(x, y, z)
+
+    def describe(self, name, confidence, mask, depth, depths=()):
+        """Mask centre (u, v), median depth inside the mask -> camera and robot mm.
+        depths: the single frames behind the averaged depth; their Z is saved per frame."""
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
         diameter_px = 2 * np.sqrt(mask.sum() / np.pi)   # of a circle with the mask's area
-        vals = depth[mask]
-        vals = vals[vals > 0]                      # 0 = no depth there
-        z = float(np.median(vals)) if vals.size else None
+        z_frames, robot_z_frames = [], []          # the same object in each single frame
+        for d in depths:
+            zf = depth_average.mask_depth(d, mask)  # median inside the mask, its edge left out
+            z_frames.append(mm(zf))
+            robot_z_frames.append(mm(self.to_robot(u, v, zf)[2][2]) if zf else None)
+        valid = [zf for zf in z_frames if zf]
+        if valid:                                  # Z = mean of the frames (robot Z then = mean of robot_z_frames)
+            z = sum(valid) / len(valid)
+        else:                                      # no single frames given: the depth image as it is
+            z = depth_average.mask_depth(depth, mask)
 
         x = y = None
         robot = (None, None, None)
-        if z:                                      # pinhole model
-            x = (u - self.K["cx"]) * z / self.K["fx"]
-            y = (v - self.K["cy"]) * z / self.K["fy"]
-            robot = self.calibration.to_robot(x, y, z)
+        if z:
+            x, y, robot = self.to_robot(u, v, z)
         diameter = diameter_px * z / self.K["fx"] if z else None   # pixels -> mm at that depth
         return {
             "class": name,
@@ -556,6 +572,8 @@ class Detector:
             "robot_z_mm": mm(robot[2]),
             "mask_area_px": int(mask.sum()),
             "diameter_mm": mm(diameter),
+            "z_frames_mm": z_frames,               # camera distance in each single frame
+            "robot_z_frames_mm": robot_z_frames,   # robot Z in each single frame (robot_z_mm = from the averaged depth)
         }
 
 
@@ -621,7 +639,8 @@ def find_cups(objects):
         reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
         diameter = o["diameter_mm"]
         cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "diameter": diameter,
+                     "z": o["robot_z_mm"], "z_frames": o.get("robot_z_frames_mm", []),
+                     "diameter": diameter,
                      "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
                      "status": "waiting" if reachable else "out of reach"})
     set_grip_rotation(cups, objects)
@@ -636,6 +655,8 @@ def print_objects(objects):
             continue
         log(f"      YOLO (camera):     X={o['x_mm']:7.1f}  Y={o['y_mm']:7.1f}  Z={o['z_mm']:7.1f} mm")
         log(f"      calibrated (robot): X={o['robot_x_mm']:7.1f}  Y={o['robot_y_mm']:7.1f}  Z={o['robot_z_mm']:7.1f} mm")
+        if len(o.get("robot_z_frames_mm", [])) > 1:
+            log(f"      robot Z per frame: {o['robot_z_frames_mm']} -> averaged {o['robot_z_mm']}")
 
 
 # ================================================================
@@ -680,12 +701,24 @@ class CaptureStore:
                 json.dump(data, f, indent=2)
 
     def _append_csv(self, objects, stamp):
-        """One row per object (an old file with other columns is renamed and kept)."""
+        """One row per object (an old file with other columns is renamed and kept).
+        If detections.csv is open elsewhere (Excel locks it), the rows go to detections_<stamp>.csv
+        instead: the CSV is only a log, it must not stop the run."""
         path = self.folder / "detections.csv"
-        if path.exists():
-            with open(path) as f:
-                if f.readline().strip() != ",".join(CSV_FIELDS):
+        try:
+            if path.exists():
+                with open(path) as f:
+                    header = f.readline().strip()
+                if header != ",".join(CSV_FIELDS):     # renamed after closing it (Windows refuses an open file)
                     path.rename(self.folder / f"detections_old_{stamp}.csv")
+            self._write_rows(path, objects, stamp)
+        except PermissionError:
+            spare = self.folder / f"detections_{stamp}.csv"
+            log(f"  {path.name} is open in another program (Excel?) - rows saved to {spare.name}")
+            self._write_rows(spare, objects, stamp)
+
+    @staticmethod
+    def _write_rows(path, objects, stamp):
         new_file = not path.exists()
         with open(path, "a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
@@ -716,9 +749,10 @@ class Picker:
         log(f"Done. {self.captures} captures saved.")
 
     def capture_once(self):
-        rgb, depth = self.gateway.frames()
+        rgb, depth, depths = depth_average.capture_averaged(self.gateway, DEPTH_FRAMES)
+        log(f"Depth: mean of {len(depths)} frame(s)")
         t = time.perf_counter()
-        objects, annotated = self.detector.analyse(rgb, depth)
+        objects, annotated = self.detector.analyse(rgb, depth, depths)
         ms = (time.perf_counter() - t) * 1000
 
         stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.captures:04d}"
@@ -782,6 +816,7 @@ def save_places(places):
 
 
 def main():
+    global USE_CAMERA_Z, DEPTH_FRAMES
     parser = argparse.ArgumentParser(description="Capture, detect cups and hand one over between the arms")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--gateway", default="http://169.254.125.202:8000", help="Gateway address")
@@ -790,9 +825,11 @@ def main():
                         help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
     parser.add_argument("--camera-z", action="store_true",
                         help=f"TEST: grip height from each cup's camera z + {CAMERA_Z_OFFSET} instead of PICK_Z {PICK_Z}")
+    parser.add_argument("--depth-frames", type=int, default=DEPTH_FRAMES,
+                        help=f"camera frames whose depth is averaged (default {DEPTH_FRAMES}, 1 = off)")
     args = parser.parse_args()
-    global USE_CAMERA_Z
     USE_CAMERA_Z = args.camera_z
+    DEPTH_FRAMES = max(1, args.depth_frames)
     if USE_CAMERA_Z:
         log(f"--camera-z: grip height = cup camera z + {CAMERA_Z_OFFSET}, not below {CAMERA_Z_FLOOR}")
 
