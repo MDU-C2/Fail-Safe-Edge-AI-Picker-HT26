@@ -144,6 +144,23 @@ RUN find /opt/depthai/vcpkg/share -name "*-debug.cmake" -delete
 #
 ENV CMAKE_PREFIX_PATH=/opt/depthai:/opt/depthai/vcpkg
 
+#
+# TLS for the gateway's own server (TLS.md): Debian's OpenSSL 3,
+# linked statically from libssl-dev's archives (its libcrypto needs
+# zstd for certificate compression), and trustme, which
+# gives the test suite a throwaway CA; rich for the diagnostics
+# tool's tests. Installed here rather than in the toolchain stage so
+# the depthai-core build stays cached.
+#
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libssl-dev \
+        libzstd-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && /opt/venv/bin/pip install --no-cache-dir \
+        rich \
+        trustme
+
 # ================================================================
 # Build: the size-optimised release binary
 # ================================================================

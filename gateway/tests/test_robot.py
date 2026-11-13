@@ -91,7 +91,7 @@ def test_command_is_deprecated_but_works(
 
     assert "POST /robot/command is deprecated" in gateway.log()
 
-    openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10).json()
+    openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10, verify=gateway.verify).json()
 
     assert openapi["paths"]["/api/v1/robot/command"]["post"]["deprecated"] is True
 
@@ -110,6 +110,6 @@ def test_command_route_is_absent(
     with admin.control():
         expect(admin.post("/robot/command", json={"command": "start"}), 404)
 
-    openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10).json()
+    openapi = requests.get(f"{gateway.url}/openapi.json", timeout=10, verify=gateway.verify).json()
 
     assert "/api/v1/robot/command" not in openapi["paths"]

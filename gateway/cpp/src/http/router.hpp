@@ -54,7 +54,8 @@ public:
     //
     void websocket(
         std::string pattern,
-        WebSocketHandler handler
+        WebSocketAuthorizer authorize,
+        WebSocketHandler open
     );
 
     //
@@ -69,7 +70,7 @@ public:
     // The WebSocket route for the request's path (its parameters
     // filled in), or null.
     //
-    const WebSocketHandler* find_websocket(
+    const WebSocketRoute* find_websocket(
         Request& request
     ) const;
 
@@ -78,11 +79,6 @@ private:
         std::string method;
         std::vector<std::string> parts;
         Handler handler;
-    };
-
-    struct WebSocketRoute {
-        std::vector<std::string> parts;
-        WebSocketHandler handler;
     };
 
     static bool match_parts(

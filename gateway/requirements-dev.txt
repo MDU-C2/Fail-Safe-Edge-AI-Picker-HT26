@@ -4,6 +4,8 @@
 # gateway/tests
 pytest
 websockets
+# throwaway CA and certificates for the TLS tests
+trustme
 
 # gateway/scripts, diagnostics/
 rich

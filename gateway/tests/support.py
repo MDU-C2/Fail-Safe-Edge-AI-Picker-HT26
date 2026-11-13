@@ -7,17 +7,30 @@ directory, so tests never touch gateway/calibration.json or the
 tokens in gateway/auth_clients.json. Settings are passed as
 GATEWAY_* environment variables, which take precedence over
 gateway/.env.
+
+C++ gateways serve HTTPS / WSS by default, with a certificate from a
+throwaway CA made once per test run (trustme), never the lab CA of
+gateway/cpp/TLS.md; Gateway(..., tls=False) starts a plain one. The
+legacy Python gateway stays plain HTTP: it ships no TLS, and its
+suite runs on Windows, where the Python TLS WebSocket client hangs
+after ~100 connections (seen on the arm64 laptop's x64 Python 3.14).
 """
 
+import atexit
 import hashlib
 import json
 import os
+import shutil
 import socket
+import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -116,6 +129,59 @@ def token_for(
     return f"test-token-{client_id}"
 
 
+# ================================================================
+# TLS
+# ================================================================
+
+@dataclass(frozen=True)
+class TlsFiles:
+    """PEM files of the test CA and the test gateways' certificate."""
+
+    ca: Path
+    certificate: Path
+    key: Path
+
+    #
+    # A second CA, which the gateways do not use: a client trusting
+    # only this one must refuse them.
+    #
+    other_ca: Path
+
+
+@cache
+def tls_files() -> TlsFiles:
+    """The test CA and a certificate for 127.0.0.1 / localhost,
+    made on first use and deleted when the run ends."""
+
+    import trustme
+
+    directory = Path(tempfile.mkdtemp(prefix="gateway-test-tls-"))
+
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+
+    ca = trustme.CA()
+    certificate = ca.issue_cert("127.0.0.1", "localhost")
+
+    files = TlsFiles(
+        ca=directory / "ca.pem",
+        certificate=directory / "gateway.crt",
+        key=directory / "gateway.key",
+        other_ca=directory / "other-ca.pem",
+    )
+
+    ca.cert_pem.write_to_path(str(files.ca))
+
+    #
+    # Only the gateway's own certificate, as lab_ca.sh issues it.
+    #
+    certificate.cert_chain_pems[0].write_to_path(str(files.certificate))
+    certificate.private_key_pem.write_to_path(str(files.key))
+
+    trustme.CA().cert_pem.write_to_path(str(files.other_ca))
+
+    return files
+
+
 def free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -163,6 +229,7 @@ class Client:
         self.client_id = client_id
 
         self.session = requests.Session()
+        self.session.verify = gateway.verify
 
         if client_id is None:
             return
@@ -250,6 +317,18 @@ class RemoteGateway:
         self.api_url = api_url.rstrip("/")
         self.token = token
 
+        #
+        # An https gateway is checked against the lab CA
+        # (gateway/cpp/TLS.md), or GATEWAY_CA_FILE.
+        #
+        self.verify: bool | str = os.environ.get(
+            "GATEWAY_CA_FILE",
+            str(REPOSITORY_ROOT / "gateway" / "tls" / "lab-ca.crt"),
+        )
+
+        if not Path(self.verify).is_file():
+            self.verify = True
+
     def client(self) -> Client:
         client = Client(self, None)
 
@@ -287,6 +366,7 @@ class Gateway:
         security_mode: str,
         settings: dict[str, str],
         implementation: str | None = None,
+        tls: bool | None = None,
     ) -> None:
         self.security_mode = security_mode
         self.port = free_port()
@@ -297,8 +377,24 @@ class Gateway:
         #
         self.implementation = implementation
 
-        self.url = f"http://127.0.0.1:{self.port}"
+        #
+        # HTTPS with the test CA's certificate, or plain HTTP.
+        #
+        if tls is None:
+            tls = self.selected_implementation() == "cpp"
+
+        self.tls = tls_files() if tls else None
+
+        scheme = "https" if tls else "http"
+
+        self.url = f"{scheme}://127.0.0.1:{self.port}"
         self.api_url = f"{self.url}{API_PREFIX}"
+        self.ws_url = f"{'wss' if tls else 'ws'}://127.0.0.1:{self.port}"
+
+        #
+        # requests' verify: the test CA for HTTPS.
+        #
+        self.verify: bool | str = str(self.tls.ca) if self.tls else True
 
         self.log_path = directory / "gateway.log"
 
@@ -317,12 +413,65 @@ class Gateway:
             **settings,
         }
 
+        if self.tls:
+            #
+            # The C++ gateway reads these; the Python one gets them
+            # as uvicorn options (command()).
+            #
+            self.environment.setdefault("GATEWAY_TLS_CERT_FILE", str(self.tls.certificate))
+            self.environment.setdefault("GATEWAY_TLS_KEY_FILE", str(self.tls.key))
+
+        elif security_mode == "strict":
+            self.environment.setdefault("GATEWAY_TLS_ALLOW_PLAINTEXT", "true")
+
         self._process: subprocess.Popen | None = None
+
+    def ssl_context(self) -> ssl.SSLContext | None:
+        """For websockets' connect(ssl=...): trusts the test CA."""
+
+        if not self.tls:
+            return None
+
+        return ssl.create_default_context(cafile=str(self.tls.ca))
+
+    def connect_websocket(
+        self,
+        path: str,
+        **kwargs: Any,
+    ) -> "ClientConnection":
+        """websockets' connect() to path over WS / WSS.
+
+        Retried once when the opening handshake gets no answer: the
+        websockets client over TLS 1.3 loses one in a few hundred
+        handshakes, with this gateway and with websockets' own
+        server alike. A refusal (an HTTP status) is not retried.
+        """
+
+        from websockets.exceptions import InvalidMessage
+        from websockets.sync.client import connect
+
+        for attempt in (1, 2):
+            try:
+                return connect(
+                    f"{self.ws_url}{path}",
+                    ssl=self.ssl_context(),
+                    open_timeout=10,
+                    **kwargs,
+                )
+
+            except (InvalidMessage, TimeoutError):
+                if attempt == 2:
+                    raise
+
+    def selected_implementation(self) -> str:
+        """This gateway's implementation, else the suite's (--impl)."""
+
+        return self.implementation or implementation
 
     def command(self) -> list[str]:
         """The command line of the selected implementation."""
 
-        if (self.implementation or implementation) == "cpp":
+        if self.selected_implementation() == "cpp":
             return [
                 str(REPOSITORY_ROOT / cpp_binary),
                 "--host",
@@ -331,7 +480,7 @@ class Gateway:
                 str(self.port),
             ]
 
-        return [
+        command = [
             sys.executable,
             "-m",
             "uvicorn",
@@ -341,6 +490,16 @@ class Gateway:
             "--port",
             str(self.port),
         ]
+
+        if self.tls:
+            command += [
+                "--ssl-certfile",
+                self.environment["GATEWAY_TLS_CERT_FILE"],
+                "--ssl-keyfile",
+                self.environment["GATEWAY_TLS_KEY_FILE"],
+            ]
+
+        return command
 
     def start(self) -> None:
         self._log = self.log_path.open("w", encoding="utf-8")
@@ -362,7 +521,7 @@ class Gateway:
                 )
 
             try:
-                if requests.get(f"{self.api_url}/health", timeout=5).ok:
+                if requests.get(f"{self.api_url}/health", timeout=5, verify=self.verify).ok:
                     return
 
             except requests.RequestException:

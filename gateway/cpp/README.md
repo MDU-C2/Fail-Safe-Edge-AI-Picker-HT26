@@ -23,7 +23,7 @@ but Docker. From Windows prefix each command with
 `wsl -d Ubuntu-22.04 -u root --`.
 
 ```sh
-gateway/cpp/dev.sh toolchain          # once: compilers, Boost headers, Python test deps
+gateway/cpp/dev.sh toolchain          # once: compilers, OpenSSL, depthai-core, Python test deps
 gateway/cpp/dev.sh build              # dev preset -> gateway/cpp/build/dev/gateway
 gateway/cpp/dev.sh test               # C++ unit tests (GoogleTest, ctest)
 gateway/cpp/dev.sh pytest             # Python suite against the C++ binary (--impl cpp)
@@ -101,7 +101,7 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/main.cpp` | `uvicorn gateway.main:app` (arguments, signals) |
 | `src/app.*` | `gateway/main.py` (wiring, routes) |
 | `src/config/` | `config.py` (+ the `.env` parser of python-dotenv) |
-| `src/http/` | FastAPI/uvicorn: router, `{"detail"}` errors, 422s, server |
+| `src/http/` | FastAPI/uvicorn: router, `{"detail"}` errors, 422s; `server.cpp` puts the router on cpp-httplib (HTTP(S), WS(S)) |
 | `src/security/` | `security/` |
 | `src/control/` | `control/` |
 | `src/events/` | `events/` (bus, permissions, the `/events` WebSocket) |
@@ -123,7 +123,8 @@ Change a Python route or model, then re-export the schema:
 
 | Need | Library | Notes |
 |---|---|---|
-| HTTP server | Boost.Beast + Asio 1.83 | header-only, from the toolchain's Debian packages |
+| HTTP(S) and WebSocket server | cpp-httplib 0.63.0 | one header; compiled in as namespace `gw_httplib` (`src/http/httplib.hpp`), because depthai-core links its own httplib 0.20.1 into the same binary |
+| TLS | OpenSSL 3 (Debian, `libssl-dev`) | static in the release binary, with `libzstd` (Debian's libcrypto needs it); see [TLS.md](TLS.md) |
 | RWS client | libcurl 8.11.1 | static, HTTP only, digest auth, cookies; no TLS, proxy, compression |
 | JSON | nlohmann/json 3.11.3 | |
 | SHA-256 | own, `src/util/sha256.cpp` | checked against hashlib |
@@ -134,16 +135,20 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 
 ## Design decisions
 
-- **One thread per connection.** A handler may block (a move waits
-  up to `GATEWAY_RWS_MOVE_TIMEOUT` for the arm) without holding up
-  any other connection, so a lease renewal never waits behind a
-  move. Threads get a 256 KB stack; connections are capped at 64.
-- **WebSockets never block publishers.** A WebSocket keeps its
-  connection thread but runs on a private event loop there;
-  `publish()` only queues the message. A client that falls 1000
-  messages behind is dropped, and an idle one is pinged and closed
-  after 20 s without an answer, so a vanished client frees its
-  thread. (The Python gateway awaits every client's send.)
+- **One thread per connection** (cpp-httplib's pool, 8 to 64
+  threads). A handler may block (a move waits up to
+  `GATEWAY_RWS_MOVE_TIMEOUT` for the arm) without holding up any
+  other connection, so a lease renewal never waits behind a move.
+- **WebSockets never block publishers.** `publish()` only queues the
+  message; the connection's own thread sends the queue between
+  reads (every 50 ms at most). A client that falls 1000 messages
+  behind is dropped, and one that misses two pings (every 10 s) is
+  closed, so a vanished client frees its thread. (The Python gateway
+  awaits every client's send.)
+- **TLS in the binary** ([TLS.md](TLS.md)). Strict mode refuses to
+  start without `GATEWAY_TLS_CERT_FILE` / `GATEWAY_TLS_KEY_FILE`
+  unless `GATEWAY_TLS_ALLOW_PLAINTEXT=true`; `/health` reports
+  `tls.enabled`.
 - **The lease runs on the monotonic clock.** Expiry, contention
   window and startup grace cannot be moved by an NTP step on the
   device; the wall clock only gives the reported timestamps.
@@ -186,7 +191,7 @@ Linux arm64 Docker, 4 clients pulling frames (`tools/measure_gateway.py`):
 | Image | 860 MB | 2.9 MB at M2 (`FROM scratch`, one static binary: 2.0 MB at M2, 2.4 MB with WebSockets at M3) |
 | `.wmopkg` payload (xz squashfs) | 146 MB (104 MB stripped of junk) | 0.7 MB without the camera; **11.9 MB** with depthai-core (OAK), as deployed |
 | On the Westermo Lynx (WeOS 5.30, real OAK at 1080p / 4 fps) | not tried: a 146 MB package and 531 MB RAM (on the Pi), above the apps' ~248 MB share | **+40–47 MB** of the Lynx's RAM idle, +28–36 MB under load, +53.5 MB peak while the camera boots; 11.9 MB on its SD card ([LYNX.md](LYNX.md#footprint-on-the-lynx)) |
-| Static release binary with depthai-core (OAK) | – (depthai's libraries alone 226 MB) | 15.4 MB (12.4 MB gzipped) |
+| Static release binary with depthai-core (OAK) | – (depthai's libraries alone 226 MB) | 15.4 MB (12.4 MB gzipped); 21.3 MB (15.2 MB gzipped) with OpenSSL for TLS (0.5.0) |
 
 ## Memory with the camera
 

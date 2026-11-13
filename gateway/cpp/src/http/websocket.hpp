@@ -4,6 +4,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "http/message.hpp"
 
@@ -13,11 +14,12 @@ namespace gw::http {
 // WebSockets
 // ================================================================
 //
-// A WebSocket route gets the upgrade request and the sending side of
-// the connection. It returns the callbacks for the connection, or
-// nothing to refuse it: the client then gets HTTP 403 instead of the
-// handshake, as uvicorn answers a Starlette WebSocket closed before
-// it was accepted.
+// A WebSocket route has two steps. Before the handshake, authorize
+// looks at the upgrade request; false refuses it with HTTP 403, as
+// uvicorn answers a Starlette WebSocket closed before it was
+// accepted. After the handshake, open gets the request and the
+// sending side of the connection and returns the callbacks (nothing
+// closes the connection again with 1008).
 //
 
 class WebSocket {
@@ -47,11 +49,21 @@ struct WebSocketCallbacks {
     std::function<void()> on_close;
 };
 
+using WebSocketAuthorizer = std::function<bool(Request& request)>;
+
 using WebSocketHandler = std::function<
     std::optional<WebSocketCallbacks>(
         Request& request,
         const std::shared_ptr<WebSocket>& socket
     )
 >;
+
+struct WebSocketRoute {
+    std::vector<std::string> parts;
+
+    WebSocketAuthorizer authorize;
+
+    WebSocketHandler open;
+};
 
 }  // namespace gw::http

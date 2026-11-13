@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gateway_cpp
-    VERSION 0.4.0
+    VERSION 0.5.0
     LANGUAGES C CXX
 )
 
@@ -63,7 +63,6 @@ add_library(
     src/http/router.cpp
     src/http/server.cpp
     src/http/validate.cpp
-    src/http/websocket_session.cpp
     src/robot/routes.cpp
     src/robot/service.cpp
     src/rws/arms_routes.cpp
@@ -93,13 +92,12 @@ target_compile_definitions(
     gateway_core
     PUBLIC
     GATEWAY_VERSION="${PROJECT_VERSION}"
-    BOOST_ASIO_NO_DEPRECATED
 )
 
 target_link_libraries(
     gateway_core
     PUBLIC
-    Boost::headers
+    gateway_httplib
     nlohmann_json::nlohmann_json
     CURL::libcurl
     Threads::Threads

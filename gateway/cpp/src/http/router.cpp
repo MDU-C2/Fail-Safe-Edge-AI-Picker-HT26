@@ -201,17 +201,19 @@ void Router::del(
 
 void Router::websocket(
     std::string pattern,
-    WebSocketHandler handler
+    WebSocketAuthorizer authorize,
+    WebSocketHandler open
 ) {
     websocket_routes_.push_back(
         WebSocketRoute{
             split_path(pattern),
-            std::move(handler),
+            std::move(authorize),
+            std::move(open),
         }
     );
 }
 
-const WebSocketHandler* Router::find_websocket(
+const WebSocketRoute* Router::find_websocket(
     Request& request
 ) const {
     const auto segments = split_path(request.path);
@@ -222,7 +224,7 @@ const WebSocketHandler* Router::find_websocket(
         if (match_parts(route.parts, segments, params)) {
             request.params = std::move(params);
 
-            return &route.handler;
+            return &route;
         }
     }
 

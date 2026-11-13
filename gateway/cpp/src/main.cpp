@@ -130,9 +130,23 @@ int main(
     // ------------------------------------------------------------
 
     std::unique_ptr<gw::App> app;
+    std::unique_ptr<gw::http::Server> server;
 
     try {
         app = std::make_unique<gw::App>(gw::load_settings());
+
+        gw::http::ServerOptions options;
+
+        options.host = arguments.host;
+        options.port = arguments.port;
+        options.tls_cert_file = app->settings.tls_cert_file;
+        options.tls_key_file = app->settings.tls_key_file;
+
+        //
+        // Before the camera, which may take a minute to connect: a
+        // bad certificate stops startup at once.
+        //
+        server = std::make_unique<gw::http::Server>(app->router(), options);
 
         app->start();
 
@@ -142,16 +156,17 @@ int main(
         return 1;
     }
 
-    gw::http::ServerOptions options;
-
-    options.host = arguments.host;
-    options.port = arguments.port;
-
-    gw::http::Server server(app->router(), options);
+    if (!app->tls_enabled) {
+        gw::log::warning(
+            app->settings.security_mode == "strict"
+                ? "TLS is off (GATEWAY_TLS_ALLOW_PLAINTEXT): tokens cross the network unencrypted"
+                : "TLS is off (development mode)"
+        );
+    }
 
     std::thread([&server]() {
         try {
-            server.run();
+            server->run();
         } catch (const std::exception& error) {
             gw::log::error(gw::format("Gateway failed to listen: %s", error.what()));
 

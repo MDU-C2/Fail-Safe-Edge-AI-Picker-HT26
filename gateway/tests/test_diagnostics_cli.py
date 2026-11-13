@@ -34,9 +34,17 @@ def diagnostics_client(
         url=gateway.api_url,
         token=token or token_for("diagnostics"),
         client="diagnostics",
-        verify=True,
+        verify=gateway.verify,
         timeout=10,
     )
+
+
+def ca_arguments(
+    gateway: Gateway,
+) -> list[str]:
+    """--ca with the test CA for an https gateway."""
+
+    return ["--ca", gateway.verify] if isinstance(gateway.verify, str) else []
 
 
 def run_tool(
@@ -51,6 +59,7 @@ def run_tool(
             gateway.api_url,
             "--token",
             token_for("diagnostics"),
+            *ca_arguments(gateway),
             *arguments,
         ],
         capture_output=True,
@@ -183,6 +192,7 @@ def test_event_feed_receives_events(
         url=gateway.events_url(),
         client="diagnostics",
         events=diag.EVENT_FAMILIES,
+        verify=gateway.verify,
     )
     feed.start()
 
@@ -223,6 +233,7 @@ def test_event_feed_receives_events_in_strict_mode(
         url=gateway.events_url(),
         client="diagnostics",
         events=diag.EVENT_FAMILIES,
+        verify=gateway.verify,
         token=gateway.token,
     )
     feed.start()
@@ -261,6 +272,7 @@ def test_event_feed_is_refused_in_strict_mode_without_valid_token(
         url=gateway.events_url(),
         client="diagnostics",
         events=diag.EVENT_FAMILIES,
+        verify=gateway.verify,
         token=token,
     )
     feed.start()
@@ -280,7 +292,7 @@ def test_events_command_with_unknown_token_is_refused(
     strict_gateway: Gateway,
 ) -> None:
     completed = subprocess.run(
-        [sys.executable, str(TOOL), "--url", strict_gateway.api_url, "--token", "not-a-token", "events"],
+        [sys.executable, str(TOOL), "--url", strict_gateway.api_url, "--token", "not-a-token", *ca_arguments(strict_gateway), "events"],
         capture_output=True,
         text=True,
         encoding="utf-8",

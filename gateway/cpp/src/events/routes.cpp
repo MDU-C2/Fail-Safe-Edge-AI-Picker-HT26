@@ -153,13 +153,20 @@ void add_event_routes(
     // token in the upgrade request's Authorization header, as on
     // the HTTP routes (?client= is ignored). Otherwise refused.
     //
+    const auto identity_of = [&app](http::Request& request) {
+        return app.auth.development()
+            ? app.auth.development_identity(request.query_value("client"))
+            : app.auth.bearer_identity(request);
+    };
+
     router.websocket(
         app.settings.api_prefix + "/events",
-        [&app](http::Request& request, const std::shared_ptr<http::WebSocket>& socket)
+        [identity_of](http::Request& request) {
+            return identity_of(request).has_value();
+        },
+        [&app, identity_of](http::Request& request, const std::shared_ptr<http::WebSocket>& socket)
             -> std::optional<http::WebSocketCallbacks> {
-            const auto identity = app.auth.development()
-                ? app.auth.development_identity(request.query_value("client"))
-                : app.auth.bearer_identity(request);
+            const auto identity = identity_of(request);
 
             if (!identity) {
                 return std::nullopt;

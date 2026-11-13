@@ -2,9 +2,7 @@
 # Dependencies
 # ================================================================
 #
-# Pinned release archives, fetched once into the build tree. Boost
-# comes from the toolchain image (Debian packages), header-only:
-# Beast and Asio need no Boost library at run time.
+# Pinned release archives, fetched once into the build tree.
 #
 
 include(FetchContent)
@@ -13,12 +11,78 @@ set(FETCHCONTENT_QUIET ON)
 
 find_package(Threads REQUIRED)
 
-find_package(
-    Boost 1.81
-    REQUIRED
-    CONFIG
-    COMPONENTS headers
+# ----------------------------------------------------------------
+# OpenSSL: TLS for the gateway's own server (TLS.md)
+# ----------------------------------------------------------------
+#
+# Debian's OpenSSL 3 (libssl-dev in the toolchain image), its static
+# archives for the static release binary. Only the server uses it;
+# the RWS client (curl below) stays plain HTTP.
+#
+
+if(GATEWAY_STATIC)
+    set(OPENSSL_USE_STATIC_LIBS TRUE)
+endif()
+
+find_package(OpenSSL 3.0 REQUIRED)
+
+# ----------------------------------------------------------------
+# cpp-httplib: the HTTP(S) and WebSocket server
+# ----------------------------------------------------------------
+#
+# One header, copied to generated/gw_httplib/httplib.h so that it is
+# never confused with depthai-core's older httplib.h in its vcpkg
+# include directory. src/http/httplib.hpp includes it (under the
+# namespace gw_httplib, see there).
+#
+
+FetchContent_Declare(
+    cpp_httplib
+    URL https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.63.0.tar.gz
+    URL_HASH SHA256=44ab42e16926e95f7641d286bc90d739ab1c16886114d7cc5bc7a9f905c5edf8
+    DOWNLOAD_EXTRACT_TIMESTAMP ON
+    #
+    # Download only; its own CMake project is not used.
+    #
+    SOURCE_SUBDIR no-cmake-project
 )
+
+FetchContent_MakeAvailable(cpp_httplib)
+
+configure_file(
+    ${cpp_httplib_SOURCE_DIR}/httplib.h
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/gw_httplib/httplib.h
+    COPYONLY
+)
+
+add_library(gateway_httplib INTERFACE)
+
+target_include_directories(
+    gateway_httplib
+    INTERFACE
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+
+target_link_libraries(
+    gateway_httplib
+    INTERFACE
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+
+#
+# Debian's static libcrypto is built with zstd (certificate
+# compression), which its CMake target does not name.
+#
+if(GATEWAY_STATIC)
+    find_library(GATEWAY_ZSTD_STATIC NAMES libzstd.a REQUIRED)
+
+    target_link_libraries(
+        gateway_httplib
+        INTERFACE
+        ${GATEWAY_ZSTD_STATIC}
+    )
+endif()
 
 # ----------------------------------------------------------------
 # nlohmann/json

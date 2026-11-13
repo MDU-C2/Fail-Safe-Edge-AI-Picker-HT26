@@ -51,6 +51,13 @@ public:
 
     Settings settings;
 
+    //
+    // Whether clients connect over TLS (GATEWAY_TLS_CERT_FILE set).
+    // Without it the gateway only starts in development mode or with
+    // GATEWAY_TLS_ALLOW_PLAINTEXT.
+    //
+    bool tls_enabled;
+
     ClientRegistry registry;
 
     ControlManager control;

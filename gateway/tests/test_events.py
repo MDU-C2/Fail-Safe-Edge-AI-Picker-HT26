@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from websockets.exceptions import ConnectionClosed, InvalidStatus
-from websockets.sync.client import ClientConnection, connect
+from websockets.sync.client import ClientConnection
 
 from gateway.tests.support import Gateway, expect, token_for
 
@@ -18,9 +18,7 @@ def open_events(
     gateway: Gateway,
     client_id: str,
 ) -> ClientConnection:
-    url = gateway.url.replace("http://", "ws://")
-
-    return connect(f"{url}/api/v1/events?client={client_id}")
+    return gateway.connect_websocket(f"/api/v1/events?client={client_id}")
 
 
 def request(
@@ -194,10 +192,9 @@ def open_strict_events(
     authorization: str | None,
     query: str = "",
 ) -> ClientConnection:
-    url = gateway.url.replace("http://", "ws://")
     headers = {"Authorization": authorization} if authorization is not None else None
 
-    return connect(f"{url}/api/v1/events{query}", additional_headers=headers)
+    return gateway.connect_websocket(f"/api/v1/events{query}", additional_headers=headers)
 
 
 def test_strict_mode_with_token(

@@ -48,12 +48,33 @@ std::unique_ptr<CameraProducer> create_camera_producer(
     );
 }
 
+//
+// Strict mode serves tokens, so it needs TLS unless plaintext is
+// explicitly allowed (a test bench, or a deployment being moved over
+// to TLS). Development mode has no secrets and may run either way.
+//
+bool check_tls(
+    const Settings& settings
+) {
+    const bool enabled = !settings.tls_cert_file.empty();
+
+    if (!enabled && settings.security_mode == "strict" && !settings.tls_allow_plaintext) {
+        throw std::runtime_error(
+            "Strict mode needs TLS: set GATEWAY_TLS_CERT_FILE and GATEWAY_TLS_KEY_FILE "
+            "(gateway/cpp/TLS.md), or GATEWAY_TLS_ALLOW_PLAINTEXT=true to send tokens unencrypted"
+        );
+    }
+
+    return enabled;
+}
+
 }  // namespace
 
 App::App(
     Settings settings_value
 )
     : settings(std::move(settings_value)),
+      tls_enabled(check_tls(settings)),
       registry(settings.auth_clients_file),
       control(
           settings.control_lease_seconds,

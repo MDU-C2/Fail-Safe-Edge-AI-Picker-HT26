@@ -62,6 +62,37 @@ TEST(Settings, ParsesNumbersAndTuples) {
     EXPECT_EQ(settings.rws_safe_zone_max, (Vector3{800.5, 500.0, 600.0}));
 }
 
+TEST(Settings, TlsIsOffByDefault) {
+    const Settings settings = load_settings({}, {});
+
+    EXPECT_TRUE(settings.tls_cert_file.empty());
+    EXPECT_TRUE(settings.tls_key_file.empty());
+    EXPECT_FALSE(settings.tls_allow_plaintext);
+}
+
+TEST(Settings, TlsFilesComeTogether) {
+    const Settings settings = load_settings(
+        {
+            {"GATEWAY_TLS_CERT_FILE", "/state/tls/gateway.crt"},
+            {"GATEWAY_TLS_KEY_FILE", "/state/tls/gateway.key"},
+        },
+        {}
+    );
+
+    EXPECT_EQ(settings.tls_cert_file, "/state/tls/gateway.crt");
+    EXPECT_EQ(settings.tls_key_file, "/state/tls/gateway.key");
+}
+
+TEST(Settings, BooleansAsPydanticReadsThem) {
+    for (const char* yes : {"true", "True", "1", "yes", "ON", " t "}) {
+        EXPECT_TRUE(load_settings({{"GATEWAY_TLS_ALLOW_PLAINTEXT", yes}}, {}).tls_allow_plaintext) << yes;
+    }
+
+    for (const char* no : {"false", "FALSE", "0", "no", "off", "f"}) {
+        EXPECT_FALSE(load_settings({{"GATEWAY_TLS_ALLOW_PLAINTEXT", no}}, {}).tls_allow_plaintext) << no;
+    }
+}
+
 TEST(Settings, UnknownNamesAreIgnored) {
     EXPECT_NO_THROW(load_settings({{"GATEWAY_NOT_A_SETTING", "x"}}, {}));
 }
@@ -86,7 +117,10 @@ INSTANTIATE_TEST_SUITE_P(
         std::pair{"GATEWAY_CONTROL_LEASE_SECONDS", "5s"},
         std::pair{"GATEWAY_RWS_SAFE_ZONE_MIN", "[1,2]"},
         std::pair{"GATEWAY_RWS_SAFE_ZONE_MIN", "180,-400,50"},
-        std::pair{"GATEWAY_RWS_SAFE_ZONE_MAX", "[1,2,\"x\"]"}
+        std::pair{"GATEWAY_RWS_SAFE_ZONE_MAX", "[1,2,\"x\"]"},
+        std::pair{"GATEWAY_TLS_ALLOW_PLAINTEXT", "maybe"},
+        std::pair{"GATEWAY_TLS_CERT_FILE", "gateway.crt"},
+        std::pair{"GATEWAY_TLS_KEY_FILE", "gateway.key"}
     )
 );
 

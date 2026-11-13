@@ -1,34 +1,49 @@
 #include "http/server.hpp"
 
-#include <sys/socket.h>
-#include <sys/time.h>
+#include <chrono>
+#include <deque>
+#include <filesystem>
+#include <mutex>
 
-#include <boost/asio/buffer.hpp>
-#include <boost/asio/ip/tcp.hpp>
-#include <boost/asio/write.hpp>
-#include <boost/beast/core/flat_buffer.hpp>
-#include <boost/beast/http.hpp>
-#include <boost/beast/websocket/rfc6455.hpp>
-
-#include "http/websocket_session.hpp"
+#include "http/httplib.hpp"
 #include "util/log.hpp"
 #include "util/text.hpp"
-#include "util/thread.hpp"
 
 namespace gw::http {
-
-namespace net = boost::asio;
-namespace beast = boost::beast;
-namespace bhttp = boost::beast::http;
-
-using tcp = net::ip::tcp;
 
 namespace {
 
 // ================================================================
-// Requests
+// Settings of the WebSocket loop
 // ================================================================
 
+//
+// How often a WebSocket's thread stops waiting for the client to send
+// what was queued for it, i.e. the longest an event waits.
+//
+constexpr auto WEBSOCKET_SEND_INTERVAL = std::chrono::milliseconds(50);
+
+//
+// Messages waiting for a slow client; beyond this it is dropped.
+//
+constexpr std::size_t WEBSOCKET_MAX_QUEUED = 1000;
+
+//
+// The server pings every 10 s and drops a client that misses two
+// pongs, so a vanished client frees its thread within ~30 s.
+//
+constexpr time_t WEBSOCKET_PING_SECONDS = 10;
+constexpr int WEBSOCKET_MAX_MISSED_PONGS = 2;
+
+// ================================================================
+// Requests and responses
+// ================================================================
+
+//
+// Path and query from the raw request target, as the router has
+// always had them (the path is not percent-decoded; a repeated query
+// parameter keeps its last value).
+//
 void parse_target(
     std::string_view target,
     Request& request
@@ -55,9 +70,6 @@ void parse_target(
                 ? std::string()
                 : url_decode(pair.substr(equals + 1), true);
 
-            //
-            // A repeated parameter keeps its last value.
-            //
             request.query[key] = value;
         }
 
@@ -69,181 +81,243 @@ void parse_target(
     }
 }
 
-// ================================================================
-// Responses
-// ================================================================
-
-bool write_response(
-    tcp::socket& socket,
-    const Response& response,
-    unsigned version,
-    bool keep_alive
+Request to_request(
+    const httplib::Request& from
 ) {
-    bhttp::response<bhttp::empty_body> header{
-        static_cast<bhttp::status>(response.status),
-        version,
-    };
+    Request request;
 
-    header.set(bhttp::field::content_type, response.content_type);
+    request.method = from.method;
 
-    for (const auto& [name, value] : response.headers) {
-        header.set(name, value);
+    parse_target(from.target, request);
+
+    for (const auto& [name, value] : from.headers) {
+        request.headers.emplace_back(name, value);
     }
 
-    header.content_length(response.body_size());
-    header.keep_alive(keep_alive);
+    request.body = from.body;
 
-    beast::error_code error;
+    return request;
+}
 
-    bhttp::response_serializer<bhttp::empty_body> serializer{header};
+void to_response(
+    const Response& from,
+    httplib::Response& to
+) {
+    to.status = from.status;
 
-    bhttp::write_header(socket, serializer, error);
-
-    if (error) {
-        return false;
+    for (const auto& [name, value] : from.headers) {
+        to.set_header(name, value);
     }
 
-    if (response.body_size() > 0) {
-        net::write(
-            socket,
-            net::buffer(response.body_data(), response.body_size()),
-            error
+    if (!from.shared_body) {
+        to.set_content(from.body, from.content_type);
+        return;
+    }
+
+    //
+    // Camera frames: sent from the shared buffer, not copied.
+    //
+    const SharedBytes body = from.shared_body;
+
+    to.set_content_provider(
+        body.size,
+        from.content_type,
+        [body](std::size_t offset, std::size_t length, httplib::DataSink& sink) {
+            return sink.write(reinterpret_cast<const char*>(body.data) + offset, length);
+        }
+    );
+}
+
+bool is_websocket_upgrade(
+    const httplib::Request& request
+) {
+    return iequals(request.get_header_value("Upgrade"), "websocket");
+}
+
+// ================================================================
+// WebSockets
+// ================================================================
+
+//
+// The sending side handed to a WebSocket route. send() only queues,
+// so publishing an event never waits for a slow client; the
+// connection's own thread sends what is queued.
+//
+class QueuedWebSocket : public WebSocket {
+public:
+    bool send(
+        std::string text
+    ) override {
+        const std::lock_guard lock(mutex_);
+
+        if (closed_) {
+            return false;
+        }
+
+        if (queue_.size() >= WEBSOCKET_MAX_QUEUED) {
+            log::warning("WebSocket client too slow, closing the connection");
+
+            closed_ = true;
+            return false;
+        }
+
+        queue_.push_back(std::move(text));
+
+        return true;
+    }
+
+    //
+    // What is queued; false once the connection is to be closed.
+    //
+    bool take(
+        std::deque<std::string>& messages
+    ) {
+        const std::lock_guard lock(mutex_);
+
+        messages.swap(queue_);
+
+        return !closed_;
+    }
+
+    void close() {
+        const std::lock_guard lock(mutex_);
+
+        closed_ = true;
+        queue_.clear();
+    }
+
+private:
+    std::mutex mutex_;
+
+    std::deque<std::string> queue_;
+
+    bool closed_ = false;
+};
+
+//
+// One WebSocket connection, on its own thread, after the handshake.
+//
+void serve_websocket(
+    const Router& router,
+    const httplib::Request& upgrade,
+    httplib::ws::WebSocket& client
+) {
+    Request request = to_request(upgrade);
+
+    const WebSocketRoute* route = router.find_websocket(request);
+
+    auto socket = std::make_shared<QueuedWebSocket>();
+
+    std::optional<WebSocketCallbacks> callbacks;
+
+    try {
+        if (route != nullptr) {
+            callbacks = route->open(request, socket);
+        }
+    } catch (const std::exception& exception) {
+        log::error(format("WebSocket handler failed: %s", exception.what()));
+    }
+
+    if (!callbacks) {
+        client.close(httplib::ws::CloseStatus::PolicyViolation);
+        return;
+    }
+
+    client.set_read_timeout(WEBSOCKET_SEND_INTERVAL);
+
+    std::deque<std::string> outgoing;
+    std::string message;
+
+    while (client.is_open()) {
+        const bool open = socket->take(outgoing);
+
+        bool sent = true;
+
+        for (const std::string& text : outgoing) {
+            if (!client.send(text)) {
+                sent = false;
+                break;
+            }
+        }
+
+        outgoing.clear();
+
+        if (!open || !sent) {
+            client.close(httplib::ws::CloseStatus::GoingAway);
+            break;
+        }
+
+        const auto result = client.read(message);
+
+        if (result == httplib::ws::ReadResult::Timeout) {
+            continue;
+        }
+
+        if (result == httplib::ws::ReadResult::Fail) {
+            break;
+        }
+
+        if (result == httplib::ws::ReadResult::Text && callbacks->on_message) {
+            try {
+                callbacks->on_message(message);
+            } catch (const std::exception& exception) {
+                log::error(format("WebSocket message handler failed: %s", exception.what()));
+            }
+        }
+    }
+
+    socket->close();
+
+    if (callbacks->on_close) {
+        callbacks->on_close();
+    }
+}
+
+// ================================================================
+// TLS
+// ================================================================
+
+std::unique_ptr<httplib::Server> create_server(
+    const ServerOptions& options
+) {
+    if (options.tls_cert_file.empty()) {
+        return std::make_unique<httplib::Server>();
+    }
+
+    for (const auto& [setting, file] : {
+        std::pair{"GATEWAY_TLS_CERT_FILE", options.tls_cert_file},
+        std::pair{"GATEWAY_TLS_KEY_FILE", options.tls_key_file},
+    }) {
+        if (!std::filesystem::is_regular_file(file)) {
+            throw ServerError(format("%s=%s: no such file", setting, file.c_str()));
+        }
+    }
+
+    //
+    // A password that no real key has: an encrypted key then fails to
+    // load instead of OpenSSL asking for its passphrase on a terminal
+    // the device does not have.
+    //
+    auto server = std::make_unique<httplib::SSLServer>(
+        options.tls_cert_file.c_str(),
+        options.tls_key_file.c_str(),
+        nullptr,
+        nullptr,
+        "-"
+    );
+
+    if (!server->is_valid()) {
+        throw ServerError(
+            format(
+                "cannot use GATEWAY_TLS_CERT_FILE=%s with GATEWAY_TLS_KEY_FILE=%s: "
+                "they must be PEM, the key unencrypted and belonging to the certificate",
+                options.tls_cert_file.c_str(),
+                options.tls_key_file.c_str()
+            )
         );
     }
 
-    return !error;
-}
-
-void write_error(
-    tcp::socket& socket,
-    int status,
-    const char* detail
-) {
-    write_response(socket, error_response(status, detail), 11, false);
-}
-
-// ================================================================
-// Connections
-// ================================================================
-
-void set_receive_timeout(
-    tcp::socket& socket,
-    int seconds
-) {
-    timeval timeout{};
-
-    timeout.tv_sec = seconds;
-
-    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-}
-
-void serve_connection(
-    tcp::socket socket,
-    const Router& router,
-    const ServerOptions& options
-) {
-    set_receive_timeout(socket, options.keep_alive_seconds);
-
-    beast::flat_buffer buffer;
-
-    while (true) {
-        beast::error_code error;
-
-        bhttp::request_parser<bhttp::string_body> parser;
-
-        parser.body_limit(options.max_body_bytes);
-        parser.header_limit(64 * 1024);
-
-        bhttp::read_header(socket, buffer, parser, error);
-
-        if (error == bhttp::error::header_limit) {
-            write_error(socket, 431, "Request Header Fields Too Large");
-            return;
-        }
-
-        if (error) {
-            //
-            // Closed by the client, idle timeout or garbage.
-            //
-            return;
-        }
-
-        const auto& header = parser.get();
-
-        if (bhttp::token_list(header[bhttp::field::expect]).exists("100-continue")) {
-            bhttp::response<bhttp::empty_body> go_on{bhttp::status::continue_, header.version()};
-
-            bhttp::write(socket, go_on, error);
-
-            if (error) {
-                return;
-            }
-        }
-
-        bhttp::read(socket, buffer, parser, error);
-
-        if (error == bhttp::error::body_limit) {
-            write_error(socket, 413, "Request Entity Too Large");
-            return;
-        }
-
-        if (error) {
-            return;
-        }
-
-        auto message = parser.release();
-
-        Request request;
-
-        request.method = std::string(message.method_string());
-
-        parse_target(message.target(), request);
-
-        for (const auto& field : message) {
-            request.headers.emplace_back(
-                std::string(field.name_string()),
-                std::string(field.value())
-            );
-        }
-
-        //
-        // A WebSocket upgrade takes over the connection (and this
-        // thread) until the WebSocket ends. Unknown WebSocket paths
-        // are refused like refused connections (Starlette: 403).
-        //
-        if (boost::beast::websocket::is_upgrade(message)) {
-            const WebSocketHandler* handler = router.find_websocket(request);
-
-            if (handler == nullptr) {
-                Response forbidden;
-
-                forbidden.status = 403;
-                forbidden.content_type = "text/plain; charset=utf-8";
-                forbidden.body = "Forbidden";
-
-                write_response(socket, forbidden, 11, false);
-                return;
-            }
-
-            run_websocket(std::move(socket), std::move(message), std::move(request), *handler, WebSocketOptions{});
-
-            return;
-        }
-
-        request.body = std::move(message.body());
-
-        const Response response = router.handle(request);
-
-        const bool keep_alive = message.keep_alive();
-
-        if (!write_response(socket, response, message.version(), keep_alive) || !keep_alive) {
-            beast::error_code ignored;
-
-            socket.shutdown(tcp::socket::shutdown_send, ignored);
-
-            return;
-        }
-    }
+    return server;
 }
 
 }  // namespace
@@ -252,68 +326,119 @@ void serve_connection(
 // Server
 // ================================================================
 
+struct Server::Impl {
+    ServerOptions options;
+
+    std::unique_ptr<httplib::Server> server;
+};
+
 Server::Server(
     const Router& router,
     ServerOptions options
 )
-    : router_(router),
-      options_(std::move(options)) {}
+    : impl_(std::make_unique<Impl>()) {
+    impl_->options = std::move(options);
+    impl_->server = create_server(impl_->options);
+
+    httplib::Server& server = *impl_->server;
+    const ServerOptions& settings = impl_->options;
+
+    server.new_task_queue = [max = settings.max_connections] {
+        return new httplib::ThreadPool(8, max);
+    };
+
+    server.set_keep_alive_timeout(settings.keep_alive_seconds);
+    server.set_keep_alive_max_count(1000);
+    server.set_payload_max_length(settings.max_body_bytes);
+    server.set_tcp_nodelay(true);
+    server.set_websocket_ping_interval(WEBSOCKET_PING_SECONDS);
+    server.set_websocket_max_missed_pongs(WEBSOCKET_MAX_MISSED_PONGS);
+
+    //
+    // Every request goes to the router, which matches paths itself.
+    //
+    const auto handle = [&router](const httplib::Request& from, httplib::Response& to) {
+        Request request = to_request(from);
+
+        to_response(router.handle(request), to);
+    };
+
+    server.Get(".*", handle);
+    server.Post(".*", handle);
+    server.Put(".*", handle);
+    server.Patch(".*", handle);
+    server.Delete(".*", handle);
+    server.Options(".*", handle);
+
+    //
+    // A WebSocket upgrade the route does not accept (or to a path
+    // without one) is refused with 403 before the handshake.
+    //
+    server.set_pre_request_handler(
+        [&router](const httplib::Request& from, httplib::Response& to) {
+            if (!is_websocket_upgrade(from)) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+
+            Request request = to_request(from);
+
+            const WebSocketRoute* route = router.find_websocket(request);
+
+            if (route != nullptr && route->authorize(request)) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+
+            to.status = 403;
+            to.set_content("Forbidden", "text/plain; charset=utf-8");
+
+            return httplib::Server::HandlerResponse::Handled;
+        }
+    );
+
+    server.WebSocket(
+        ".*",
+        [&router](const httplib::Request& upgrade, httplib::ws::WebSocket& client) {
+            serve_websocket(router, upgrade, client);
+        }
+    );
+
+    //
+    // httplib's own errors (malformed request, body too large) as
+    // FastAPI's {"detail": ...}; the router's responses pass as they
+    // are.
+    //
+    server.set_error_handler(
+        [](const httplib::Request&, httplib::Response& response) {
+            if (!response.body.empty()) {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
+
+            to_response(error_response(response.status, httplib::status_message(response.status)), response);
+
+            return httplib::Server::HandlerResponse::Handled;
+        }
+    );
+}
+
+Server::~Server() = default;
 
 void Server::run() {
-    net::io_context context;
+    const ServerOptions& options = impl_->options;
 
-    const tcp::endpoint endpoint(net::ip::make_address(options_.host), options_.port);
-
-    tcp::acceptor acceptor(context);
-
-    acceptor.open(endpoint.protocol());
-    acceptor.set_option(net::socket_base::reuse_address(true));
-    acceptor.bind(endpoint);
-    acceptor.listen(net::socket_base::max_listen_connections);
-
-    log::info(format("Gateway listening on http://%s:%u", options_.host.c_str(), options_.port));
-
-    while (true) {
-        beast::error_code error;
-
-        tcp::socket socket(context);
-
-        acceptor.accept(socket, error);
-
-        if (error) {
-            continue;
-        }
-
-        socket.set_option(tcp::no_delay(true), error);
-
-        if (connections_.load() >= options_.max_connections) {
-            write_error(socket, 503, "Too many connections");
-            continue;
-        }
-
-        ++connections_;
-
-        auto* shared = new tcp::socket(std::move(socket));
-
-        const bool started = start_detached_thread(
-            [this, shared]() {
-                std::unique_ptr<tcp::socket> owned(shared);
-
-                try {
-                    serve_connection(std::move(*owned), router_, options_);
-                } catch (const std::exception& exception) {
-                    log::error(format("Connection failed: %s", exception.what()));
-                }
-
-                --connections_;
-            }
-        );
-
-        if (!started) {
-            delete shared;
-            --connections_;
-        }
+    if (!impl_->server->bind_to_port(options.host, options.port)) {
+        throw ServerError(format("cannot listen on %s:%u", options.host.c_str(), options.port));
     }
+
+    log::info(
+        format(
+            "Gateway listening on %s://%s:%u",
+            options.tls_cert_file.empty() ? "http" : "https",
+            options.host.c_str(),
+            options.port
+        )
+    );
+
+    impl_->server->listen_after_bind();
 }
 
 }  // namespace gw::http

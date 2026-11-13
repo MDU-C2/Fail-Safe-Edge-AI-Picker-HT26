@@ -117,6 +117,38 @@ public:
     }
 
     //
+    // The strings pydantic accepts for a bool, in any case.
+    //
+    void boolean(
+        const char* name,
+        bool& target
+    ) {
+        const auto value = lookup(name);
+
+        if (!value) {
+            return;
+        }
+
+        const std::string text = to_lower(std::string(trim(*value)));
+
+        for (const char* yes : {"1", "true", "t", "yes", "y", "on"}) {
+            if (text == yes) {
+                target = true;
+                return;
+            }
+        }
+
+        for (const char* no : {"0", "false", "f", "no", "n", "off"}) {
+            if (text == no) {
+                target = false;
+                return;
+            }
+        }
+
+        fail(name, *value, "must be true or false");
+    }
+
+    //
     // tuple[float, float, float]: pydantic-settings parses complex
     // types as JSON, e.g. [180,-400,50].
     //
@@ -196,6 +228,16 @@ Settings load_settings(
     load.string("api_prefix", settings.api_prefix);
     load.choice("security_mode", settings.security_mode, {"development", "strict"});
     load.string("auth_clients_file", settings.auth_clients_file);
+
+    load.string("tls_cert_file", settings.tls_cert_file);
+    load.string("tls_key_file", settings.tls_key_file);
+    load.boolean("tls_allow_plaintext", settings.tls_allow_plaintext);
+
+    if (settings.tls_cert_file.empty() != settings.tls_key_file.empty()) {
+        throw SettingsError(
+            "Invalid settings: GATEWAY_TLS_CERT_FILE and GATEWAY_TLS_KEY_FILE must be set together"
+        );
+    }
 
     load.number("control_lease_seconds", settings.control_lease_seconds);
     load.number("control_contention_seconds", settings.control_contention_seconds);

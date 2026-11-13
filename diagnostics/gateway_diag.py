@@ -26,6 +26,11 @@ Events come from WS /api/v1/events: in strict mode with the same Bearer
 token in the upgrade request (without a token the dashboard polls only),
 in development mode as ?client=<--client>.
 
+TLS: https:// and wss:// URLs are verified against --ca, else
+GATEWAY_CA_FILE, else the lab CA in gateway/tls/lab-ca.crt
+(gateway/cpp/TLS.md), else the system's trusted CAs. --insecure skips
+the check (and still sends the token: only for diagnosing TLS itself).
+
 Works against either implementation (Python or C++).
 
 Needs: requests, websockets, rich (diagnostics/requirements.txt)
@@ -151,7 +156,7 @@ class Gateway:
         url: str,
         token: str | None,
         client: str,
-        verify: bool,
+        verify: bool | str,
         timeout: float,
     ) -> None:
         self.url = url.rstrip("/")
@@ -225,6 +230,12 @@ class Gateway:
 
 def short_error(error: Exception) -> str:
     text = str(error)
+
+    if "CERTIFICATE_VERIFY_FAILED" in text:
+        return "TLS certificate not trusted (--ca, GATEWAY_CA_FILE, gateway/tls/lab-ca.crt)"
+
+    if "WRONG_VERSION_NUMBER" in text or "record layer failure" in text:
+        return "TLS refused: not an https server (use http://)"
 
     for marker in ("Failed to establish a new connection: ", "Read timed out", "Connection refused"):
         if marker in text:
@@ -431,6 +442,27 @@ class View:
         self.previous_sequence = (sequence, now)
 
 
+def append_tls(
+    line: Text,
+    health: dict,
+) -> None:
+    """TLS from /health (C++ gateway 0.5.0+): "TLS", or "NO TLS" (red
+    in strict mode, where tokens then cross the network in clear).
+    Gateways that do not report it show nothing."""
+
+    tls = health.get("tls")
+
+    if not isinstance(tls, dict):
+        return
+
+    line.append("   ")
+
+    if tls.get("enabled"):
+        line.append("TLS", style="dim")
+    else:
+        line.append("NO TLS", style="bold red" if health.get("security_mode") == "strict" else "yellow")
+
+
 def header_panel(
     gateway: Gateway,
     results: dict[str, Result],
@@ -453,6 +485,7 @@ def header_panel(
     line.append(f"  {gateway.url}", style="bold")
     line.append(f"   v{data.get('version', '?')}   up {duration(data.get('uptime_seconds'))}")
     line.append(f"   mode {data.get('security_mode', '?')}")
+    append_tls(line, data)
     line.append(f"   robot provider {data.get('robot_provider', '?')}")
     line.append("\n")
 
@@ -766,7 +799,7 @@ class EventFeed:
     client: str
     events: list[str]
     token: str | None = None
-    verify: bool = True
+    verify: bool | str = True
     events_received: deque = field(default_factory=lambda: deque(maxlen=500))
     state: str = "not started"
     wake: threading.Event = field(default_factory=threading.Event)
@@ -782,7 +815,9 @@ class EventFeed:
         if not self.url.startswith("wss://"):
             return None
 
-        context = ssl.create_default_context()
+        context = ssl.create_default_context(
+            cafile=self.verify if isinstance(self.verify, str) else None,
+        )
 
         if not self.verify:
             context.check_hostname = False
@@ -1215,6 +1250,23 @@ def resolve_token(
     return entry if isinstance(entry, str) else None
 
 
+def resolve_ca(
+    explicit: str | None,
+) -> bool | str:
+    """requests' verify: the CA file to trust for https, else True
+    (the system's CAs)."""
+
+    if explicit:
+        return explicit
+
+    if os.environ.get("GATEWAY_CA_FILE"):
+        return os.environ["GATEWAY_CA_FILE"]
+
+    lab_ca = REPO_ROOT / "gateway" / "tls" / "lab-ca.crt"
+
+    return str(lab_ca) if lab_ca.is_file() else True
+
+
 def parse_args(
     argv: list[str] | None = None,
 ) -> argparse.Namespace:
@@ -1227,6 +1279,7 @@ def parse_args(
     parser.add_argument("--token", default=None, help="Bearer token (default: GATEWAY_DIAG_TOKEN, then client_tokens.json 'diagnostics')")
     parser.add_argument("--client", default="diagnostics", help="Client id in development mode")
     parser.add_argument("--timeout", type=float, default=5, help="HTTP timeout in seconds")
+    parser.add_argument("--ca", default=None, help="CA certificate for https/wss (default: GATEWAY_CA_FILE, then gateway/tls/lab-ca.crt)")
     parser.add_argument("--insecure", action="store_true", help="Do not verify TLS certificates (https/wss)")
 
     commands = parser.add_subparsers(dest="command")
@@ -1264,7 +1317,7 @@ def main(
         url=args.url or TARGETS[args.target],
         token=resolve_token(args.token),
         client=args.client,
-        verify=not args.insecure,
+        verify=False if args.insecure else resolve_ca(args.ca),
         timeout=args.timeout,
     )
 

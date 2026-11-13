@@ -116,6 +116,7 @@ void add_health_routes(
                     {"implementation", "cpp"},
                     {"uptime_seconds", round_to(to_seconds(std::chrono::steady_clock::now() - app.started), 1)},
                     {"security_mode", app.settings.security_mode},
+                    {"tls", Json{{"enabled", app.tls_enabled}}},
                     {"robot_provider", app.settings.robot_provider},
                     {"control_lease_active", app.control.get().has_value()},
                     {"camera", camera},

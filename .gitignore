@@ -1,5 +1,12 @@
 *.pyc
 *.pem
+# TLS private keys and CA working files (gateway/cpp/TLS.md); the
+# public gateway/tls/lab-ca.crt is the only TLS file committed
+*.key
+*.csr
+*.srl
+*.p12
+*.pfx
 /out
 gateway/.env
 /gateway/out

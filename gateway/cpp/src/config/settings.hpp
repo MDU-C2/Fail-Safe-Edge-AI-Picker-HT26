@@ -30,6 +30,17 @@ struct Settings {
 
     std::string auth_clients_file = "gateway/auth_clients.json";
 
+    //
+    // TLS for clients (gateway/cpp/TLS.md): the gateway's PEM
+    // certificate and unencrypted key, both or neither. Strict mode
+    // refuses to start without them unless tls_allow_plaintext is
+    // set. C++ gateway only; the Python gateway takes them as
+    // uvicorn's --ssl-certfile / --ssl-keyfile.
+    //
+    std::string tls_cert_file;
+    std::string tls_key_file;
+    bool tls_allow_plaintext = false;
+
     double control_lease_seconds = 5.0;
     double control_contention_seconds = 3.0;
     double control_startup_grace_seconds = 5.0;
