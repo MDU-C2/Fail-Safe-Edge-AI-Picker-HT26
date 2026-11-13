@@ -43,6 +43,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 PUBLIC_CA="${LAB_CA_PUBLIC:-$REPO_ROOT/gateway/tls/lab-ca.crt}"
 
 #
+# Git Bash's openssl is a Windows program: with path conversion off
+# (above) it cannot open /c/Users/..., so give it C:/Users/...
+#
+if command -v cygpath > /dev/null; then
+    CA_DIR="$(cygpath -m "$CA_DIR")"
+    PUBLIC_CA="$(cygpath -m "$PUBLIC_CA")"
+fi
+
+#
 # The only addresses and names any certificate of this CA can be
 # valid for, so a stolen CA key cannot impersonate anything else.
 #
