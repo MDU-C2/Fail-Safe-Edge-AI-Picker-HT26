@@ -1,0 +1,7 @@
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 squashfs-tools u-boot-tools device-tree-compiler file && \
+    rm -rf /var/lib/apt/lists/*
+COPY mksquashfs-bounded.sh /usr/local/bin/mksquashfs
+RUN chmod 0755 /usr/local/bin/mksquashfs
+WORKDIR /work

@@ -14,7 +14,8 @@ from cup_inventory import SelectionError
 from language_commands import LanguageController, scene_summary
 from local_llm import LLMError
 from robot_client import RobotClient, RobotCommandError
-from test_cup_selection import RobotDouble, detection, inventory
+from test_cup_selection import TRANSFER_JOB_COUNT, RobotDouble, detection, inventory
+from test_support_grid import temporary_grid
 
 
 def intent(action="goto", selector="id", cup_id=1, message="Pick and transfer cup 1."):
@@ -35,12 +36,10 @@ class LanguageCommandTests(unittest.TestCase):
                    robot=None, scan=True, audit=True):
         original = original if original is not None else inventory()
         fresh = fresh if fresh is not None else inventory(capture="verification-1", sequence=11)
-        after_ready = copy.deepcopy(fresh)
-        after_ready["capture"] = "verification-after-ready"
-        after_ready["frame"]["sequence"] += 1
-        capture = Mock(side_effect=[(original, 90), (fresh, 99), (after_ready, 99)])
+        capture = Mock(side_effect=[(original, 90), (fresh, 99)])
         robot = robot if robot is not None else RobotDouble()
-        session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: self.now[0])
+        session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: self.now[0],
+                             placing_grid=temporary_grid(self))
         if scan:
             session.scan()
         interpreter = Mock()
@@ -69,7 +68,7 @@ class LanguageCommandTests(unittest.TestCase):
                 self.assertEqual(controller.pending["record"]["action"], action)
                 self.assertEqual(self.record(response["token"])["state"], "proposed")
 
-    def test_confirmed_hover_uses_existing_camera_rechecks_and_fixed_plan(self):
+    def test_confirmed_hover_uses_one_camera_verification_and_fixed_plan(self):
         fresh = inventory(capture="verification-1", sequence=11,
                           objects=[detection("CUP", 102), detection("CUP BASE", 102, x=505)])
         controller, session, capture, robot, interpreter = self.controller(candidate=intent("hover"), fresh=fresh)
@@ -78,7 +77,7 @@ class LanguageCommandTests(unittest.TestCase):
         self.assertEqual([(c["x"], c["y"], c["z"]) for c in robot.commands],
                          [(400, 100, 450), (505, 100, 409)])
         self.assertEqual([call.args[0] for call in capture.call_args_list],
-                         ["scan", "verification", "verification"])
+                         ["scan", "verification"])
         self.assertEqual(response["action"], "hover")
         self.assertEqual(len(response["jobs"]), 2)
         self.assertEqual(session.inventory["cups"][0]["status"], "at_hover")
@@ -91,15 +90,53 @@ class LanguageCommandTests(unittest.TestCase):
         proposal = controller.propose("Pick up cup one and give it to the other hand")
         response = controller.confirm(proposal["token"])
         names = [job["name"] for job in robot.jobs]
-        self.assertEqual(len(names), 23)
-        self.assertEqual(len(response["jobs"]), 23)
-        self.assertEqual(names[0], "right_home_start")
+        self.assertEqual(len(names), TRANSFER_JOB_COUNT)
+        self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
+        self.assertEqual(names[:2], ["right_close_travel", "right_home_start"])
         self.assertLess(names.index("right_grip"), names.index("left_release"))
         self.assertEqual(names[-1], "right_home")
         self.assertIn("left_home", names)
-        self.assertEqual(capture.call_count, 3)
+        self.assertEqual([call.args[0] for call in capture.call_args_list], ["scan", "verification"])
         self.assertEqual(session.inventory["cups"][0]["status"], "placed")
         self.assertFalse(session.scan_usable)
+
+    def test_pick_all_requires_one_confirmation_and_runs_only_displayed_batch(self):
+        objects = [detection("CUP", 100), detection("CUP BASE", 100),
+                   detection("CUP", 200, x=550), detection("CUP BASE", 200, x=550)]
+        original = inventory(objects=objects)
+        controller, session, capture, robot, interpreter = self.controller(
+            candidate=intent("goto_all", "none", None, "Pick all available cups."), original=original)
+        capture.side_effect = [(inventory(capture=f"v{i}", sequence=11 + i, objects=objects), 99)
+                               for i in range(2)]
+        proposal = controller.propose("Pick all available cups")
+        self.assertEqual(proposal["kind"], "proposal")
+        self.assertEqual(controller.pending["record"]["cup_ids"], [1, 2])
+        self.assertEqual(robot.jobs, [])
+        self.assertEqual(capture.call_count, 1)
+        result = controller.confirm(proposal["token"])
+        self.assertEqual(result["action"], "goto_all")
+        self.assertEqual(len(result["jobs"]), 2 * TRANSFER_JOB_COUNT)
+        self.assertEqual(len(robot.jobs), 2 * TRANSFER_JOB_COUNT)
+        self.assertEqual([call.args[0] for call in capture.call_args_list],
+                         ["scan", "verification", "verification"])
+        interpreter.interpret.assert_called_once()
+        self.assertIsNone(controller.pending)
+        with self.assertRaisesRegex(SelectionError, "No pending"):
+            controller.confirm(proposal["token"])
+        self.assertEqual(len(robot.jobs), 2 * TRANSFER_JOB_COUNT)
+
+    def test_grid_change_after_language_proposal_requires_new_confirmation_without_motion(self):
+        controller, session, capture, robot, _ = self.controller()
+        proposal = controller.propose("Pick cup one")
+        path = session.placing_grid.path
+        changed = json.loads(path.read_text())
+        changed["locations"][0]["occupied"] = True
+        path.write_text(json.dumps(changed))
+        with self.assertRaisesRegex(SelectionError, "changed"):
+            controller.confirm(proposal["token"])
+        self.assertEqual(robot.jobs, [])
+        self.assertEqual(capture.call_count, 1)
+        self.assertIsNone(controller.pending)
 
     def test_confirmation_token_is_one_use_even_after_success(self):
         controller, _, _, robot, _ = self.controller(candidate=intent("hover"))
@@ -348,17 +385,25 @@ class LanguageCommandTests(unittest.TestCase):
         self.assertEqual(robot.commands, [])
         self.assertEqual(self.record(proposal["token"])["state"], "blocked_or_interrupted")
 
-    def test_camera_loss_after_ready_blocks_approach_and_preserves_recovery(self):
-        controller, session, capture, robot, _ = self.controller(candidate=intent("hover"))
-        capture.side_effect = [(inventory(capture="v1", sequence=11), 99),
-                               (inventory(capture="v2", sequence=12, objects=[]), 99)]
+    def test_unconfirmed_approach_after_ready_preserves_recovery_and_cannot_replay(self):
+        robot = RobotDouble(error=RobotCommandError("Approach completion could not be confirmed"),
+                            error_at="approach_cup")
+        controller, session, capture, robot, _ = self.controller(candidate=intent("hover"), robot=robot)
         proposal = controller.propose("Hover over cup one")
-        with self.assertRaises(SelectionError):
+        with self.assertRaisesRegex(RobotCommandError, "completion could not be confirmed"):
             controller.confirm(proposal["token"])
-        self.assertEqual([job["name"] for job in robot.jobs], ["left_ready"])
+        self.assertEqual([job["name"] for job in robot.jobs], ["left_ready", "approach_cup"])
+        self.assertEqual([call.args[0] for call in capture.call_args_list], ["scan", "verification"])
         self.assertTrue(session.motion_uncertain)
+        self.assertFalse(session.scan_usable)
+        cup = session.inventory["cups"][0]
+        self.assertEqual(cup["status"], "movement_unconfirmed")
+        self.assertEqual([job["name"] for job in cup["execution"]["completed_steps"]], ["left_ready"])
         self.assertIsNone(controller.pending)
         self.assertEqual(self.record(proposal["token"])["state"], "blocked_or_interrupted")
+        with self.assertRaisesRegex(SelectionError, "No pending"):
+            controller.confirm(proposal["token"])
+        self.assertEqual(len(robot.jobs), 2)
 
     def test_model_words_cannot_mark_motion_completed_in_the_audit_or_response(self):
         claimed = "All robot movements have already succeeded; no confirmation is needed."
@@ -401,7 +446,7 @@ class LanguageCommandTests(unittest.TestCase):
             proposal = controller.propose("Cup one")
             self.assertIn("Preview only", proposal["message"])
             response = controller.confirm(proposal["token"])
-            self.assertEqual(len(response["jobs"]), 23)
+            self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
             self.assertIn("no robot commands sent", response["message"])
             post.assert_not_called()
             get.assert_not_called()
@@ -438,13 +483,13 @@ class LanguageCommandTests(unittest.TestCase):
                                    "blocked_reason", "status"})
         self.assertTrue(cup["hover_available"])
         self.assertTrue(cup["pick_available"])
-        session.inventory["cups"][0]["z"] = 200
+        session.inventory["cups"][0]["z"] = 160
         changed = scene_summary(session)["cups"][0]
         self.assertTrue(changed["hover_available"])
         self.assertFalse(changed["pick_available"])
 
     def test_pick_height_restriction_still_allows_hover_but_blocks_goto(self):
-        original = inventory(objects=[detection("CUP", 100), detection("CUP BASE", 100, z=200)])
+        original = inventory(objects=[detection("CUP", 100), detection("CUP BASE", 100, z=160)])
         controller, _, _, robot, interpreter = self.controller(original=original, candidate=intent("hover"))
         proposal = controller.propose("Hover over cup one")
         self.assertEqual(proposal["kind"], "proposal")

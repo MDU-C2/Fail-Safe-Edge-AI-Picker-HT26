@@ -5,9 +5,10 @@ from fastapi import (
     APIRouter,
     Depends,
     Response,
+    HTTPException,
 )
 
-from gateway.control.router import require_control
+from gateway.control.router import get_control_manager, require_control
 from gateway.models.commands import (
     CommandResponse,
     RobotCommand,
@@ -97,6 +98,8 @@ async def send_robot_command(
         Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
+    if get_control_manager().require_session:
+        raise HTTPException(status_code=409, detail="Legacy socket commands are disabled in session-fenced mode; use /robot/rws")
     response.headers.update(DEPRECATION_HEADERS)
 
     warn_deprecated_command()

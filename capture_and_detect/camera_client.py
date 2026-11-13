@@ -99,6 +99,8 @@ class CameraClient:
         sequence = _integer(headers.get("X-Frame-Sequence"), "frame sequence")
         width = _integer(headers.get("X-Frame-Width"), "frame width", positive=True)
         height = _integer(headers.get("X-Frame-Height"), "frame height", positive=True)
+        if width * height > 8_400_000:
+            raise CameraError("Camera frame exceeds the supported 8.4 megapixel limit")
         if headers.get("X-Pixel-Format") != expected_format:
             raise CameraError(f"Unsupported camera format; expected {expected_format}")
         timestamp = headers.get("X-Frame-Timestamp")

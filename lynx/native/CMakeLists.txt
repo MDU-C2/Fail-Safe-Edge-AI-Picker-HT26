@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.16)
+project(lynx_native LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(LYNX_BUILD_WORKER "Build the NCNN segmentation executable" ON)
+option(LYNX_BUILD_TESTS "Build dependency-free protocol and geometry checks" ON)
+
+if(LYNX_BUILD_WORKER)
+    find_package(ncnn REQUIRED)
+    find_package(OpenCV QUIET COMPONENTS core imgproc)
+    if(NOT OpenCV_FOUND)
+        # Debian's minimal component -dev packages omit OpenCVConfig.cmake.
+        find_path(OpenCV_INCLUDE_DIRS opencv2/core.hpp PATH_SUFFIXES opencv4 REQUIRED)
+        find_library(LYNX_OPENCV_CORE opencv_core REQUIRED)
+        find_library(LYNX_OPENCV_IMGPROC opencv_imgproc REQUIRED)
+        set(OpenCV_LIBS ${LYNX_OPENCV_IMGPROC} ${LYNX_OPENCV_CORE})
+    endif()
+    add_executable(lynx-ncnn-worker worker.cpp)
+    target_include_directories(lynx-ncnn-worker PRIVATE ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(lynx-ncnn-worker PRIVATE ncnn ${OpenCV_LIBS})
+    target_compile_options(lynx-ncnn-worker PRIVATE -Wall -Wextra -Wpedantic)
+    install(TARGETS lynx-ncnn-worker RUNTIME DESTINATION bin)
+endif()
+
+if(LYNX_BUILD_TESTS)
+    enable_testing()
+    add_executable(lynx-native-tests tests.cpp)
+    target_compile_options(lynx-native-tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME native-core COMMAND lynx-native-tests)
+endif()

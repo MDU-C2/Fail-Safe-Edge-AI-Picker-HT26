@@ -15,14 +15,16 @@ from cup_commands import CupSession
 from cup_inventory import SelectionError
 from language_commands import LanguageController
 from robot_client import RobotCommandError
+from robot_controls import RobotControls
 from test_cup_selection import RobotDouble, detection, inventory
+from test_support_grid import grid_fixture
 from web_controller import WebController, WebError
 
 
 class WebFixture:
     """Use the real selection pipeline with an entirely in-memory camera and robot."""
 
-    def __init__(self, directory, *, dry_run=True):
+    def __init__(self, directory, *, dry_run=True, camera_z=False):
         self.now = 100.0
         self.sequence = 10
         self.captures = []
@@ -31,10 +33,15 @@ class WebFixture:
         self.capture_error = None
         self.robot = RobotDouble()
         self.robot.dry_run = dry_run
+        self.robot.operator_capabilities = {
+            action: {"supported": True, "reason": None, "protocol": "offline_fixture"}
+            for action in ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
+                           "rapid_start", "collision_ack", "collision_status")}
         self.interpreter = Mock()
         self.interpreter.interpret.return_value = {
             "action": "hover", "selector": "id", "cup_id": 1, "message": "Hover above cup 1."}
-        self.session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: self.now)
+        self.session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: self.now,
+                                  placing_grid=grid_fixture(directory), camera_z=camera_z)
         self.language = LanguageController(self.session, self.interpreter,
                                            audit_dir=Path(directory), clock=lambda: self.now)
 
@@ -75,6 +82,16 @@ class DirectWebSelectionTests(unittest.TestCase):
         values = {"action": "hover", "capture_id": self.session.inventory["capture"], "cup_id": 1}
         values.update(changes)
         return self.language.propose_selection(**values)
+
+    def test_speed_control_reports_actual_caps_without_new_session_attributes(self):
+        controls = RobotControls(self.session)
+        for speed, automatic, manual in ((250, 200, 100), (25, 25, 25), (1500, 200, 100)):
+            with self.subTest(speed=speed):
+                result = controls.set_speed(speed)
+                self.assertIn(f"automatic home uses {automatic} mm/s", result["message"])
+                self.assertIn(f"manual home is capped at {manual} mm/s", result["message"])
+                self.assertEqual(self.session.speed, speed)
+        self.assertEqual(self.fixture.robot.jobs, [])
 
     def test_direct_selection_requires_confirmation_and_skips_model(self):
         result = self.propose()
@@ -186,6 +203,83 @@ class WebControllerTests(unittest.TestCase):
         self.assertEqual(self.fixture.captures, ["scan", "verification"])
         self.assertEqual([job["name"] for job in self.fixture.robot.jobs], ["left_ready", "approach_cup"])
 
+    def test_batch_button_previews_exact_ids_slots_and_speeds_before_one_confirmation(self):
+        capture = self.scan()
+        state = self.submit("batch", capture_id=capture)
+        self.assertIsNone(state["error"])
+        proposal = state["proposal"]
+        self.assertEqual(proposal["action"], "goto_all")
+        self.assertIsNone(proposal["cup_id"])
+        self.assertEqual(proposal["cup_ids"], [1, 2])
+        self.assertEqual([place["id"] for place in proposal["placements"]], [1, 2])
+        self.assertEqual(proposal["speed"], 250)
+        self.assertEqual(proposal["home_speed"], 200)
+        self.assertIs(proposal["camera_z"], False)
+        self.assertEqual(proposal["flip_speed"], 100)
+        self.assertEqual(self.fixture.robot.jobs, [])
+        self.fixture.interpreter.interpret.assert_not_called()
+        payload = {key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")}
+        state = self.submit("confirm", **payload)
+        self.assertIsNone(state["error"])
+        expected = sum(len(cup["last_verification"]["jobs"])
+                       for cup in self.fixture.session.inventory["cups"] if cup["id"] in proposal["cup_ids"])
+        self.assertEqual(len(self.fixture.robot.jobs), expected)
+        self.assertIsNone(state["proposal"])
+        self.assertEqual(self.fixture.captures, ["scan", "verification", "verification"])
+        self.assertFalse(any(place["occupied"] for place in self.fixture.session.placing_grid.snapshot()["locations"]))
+
+    def test_camera_pick_mode_is_visible_in_public_motion_and_pick_proposal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = WebFixture(directory, camera_z=True)
+            controller = WebController(fixture.factory)
+            try:
+                controller.start()
+                self.wait_idle(controller)
+                self.assertIs(controller.state()["motion"]["camera_z"], True)
+                controller.submit("scan", {"request_id": uuid.uuid4().hex})
+                state = self.wait_idle(controller)
+                controller.submit("select", {"request_id": uuid.uuid4().hex,
+                                  "capture_id": state["inventory"]["capture"], "cup_id": 1, "action": "goto"})
+                state = self.wait_idle(controller)
+                self.assertIsNone(state["error"])
+                self.assertIs(state["proposal"]["camera_z"], True)
+                self.assertIn("base plus 20 mm", state["proposal"]["description"])
+                self.assertIn("40 mm minimum", state["proposal"]["description"])
+                self.assertEqual(fixture.robot.jobs, [])
+            finally:
+                controller.close()
+
+    def test_batch_command_without_model_only_proposes_and_cancel_sends_no_commands(self):
+        self.scan()
+        for text in ("goto all", "pick all available cups"):
+            with self.subTest(text=text):
+                state = self.submit("command", text=text)
+                self.assertIsNone(state["error"])
+                self.assertEqual(state["proposal"]["action"], "goto_all")
+                self.assertEqual(state["proposal"]["cup_ids"], [1, 2])
+                self.assertEqual(self.fixture.robot.jobs, [])
+                self.fixture.interpreter.interpret.assert_not_called()
+        state = self.submit("cancel")
+        self.assertIsNone(state["proposal"])
+        self.assertEqual(self.fixture.robot.jobs, [])
+
+    def test_batch_confirmation_cannot_change_action_or_inject_a_single_cup(self):
+        for changes in ({"action": "goto"}, {"cup_id": 1}, {"action": "goto", "cup_id": 1}):
+            with self.subTest(changes=changes):
+                capture = self.scan()
+                proposal = self.submit("batch", capture_id=capture)["proposal"]
+                payload = {key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")}
+                payload.update(changes)
+                if len(changes) == 1:
+                    with self.assertRaises(WebError) as error:
+                        self.controller.submit("confirm", dict(payload, request_id=uuid.uuid4().hex))
+                    self.assertEqual(error.exception.status, 422)
+                else:
+                    state = self.submit("confirm", **payload)
+                    self.assertIsNotNone(state["error"])
+                    self.assertIsNone(state["proposal"])
+                self.assertEqual(self.fixture.robot.jobs, [])
+
     def test_duplicate_request_id_or_confirmation_never_replays(self):
         payload = self.propose()
         request_id = uuid.uuid4().hex
@@ -293,6 +387,35 @@ class WebControllerTests(unittest.TestCase):
         self.assertEqual(final["progress"]["completed"], 2)
         self.assertEqual(final["progress"]["state"], "completed")
         self.assertFalse(final["scan_usable"])
+        self.assertEqual(self.fixture.captures, ["scan", "verification"])
+
+    def test_live_batch_progress_counts_all_planned_cups_and_confirmed_steps(self):
+        self.controller.close()
+        self.fixture.robot.dry_run = False
+        self.controller = WebController(self.fixture.factory, mode="live")
+        self.addCleanup(self.controller.close)
+        self.controller.start()
+        self.wait_idle()
+        self.fixture.session.save = lambda unused: self.controller.publish_session()
+        progress = []
+        self.fixture.robot.after_move = lambda count: progress.append(self.controller.state()["progress"])
+        capture = self.scan()
+        proposal = self.submit("batch", capture_id=capture)["proposal"]
+        payload = {key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")}
+        state = self.submit("confirm", **payload)
+        self.assertIsNone(state["error"])
+        expected = sum(len(cup["last_verification"]["jobs"])
+                       for cup in self.fixture.session.inventory["cups"] if cup["id"] in proposal["cup_ids"])
+        self.assertEqual(len(progress), expected)
+        self.assertTrue(all(item["total"] == expected for item in progress))
+        self.assertEqual(progress[0]["completed"], 0)
+        self.assertEqual(state["progress"]["completed"], expected)
+        self.assertEqual(state["progress"]["total"], expected)
+        self.assertEqual(state["progress"]["state"], "completed")
+        self.assertEqual(state["batch"]["completed_cups"], [1, 2])
+        self.assertEqual(state["batch"]["current"], 2)
+        self.assertEqual(state["batch"]["total"], 2)
+        self.assertEqual(self.fixture.captures, ["scan", "verification", "verification"])
 
     def test_state_is_a_copy_and_does_not_expose_private_inventory_fields(self):
         self.propose()
@@ -393,6 +516,7 @@ class WebControllerTests(unittest.TestCase):
         self.assertFalse(state["scan_usable"])
         self.assertIsNone(state["proposal"])
         self.assertEqual(len(self.fixture.robot.jobs), 1)
+        self.assertEqual(self.fixture.captures, ["scan", "verification"])
         fresh_capture = self.scan()
         state = self.submit("select", capture_id=fresh_capture, cup_id=1, action="hover")
         self.assertIsNotNone(state["error"])

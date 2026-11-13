@@ -45,6 +45,22 @@ There are two ways to move the robot:
 - `POST /api/v1/robot/rws/move` (`{"x","y","z"}` mm, optional `"rx","ry","rz"` degrees, optional `"arm": "left"|"right"`, optional `"speed"` mm/s (default 50) and `"acceleration"`/`"ramp"` % (default 100)), `POST /api/v1/robot/rws/home` (optional `{"arm"}`, same speed fields) `GET /api/v1/robot/arms/left|right/gripper` reads where the gripper's fingers are (mm, 0 closed to 25 open; after a grip, how far it closed on the object), and `POST /api/v1/robot/rws/gripper` (`{"action": "grip"|"open"|"move"}`, optional `arm`; `move` needs `"position"`, the opening between the fingers in mm, 0 closed to 25 fully open; `grip` takes an optional `"force"` in N, 0 < force ≤ 20, default 20) write the job into the RAPID program in `rapid/` (its arm modules) over RWS and wait for it; with `"wait": false` they answer `STARTED` at once and `GET /api/v1/robot/rws/status?arm=left|right` reports `BUSY` / `DONE` / `ERR move failed`, like the team's CommServer. Targets outside `GATEWAY_RWS_SAFE_ZONE_MIN/MAX` are refused by the gateway. Load and start the program with `python rapid/rapidctl.py upload` (defaults to the real YuMi, which must be in AUTO; it backs up the modules it replaces; `--host 127.0.0.1 upload --gripper-stub` for RobotStudio). No socket server is involved.
 - `POST /api/v1/robot/command` (deprecated but still working; legacy, `GATEWAY_ROBOT_PROVIDER=tcp`) sends the command text to a RAPID socket server on `GATEWAY_ROBOT_HOST:GATEWAY_ROBOT_PORT`.
 
+The custom web app's **Robot controls** panel also uses these administration routes:
+
+| Route | Effect |
+|---|---|
+| `GET /api/v1/robot/rapid/collision` | Read collision acknowledgement state; requires `robot.read`. |
+| `POST /api/v1/robot/rapid/collision/ack` | Request collision acknowledgement with RAPID stopped; requires `robot.control` and the active lease. No motor enable, start or home. ABB can reject remote clients without Local Client privileges. |
+| `POST /api/v1/robot/rapid/reset` | With `start: false` (default), stop RAPID, clear/read back pending arm requests, reset PP to main and leave stopped. Requires `robot.control` and the active lease. |
+
+For explicit initialization, the reset route accepts `start: true` with the
+`stop_generation` value just read from `GET /api/v1/robot/rapid`. A new Stop
+invalidates that value. Initialization requires AUTO, motors already on, and a
+cleared collision state; main may calibrate the grippers. The web app always
+binds reset/initialization to this value and never falls back to resuming an
+interrupted program. This is separate from app recovery acknowledgement and
+homing. No route disables collision supervision or enables motors.
+
 Both need `robot.control` and the control lease. `python gateway/scripts/basic_client.py` shows the RWS route from a client: it loads and starts the program through the gateway and runs a short demo path.
 
 Example mock command:
@@ -54,6 +70,47 @@ curl -X POST http://127.0.0.1:8000/api/v1/robot/command -H 'Content-Type: applic
 ```
 
 With `GATEWAY_ROBOT_PROVIDER=mock` the robot service does not contact physical hardware.
+
+## Session fencing for the MacBook / Pi inference deployment
+
+Set `GATEWAY_CONTROL_REQUIRE_SESSION=true` for the Pi's single robot executor.
+Run **one gateway process / Uvicorn worker**: control ownership is managed in that
+process. The default remains `false` for existing clients. No inference-provider
+switch acquires, releases or transfers the executor's robot lease.
+
+`POST /api/v1/control/acquire` returns a new `lease.session_id` for every
+acquisition. Send it as `X-Control-Session` on renewal, release, and all protected
+robot/calibration actions. Renewal preserves the session. A stale supplied
+session is rejected even when mandatory sessions are disabled. Sharing a bearer
+token does not authorize a request from a previous acquisition.
+
+`GET /api/v1/control` reports `session_required`, `watchdog_enabled`,
+`recovery_required`, and `recovery_reason`. Check these before enabling the live
+executor. Startup requires deliberate recovery: inspect the robot, acquire a
+session, and use the existing explicit RAPID reset procedure. The verified reset
+clears both arms' pending flags and resets the program pointer before releasing
+the gateway recovery block. A failed reset leaves that block in place.
+
+In this mode an active watchdog uses a monotonic lease deadline. Expiry,
+preemption, or release during an outstanding robot action immediately fences
+pending dispatch, latches recovery, and requests a software stop through RWS.
+The stop result is verified; failure is reported as **UNCONFIRMED**. New movement
+and ordinary RAPID start remain blocked until verified reset. An explicit reset
+waits until any watchdog stop attempt has finished. A clean release after
+completed commands does not require another reset.
+
+The final arm request flag is serialized against lease invalidation and software
+Stop; long movements do not hold the lease manager lock. Legacy socket commands,
+`wait=false` jobs, and module upload/unload are refused in this mode. Install the
+RAPID modules in a stopped maintenance deployment before enabling session fencing.
+The existing explicit `reset` with `start=true` remains a separately reviewed
+initialization action; inference recovery never starts RAPID or opens grippers.
+
+These are application safeguards, not independent robot safety controls. Gateway
+or Pi loss can prevent the software stop from reaching the controller. Validate
+the controller-side stop and physical recovery procedure before live experiments.
+The new session/watchdog tests use fake RWS controllers; they do not demonstrate
+physical stopping performance.
 
 ## Tests
 

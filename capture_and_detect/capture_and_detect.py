@@ -1,143 +1,90 @@
-"""
-Get a photo from the camera gateway, find the cups with the trained YOLO11-seg model,
-and let both YuMi arms move one cup: the left arm picks it, hands it over to the right
-arm, which turns it over and places it.
+"""Cup detection, placement grid, operator controls and browser dashboard.
 
-Every time you press Enter:
-    1. get RGB + depth (aligned to RGB) from the Robot & Camera Gateway over HTTP
-    2. YOLO11-seg -> one mask per CUP, CUP BASE and CUP HANDLE
-    3. per object: mask centre (u, v) + median depth inside the mask
-       -> camera X, Y, Z (mm) with the colour camera intrinsics
-       -> robot X, Y, Z (mm) with ../Calibration/calibration.json
-    4. save to Data/Detections/:
-           rgb_<stamp>.jpg, depth_<stamp>.png (16-bit mm), annotated_<stamp>.jpg
-           detections_<stamp>.json and latest.json   all objects of this capture
-           detections.csv                            one row per object, all captures
-           cups_<stamp>.json and cups.json           the cups and what happened to them
-           grips.csv                                 per moved cup: base diameter and where
-                                                     each gripper closed on it (grip level)
-    5. every reachable cup is moved, most certain first, each to the next free spot in
-       placing_grid.json; it stops at the first failure (the hand-over of rapid/tests/handover.py):
-           left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
-           right: open ... wait, beside the hand-over ... wait, slide in under the cup, up, grip
-                  ... wait, down, turn over, place, open, up, home
-       Both arms move at the same time and only wait for each other (the "wait"s). The right arm
-       stays home while the left one picks, so they never share the picking area.
-       With --left-only the right arm stays home: the left arm picks the cup, lifts it to
-       TRAVEL_Z, puts it back where it stood, lets go and goes home.
-
-A cup is a CUP BASE inside a detected CUP (the robot's joint was once seen as a CUP BASE).
-
-The model is picked by the device; the weights sit next to this file:
-    Westermo Lynx  -> best_ncnn_model/   (set PICKER_DEVICE=lynx in the Lynx container)
-    anything else  -> best.pt            (Raspberry Pi, development laptop)
-
-The robot is driven through the gateway's RWS API (POST /robot/rws/move|home|gripper, see
-gateway/scripts/client_template.py), so the RAPID program in rapid/ must be running
-(python rapid/rapidctl.py status). The camera gives each cup's x, y (gripper TCP, tGrip, as in
-the calibration); the heights are fixed (PICK_Z, TRAVEL_Z), since the cups stand on the table.
-The arm modules move tool0 (the flange): Arm.goto() adds GRIPPER_TCP_Z, and the fixed
-hand-over poses are flange positions.
-
-The gateway runs in strict mode and needs a token with robot.control (the operator token).
-Set it once in the terminal (never put it in this file):
-    PowerShell:  $env:GATEWAY_TOKEN = "<token>"
-    Linux:       export GATEWAY_TOKEN="<token>"
-
-Usage:
-    py capture_and_detect.py
-    py capture_and_detect.py --gateway http://169.254.125.202:8000 --conf 0.6
-    py capture_and_detect.py --left-only
+Enter / scan saves observations without movement. goto <id> verifies that cup,
+then runs the existing left-to-right handover and returns both arms home.
+hover <id> only moves the left arm above a cup. --dry-run previews the requests
+without acquiring control or moving hardware.
+Use --web for the browser UI, or --web --demo for a hardware-free demonstration.
+The terminal's --left-only mode picks, lifts and replaces a cup without a handover.
+See README.md in this directory for commands, calibration details and limitations.
 """
 
 import argparse
+import copy
 import csv
+import hashlib
 import json
+import math
 import os
-import threading
+import shlex
+import sys
 import time
-from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
 import numpy as np
-import requests
-from ultralytics import YOLO
 
-import depth_average                               # depth of several frames, mask edge left out
-
-# ================================================================
-# Settings
-# ================================================================
+from camera_client import CameraClient, CameraError
+from cup_commands import CupSession
+from cup_base_depth import cup_base_depth
+from depth_average import capture_fresh_samples, mask_depth, DEFAULT_DEPTH_FRAMES
+from detection_masks import encode_mask
+from cup_inventory import (SelectionError, atomic_json, build_inventory, normalize_offset,
+                           save_inventory)
+from robot_client import RobotClient, RobotCommandError
+from handover_plan import (CUP_Z_MIN, CUP_Z_MAX, DEFAULT_SPEED, HOME_SPEED,
+                           FLIP_SPEED, pick_position_problem)
+from placing_grid import PlacingGrid
+from placement_vision import PlacementVision, SCAN_FRAMES
+from recovery_journal import RecoveryJournal
+from language_commands import LanguageController
+from local_llm import DisabledIntentClient, OllamaIntentClient
+from operator_commands import START_COMMANDS, STOP_COMMANDS
+from terminal_controller import TerminalController
 
 HERE = Path(__file__).resolve().parent
-CALIBRATION_FILE = HERE.parent / "Calibration/calibration.json"
+CALIBRATION_FILE = HERE.parent / "calibration" / "calibration_grid.json"
 KEEP_CLASSES = ["CUP", "CUP BASE", "CUP HANDLE"]
-CUP_Z_MIN, CUP_Z_MAX = -30, 150  # robot Z (mm) of a CUP BASE on a cup standing on the table (was 10; a mug read -15)
-
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px", "robot_z_frames_mm"]
-
 GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm", "status"]
-
-# ---------------- Robot moves ----------------
-JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
-ACCELERATION = 100         # % of max acceleration (20..100)
-RAMP = 100                 # % how fast the acceleration builds up (10..100)
-HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
-HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
-LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
-FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
-PICK_SPEED = 100           # mm/s: left arm down to the cup, up with it, and to the hand-over
-FLIP_ACCELERATION = 30     # %
-
-LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
-RIGHT_DOWN = (180, 0, 0)   # right gripper straight down (as in handover.py)
-RIGHT_UP = (0, 0, 0)       # right gripper pointing up
-RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the cup over
-
-# ---------------- Left arm: picking (gripper TCP, mm) ----------------
-# The camera gives x, y; the heights are fixed because the cups stand on the table.
-GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base; 115 with the tray)
-# Test (--camera-z): grip height from each cup's own camera z (cups.json "z", CUP BASE) instead of PICK_Z.
-# Picked cups read base z ~35, so z + 35 gives the tested 70 for a typical cup.
-CAMERA_Z_OFFSET = 20       # TCP height above the cup's camera base z
-CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
-USE_CAMERA_Z = False       # set by --camera-z
-DEPTH_FRAMES = 5           # depth = pixel-by-pixel median of this many camera frames (depth_average.py)
-TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
-HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
-GRIP_MARGIN = 70           # left jaws open to the cup base diameter + this (mm)
-LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
-Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
-                           # except going down to grip (pick) or to put the cup down (place)
-X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
-Y_MIN, Y_MAX = -230, 420
-
-# ---------------- Hand-over and placing (tool0 = flange positions, mm, tuned in RobotStudio) ----
-# The left arm comes from home via LEFT_READY (straight from home, the joint move to a far cup
-# swings the hand into the table), picks the cup and holds it at HANDOVER_L. The right arm
-# waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
-# R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
-# must stay within the gateway's z limit), the right goes down again, turns the cup over
-# PLACE_ABOVE mm above the first free spot in placing_grid.json and puts it down there.
-LEFT_READY = (400, 100, 450)
-GATEWAY_Z_MAX = 700        # flange z limit set on the Pi (GATEWAY_RWS_SAFE_ZONE_MAX)
-LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
-LEFT_TOP = 690             # highest the left arm reaches at x 400, y -100 (tested: 690 DONE, 700 ERR move failed)
-# Meeting point as high as possible: the lift after letting go ends exactly at LEFT_TOP
-HANDOVER_X = 350           # meeting point distance from the robot (was 400; closer to the body)
-HANDOVER_L = (HANDOVER_X, -100, LEFT_TOP - LEFT_LIFT)
-R_VIA = (300, -300, 250)   # further out, higher and 50 mm right: pulls the elbow away from the tray
-                           # (was (200, -250, 200): elbow hit the tray; (200, -250, 350) hit itself)
-R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)   # same offset as the tested pair
-R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
-R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
-PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
-PLACE_ABOVE = 80                             # mm above the place spot: the cup is turned over here
+HELP = """Commands:
+  start               Scan now and preview a pick-all batch; then confirm it.
+  stop / halt         Block further jobs and request a software stop of both arms.
+  status              Show application state without contacting the robot.
+  Enter / scan        Detect and save cups; no robot movement.
+  list                Show cups, saved XYZ, and the corrected hover target.
+  show 2              Show all stored information for cup 2.
+  goto 2              Verify cup 2; pick with left, hand to right, place it,
+                      then finish with both arms home.
+  hover 2             Verify cup 2; move the left arm above it without gripping.
+  goto all            Preview a batch of available cups, limited by free slots.
+  save cup 2 as mug    Save a named visual reference; no movement.
+  saved cups          List saved references.
+  pick saved mug      Scan, match the reference, then require confirmation (--llm).
+  forget saved mug    Remove that saved reference; no movement.
+  confirm <code>      Execute the displayed batch or language proposal once.
+  cancel              Discard a proposal; does not stop an active movement.
+  reset               Acknowledge checking the robot after an unconfirmed move.
+                      Sends nothing. A new scan is still required.
+  help                Show this help.
+  q / quit            Exit; request Stop first if a command is running.
+IDs belong to one scan and may change after scanning again.
+Stop remains responsive while a command runs. A software stop depends on the
+gateway and controller; use the robot's physical emergency stop when needed.
+After Stop, inspect/recover using the robot controls, then reset and scan.
+Start never restarts RAPID or resumes an interrupted movement.
+"""
+LANGUAGE_HELP = """Local language mode:
+  Type a sentence, for example: pick cup two / hover above the rightmost cup.
+  A movement proposal shows a cup ID and a one-use confirmation code.
+  confirm <code>      Execute that exact proposal through the existing checks.
+  cancel             Discard a pending proposal; does not stop a moving robot.
+  Exact terminal commands (scan, goto 2, hover 2, reset, etc.) still work directly.
+Left/right refer to the numbered camera image. Use saved names for visual cup
+matching; arbitrary color selectors and gestures are not supported.
+"""
 
 
 def log(*parts):
@@ -160,323 +107,6 @@ def load_token():
     return token
 
 
-# ================================================================
-# Gateway client
-# ================================================================
-
-class Gateway:
-    """HTTP client for the Robot & Camera Gateway (strict mode: bearer token)."""
-
-    def __init__(self, url, token):
-        self.api = url.rstrip("/") + "/api/v1"
-        self.headers = {"Authorization": f"Bearer {token}"}
-
-    def get(self, path):
-        """GET; stop with a clear message on auth/connection errors."""
-        try:
-            r = requests.get(self.api + path, headers=self.headers, timeout=15)
-        except requests.RequestException as e:
-            raise SystemExit(f"Cannot reach the gateway at {self.api}: {e}")
-        if r.status_code in (401, 403):
-            raise SystemExit(f"Gateway refused the token ({r.status_code}): {r.text}")
-        r.raise_for_status()
-        return r
-
-    def post(self, path, timeout, body=None):
-        return requests.post(self.api + path, headers=self.headers, json=body, timeout=timeout)
-
-    def intrinsics(self):
-        """Check the camera is connected; return the colour camera's {fx, fy, cx, cy}."""
-        status = self.get("/camera/status").json()
-        if not status.get("connected"):
-            raise SystemExit(f"The gateway is running but its camera is not connected: {status}")
-        K = self.get("/camera/intrinsics").json()
-        return {name: K[name] for name in ("fx", "fy", "cx", "cy")}
-
-    def frames(self, tries=5):
-        """Latest RGB (BGR, HxWx3) + depth (uint16 mm, HxW) from the same camera frame."""
-        for _ in range(tries):
-            r_rgb, r_depth = self.get("/camera/rgb"), self.get("/camera/depth")
-            if r_rgb.headers["X-Frame-Sequence"] == r_depth.headers["X-Frame-Sequence"]:
-                rgb = frame_array(r_rgb, np.uint8, 3).transpose(1, 2, 0).copy()   # planar BGR
-                return rgb, frame_array(r_depth, np.uint16)[0]
-            # a new frame arrived in between - try again
-        raise RuntimeError("Could not get a matching RGB + depth pair from the gateway")
-
-    @contextmanager
-    def control(self):
-        """Hold robot control for the with-block: the lease lasts 5 s, so a thread
-        renews it every 2 s; it is released at once at the end."""
-        r = self.post("/control/acquire", timeout=10)
-        if r.status_code != 200:
-            raise SystemExit(f"Cannot take robot control ({r.status_code}): {r.text}")
-        stop = threading.Event()
-
-        def renew():
-            while not stop.wait(2):
-                try:
-                    self.post("/control/renew", timeout=5).raise_for_status()
-                except requests.RequestException as e:
-                    log(f"  lease renew failed: {e}")
-
-        threading.Thread(target=renew, daemon=True).start()
-        try:
-            yield
-        finally:
-            stop.set()
-            try:
-                self.post("/control/release", timeout=5)
-            except requests.RequestException:
-                pass                               # the lease runs out by itself after 5 s
-
-    def robot_job(self, arm, path, body):
-        """POST one job to /robot/rws/<path> and wait until the arm has done it.
-        True if the robot reports DONE; prints the reply either way."""
-        try:
-            r = self.post(f"/robot/rws/{path}", timeout=JOB_TIMEOUT, body={"arm": arm, **body})
-        except requests.RequestException as e:
-            log(f"    {arm}: {path} {body} -> {e}")
-            return False
-        # 200: {"accepted", "message"}; 409 busy / no lease / RAPID stopped, 503 unreachable, 504 timeout
-        reply = r.json()["message"] if r.status_code == 200 else f"HTTP {r.status_code}: {r.text}"
-        log(f"    {arm}: {path} {body} -> {reply}")
-        return reply == "DONE"
-
-
-def frame_array(r, dtype, planes=1):
-    """Raw frame bytes -> (planes, H, W) array, sized from the X-Frame-* headers."""
-    w, h = int(r.headers["X-Frame-Width"]), int(r.headers["X-Frame-Height"])
-    return np.frombuffer(r.content, dtype).reshape(planes, h, w)
-
-
-# ================================================================
-# Robot
-# ================================================================
-
-class RobotError(RuntimeError):
-    pass
-
-
-class Arm:
-    """One YuMi arm. Every method waits until the arm is done and raises RobotError
-    if it fails, or if `abort` is set (the other arm failed)."""
-
-    def __init__(self, gateway, name, abort, offset=(0, 0, 0)):
-        self.gateway = gateway
-        self.name = name
-        self.abort = abort
-        self.offset = offset
-        self.last = None             # last move (flange, rotation), for going up before home
-
-    def job(self, path, body):
-        if self.abort.is_set():
-            raise RobotError("the other arm failed")
-        if not self.gateway.robot_job(self.name, path, body):
-            raise RobotError(f"{self.name} {path} failed")
-
-    def move(self, flange, rotation, speed=SPEED, acceleration=ACCELERATION, pick=False):
-        """tool0 (the flange) to (x, y, z) mm with rotation (rx, ry, rz) degrees.
-        Refused outside z Z_MIN..GATEWAY_Z_MAX; pick=True allows lower (gripping / putting down)."""
-        (x, y, z), (rx, ry, rz) = flange, rotation
-        if z > GATEWAY_Z_MAX or (z < Z_MIN and not pick):
-            raise RobotError(f"{self.name} move to z {z} refused: outside z {Z_MIN}..{GATEWAY_Z_MAX}")
-        self.job("move", {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz,
-                          "speed": speed, "acceleration": acceleration, "ramp": RAMP})
-        self.last = (flange, rotation)
-
-    def goto(self, x, y, z, rz=LEFT_DOWN[2], speed=SPEED, pick=False):
-        """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
-        at height z (robot mm), gripper down and turned to rz degrees about the vertical:
-        the flange is GRIPPER_TCP_Z above the TCP. pick=True: going down to grip (may go below Z_MIN)."""
-        ox, oy, _ = self.offset
-        rotation = (LEFT_DOWN[0], LEFT_DOWN[1], rz)
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), rotation, speed, pick=pick or z == PICK_Z)
-
-    def gripper(self, action):
-        """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
-        self.job("gripper", {"action": action})
-
-    def open_left_to(self, aperture):
-        """Left jaws to a gap of aperture mm (limited to what they can do); None = fully open."""
-        if aperture is None:
-            self.gripper("open")
-            return
-        position = min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25)
-        self.job("gripper", {"action": "move", "position": round(position, 1)})
-
-    def grip_level(self):
-        """Where the fingers are now, mm on the SmartGripper's scale (0 closed .. 25 open);
-        right after a grip that is how far it closed on the cup. None if the gateway
-        cannot tell (no SmartGripper, older gateway); the job goes on either way."""
-        try:
-            r = requests.get(f"{self.gateway.api}/robot/arms/{self.name}/gripper",
-                             headers=self.gateway.headers, timeout=10)
-        except requests.RequestException as e:
-            log(f"    {self.name}: grip level unknown ({e})")
-            return None
-        if r.status_code != 200:
-            log(f"    {self.name}: grip level unknown (HTTP {r.status_code}: {r.text})")
-            return None
-        level = r.json()["position"]
-        log(f"    {self.name}: grip level {level} mm")
-        return level
-
-    def home(self):
-        """Straight up as high as the arm reaches there (HOME_UP_Z, else 50 mm lower each try;
-        an unreachable target does not move the arm), the left arm then sideways to LEFT_HOME_Y,
-        then home (the home move swings the whole arm)."""
-        if self.last:
-            (x, y, z), rotation = self.last
-            for up in range(HOME_UP_Z, int(z), -50):
-                try:
-                    self.move((x, y, up), rotation)            # up
-                    z = up
-                    break
-                except RobotError:
-                    if self.abort.is_set():
-                        raise
-                    log(f"    {self.name}: z {up} out of reach here, trying lower")
-            if self.name == "left" and y < LEFT_HOME_Y:
-                self.move((x, LEFT_HOME_Y, z), rotation)       # then left, away from the right arm
-        self.job("home", {"speed": HOME_SPEED, "acceleration": ACCELERATION, "ramp": RAMP})
-
-
-class Handover:
-    """Moves one cup with both arms at once; they only wait for each other at the hand-over."""
-
-    def __init__(self, left, right, abort):
-        self.left, self.right, self.abort = left, right, abort
-        self.left_has_cup = threading.Event()      # left gripped the cup and left the picking area
-        self.at_handover = threading.Event()       # left holds the cup at HANDOVER_L
-        self.right_has_cup = threading.Event()     # right closed on the rim
-        self.left_clear = threading.Event()        # left let go and moved up
-        self.right_away = threading.Event()        # right took the cup away from the hand-over
-        self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup,
-                       self.left_clear, self.right_away)
-
-    def run(self, cup, left_only=False, place=None):
-        """True if the cup was placed. Ctrl+C stops both arms after their current job.
-        left_only: the left arm picks the cup, lifts it and puts it back, no hand-over.
-        place: the place spot from placing_grid.json (needed for the hand-over).
-        Sets cup["grip_left_mm"] and cup["grip_right_mm"]: where each gripper closed
-        on the cup (None if it did not get that far or the gateway cannot tell)."""
-        for event in self.events:
-            event.clear()
-        cup["grip_left_mm"] = None
-        self.grip_right_mm = None
-        jobs = [(self._pick_only_job, (cup,))] if left_only else \
-               [(self._left_job, (cup,)), (self._right_job, (place,))]
-        arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
-                for job, args in jobs]
-        for arm in arms:
-            arm.start()
-        try:
-            while any(arm.is_alive() for arm in arms):
-                arms[0].join(0.2)                  # join with a timeout keeps Ctrl+C working
-        except KeyboardInterrupt:
-            log("\nStopped (Ctrl+C). An arm that is moving finishes its current move.")
-            self.abort.set()
-            raise
-        cup["grip_right_mm"] = self.grip_right_mm
-        return not self.abort.is_set()
-
-    @staticmethod
-    def pick_z(cup):
-        """Grip height: PICK_Z, or with --camera-z the cup's camera z + CAMERA_Z_OFFSET (not below CAMERA_Z_FLOOR)."""
-        if not USE_CAMERA_Z:
-            return PICK_Z
-        z = round(cup["z"] + CAMERA_Z_OFFSET, 1)
-        log(f"    camera z: base {cup['z']} + {CAMERA_Z_OFFSET} = grip at {z} (fixed would be {PICK_Z})")
-        if z < CAMERA_Z_FLOOR:
-            log(f"    camera z {z} below the floor {CAMERA_Z_FLOOR}: using {CAMERA_Z_FLOOR}")
-            z = CAMERA_Z_FLOOR
-        return z
-
-    def _pick(self, cup):
-        x, y = cup["x"], cup["y"]                  # grip height: PICK_Z, or the cup's camera z (--camera-z)
-        rz = cup.get("rz", LEFT_DOWN[2])           # jaws at 90 degrees to the handle (set_grip_rotation)
-        z = self.pick_z(cup)
-        cup["pick_z"] = z
-        arm = self.left
-        arm.gripper("grip")                        # closed while it travels
-        arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
-        arm.goto(x, y, TRAVEL_Z, rz)               # above the cup, jaws turned to the handle
-        arm.open_left_to(cup.get("aperture"))      # only here, right above the cup
-        arm.goto(x, y, z, rz, PICK_SPEED, pick=True)   # slow down to the cup
-        arm.gripper("grip")
-        cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
-        arm.goto(x, y, TRAVEL_Z, rz, PICK_SPEED)   # slow up with the cup
-
-    def _pick_only_job(self, cup):
-        arm = self.left
-        self._pick(cup)
-        arm.goto(cup["x"], cup["y"], cup.get("pick_z", PICK_Z), cup.get("rz", LEFT_DOWN[2]),
-                 pick=True)                        # put it back where it stood
-        arm.gripper("open")
-        arm.goto(cup["x"], cup["y"], TRAVEL_Z, cup.get("rz", LEFT_DOWN[2]))
-        #arm.gripper("grip")                        # closed on the way home
-        #arm.home()                                 # up first, then home
-
-    def _left_job(self, cup):
-        arm = self.left
-        self._pick(cup)
-        self.left_has_cup.set()                    # -> right: come to the hand-over
-        arm.move(HANDOVER_L, LEFT_DOWN, PICK_SPEED)   # slow to the hand-over, holding the cup
-        self.at_handover.set()                     # -> right: come and take it
-        self._wait_for(self.right_has_cup)
-        arm.gripper("open")
-        arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
-        self.left_clear.set()                      # -> right: you can pull it down
-        #self._wait_for(self.right_away)            # the way home could cross the right arm
-        #arm.gripper("grip")                        # closed on the way home
-        #arm.home()                               # out of the camera view for the next capture
-
-    def _right_job(self, place):
-        arm = self.right
-        spot = (place["x"], place["y"], place["z"])
-        above = (place["x"], place["y"], place["z"] + PLACE_ABOVE)
-        arm.gripper("grip")                        # closed while it travels
-        self._wait_for(self.left_has_cup)          # stay home, out of the picking area
-        arm.move(R_VIA, RIGHT_UP)
-        arm.move(R_BESIDE, RIGHT_UP)               # beside the hand-over, just under the rim height
-        self._wait_for(self.at_handover)
-        arm.gripper("open")                        # only here, just before it takes the cup
-        arm.move(R_BELOW, RIGHT_UP)                # slide in under the cup
-        arm.move(R_TAKE, RIGHT_UP)                 # the last bit straight up
-        arm.gripper("grip")
-        self.grip_right_mm = arm.grip_level()      # on the rim; recorded in grips.csv
-        self.right_has_cup.set()                   # -> left: let go
-        self._wait_for(self.left_clear)
-        arm.move(R_BELOW, RIGHT_UP)
-        # turn the cup over slowly and in two steps (the cup is heavy for the right arm)
-        half = tuple((a + b) / 2 for a, b in zip(R_BELOW, above))
-        arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
-        arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
-        #self.right_away.set()                      # -> left: you can go home
-        arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
-        arm.gripper("open")
-        arm.move(above, RIGHT_DOWN)
-        #arm.gripper("grip")                        # closed on the way home
-        #arm.home()                               # out of the picking area for the next cup
-
-    def _wait_for(self, event):
-        """Wait for the other arm, but stop if it failed."""
-        while not event.wait(0.1):
-            if self.abort.is_set():
-                raise RobotError("the other arm failed")
-
-    def _guarded(self, job, *args):
-        try:
-            job(*args)
-        except Exception as e:
-            log(f"  STOP: {e}")
-            self.abort.set()
-
-
-# ================================================================
-# Detection
-# ================================================================
-
 def load_model():
     """NCNN on the Lynx (the Lynx container sets PICKER_DEVICE=lynx), best.pt elsewhere."""
     lynx = os.environ.get("PICKER_DEVICE", "").lower() == "lynx"
@@ -485,18 +115,28 @@ def load_model():
         raise SystemExit(f"Model not found: {path}\n"
                          f"Put best.pt and best_ncnn_model/ in the same folder as capture_and_detect.py.")
     log(f"Loading {path.name} ...")
-    return YOLO(str(path), task="segment")
+    from ultralytics import YOLO
+    return YOLO(str(path), task="segment"), path
 
 
 class Calibration:
-    """Camera mm -> robot mm:  robot = scale * R @ camera + t"""
+    """Camera mm -> saved robot mm; the movement planner applies the XY tag offset."""
 
     def __init__(self, path):
-        with open(path) as f:
-            cal = json.load(f)
-        self.scale, self.R, self.t = cal["scale"], np.array(cal["R"]), np.array(cal["t"])
-        # tag centre minus gripper TCP (robot mm); Arm.goto() adds its x, y to every pick move
-        self.offset = tuple(cal.get("tag_offset", (0, 0, 0)))
+        self.path = Path(path).resolve()
+        raw = self.path.read_bytes()
+        self.digest = hashlib.sha256(raw).hexdigest()
+        cal = json.loads(raw)
+        self.scale = cal["scale"]
+        self.R, self.t = np.array(cal["R"], dtype=float), np.array(cal["t"], dtype=float)
+        self.offset = normalize_offset(cal.get("tag_offset", (0, 0, 0)))
+        if (self.R.shape != (3, 3) or self.t.shape != (3,) or not np.isfinite(self.R).all()
+                or not np.isfinite(self.t).all() or not math.isfinite(self.scale) or self.scale <= 0):
+            raise ValueError("Invalid calibration matrix, translation, or scale")
+
+    def ensure_unchanged(self):
+        if hashlib.sha256(self.path.read_bytes()).hexdigest() != self.digest:
+            raise SelectionError("Calibration file changed. Restart and scan again.")
 
     def to_robot(self, x, y, z):
         return tuple(self.scale * self.R @ np.array([x, y, z]) + self.t)
@@ -510,9 +150,8 @@ class Detector:
         self.classes = [i for i, n in model.names.items() if n in KEEP_CLASSES]
         log("Detecting:", [model.names[i] for i in self.classes])
 
-    def analyse(self, rgb, depth, depths=()):
-        """Run YOLO on one frame; return (list of objects, annotated image).
-        depth: the averaged depth used; depths: the single frames it came from (Z per frame is saved too)."""
+    def analyse(self, rgb, depth):
+        """Run YOLO on one frame; return (list of objects, annotated image)."""
         result = self.model.predict(rgb, conf=self.conf, classes=self.classes,
                                     retina_masks=True, verbose=False)[0]
         objects, keep, boxes = [], [], []
@@ -522,7 +161,10 @@ class Detector:
             if mask.any():
                 keep.append(j)
                 boxes.append(box.xyxy[0].tolist())
-                objects.append(self.describe(self.model.names[int(box.cls)], float(box.conf), mask, depth, depths))
+                obj = self.describe(self.model.names[int(box.cls)], float(box.conf), mask, depth)
+                obj["detection_id"] = j
+                obj["bbox_xyxy"] = [round(float(value), 1) for value in box.xyxy[0].tolist()]
+                objects.append(obj)
         mark_cup_bases(objects, boxes)
 
         annotated = result[keep].plot() if keep else rgb.copy()
@@ -531,35 +173,53 @@ class Detector:
                            cv2.MARKER_CROSS, 25, 3)
         return objects, annotated
 
-    def to_robot(self, u, v, z):
-        """Pixel (u, v) at camera distance z -> (camera x, y) and robot (x, y, z), mm (pinhole model)."""
-        x = (u - self.K["cx"]) * z / self.K["fx"]
-        y = (v - self.K["cy"]) * z / self.K["fy"]
-        return x, y, self.calibration.to_robot(x, y, z)
-
-    def describe(self, name, confidence, mask, depth, depths=()):
-        """Mask centre (u, v), median depth inside the mask -> camera and robot mm.
-        depths: the single frames behind the averaged depth; their Z is saved per frame."""
+    def describe(self, name, confidence, mask, depth):
+        """Mask centre + depth -> coordinates; CUP BASE requires reliable core depth."""
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
-        diameter_px = 2 * np.sqrt(mask.sum() / np.pi)   # of a circle with the mask's area
-        z_frames, robot_z_frames = [], []          # the same object in each single frame
-        for d in depths:
-            zf = depth_average.mask_depth(d, mask)  # median inside the mask, its edge left out
-            z_frames.append(mm(zf))
-            robot_z_frames.append(mm(self.to_robot(u, v, zf)[2][2]) if zf else None)
-        valid = [zf for zf in z_frames if zf]
-        if valid:                                  # Z = mean of the frames (robot Z then = mean of robot_z_frames)
-            z = sum(valid) / len(valid)
-        else:                                      # no single frames given: the depth image as it is
-            z = depth_average.mask_depth(depth, mask)
+        quality = None
+        if name == "CUP BASE":
+            z, quality = cup_base_depth(mask, depth)
+        else:
+            z = mask_depth(depth, mask)
+        samples = getattr(self, "_depth_samples", ())
+        z_frames, robot_z_frames = [], []
+        qualities = []
+        for sample in samples:
+            if name == "CUP BASE":
+                value, sample_quality = cup_base_depth(mask, sample)
+                qualities.append(sample_quality)
+            else:
+                value = mask_depth(sample, mask)
+            z_frames.append(value)
+            robot_z_frames.append(None if value is None else mm(self.calibration.to_robot(
+                (u - self.K["cx"]) * value / self.K["fx"],
+                (v - self.K["cy"]) * value / self.K["fy"], value)[2]))
+        if samples:
+            # Every base core must be observed. An average must not fill a
+            # missing latest core or silently turn moving/background depth into
+            # a new pick target. Keep the latest raw depth for grid assessment.
+            valid = [value for value in z_frames if value is not None]
+            stable = len(valid) == len(samples) and max(valid) - min(valid) <= 20.0
+            z = float(np.mean(valid)) if stable else None
+            if quality is not None:
+                quality = dict(quality, method="temporal_interior_mean",
+                               sample_count=len(samples), frame_quality=qualities,
+                               valid=bool(stable and all(q["valid"] for q in qualities)))
+                quality["reason"] = ("All frame cores have stable positive depth." if quality["valid"] else
+                                     "CUP BASE depth is missing or varies by more than 20 mm across frames.")
+                if not quality["valid"]:
+                    z = None
 
         x = y = None
         robot = (None, None, None)
-        if z:
-            x, y, robot = self.to_robot(u, v, z)
-        diameter = diameter_px * z / self.K["fx"] if z else None   # pixels -> mm at that depth
-        return {
+        if z:                                      # pinhole model
+            x = (u - self.K["cx"]) * z / self.K["fx"]
+            y = (v - self.K["cy"]) * z / self.K["fy"]
+            robot = self.calibration.to_robot(x, y, z)
+        diameter_px = 2 * math.sqrt(int(mask.sum()) / math.pi)
+        diameter = diameter_px * z / self.K["fx"] if z else None
+        result = {
             "class": name,
             "confidence": round(confidence, 3),
             "x_mm": mm(x),
@@ -571,10 +231,15 @@ class Detector:
             "robot_y_mm": mm(robot[1]),
             "robot_z_mm": mm(robot[2]),
             "mask_area_px": int(mask.sum()),
+            "segmentation": encode_mask(mask),
             "diameter_mm": mm(diameter),
-            "z_frames_mm": z_frames,               # camera distance in each single frame
-            "robot_z_frames_mm": robot_z_frames,   # robot Z in each single frame (robot_z_mm = from the averaged depth)
         }
+        if samples:
+            result["z_frames_mm"] = [mm(value) for value in z_frames]
+            result["robot_z_frames_mm"] = robot_z_frames
+        if quality is not None:
+            result["depth_quality"] = quality
+        return result
 
 
 def mm(value):
@@ -603,251 +268,516 @@ def mark_cup_bases(objects, boxes):
         o["is_cup"] = o["in_cup"] or o["near_handle"] or o["cup_height"]
 
 
-def set_grip_rotation(cups, objects):
-    """Set each cup's "rz" so the jaws close at 90 degrees to the line cup centre -> handle.
-    At LEFT_DOWN the jaws close along robot X. The jaws are interchangeable, so the turn stays
-    within +-90 degrees of LEFT_DOWN. A cup with no handle of its own keeps LEFT_DOWN."""
-    closest = {}                                   # cup id -> (distance, handle x, handle y)
-    for o in objects:
-        if o["class"] != "CUP HANDLE" or o["robot_x_mm"] is None or not cups:
-            continue
-        hx, hy = o["robot_x_mm"], o["robot_y_mm"]
-        dist, cup = min(((np.hypot(hx - c["x"], hy - c["y"]), c) for c in cups), key=lambda d: d[0])
-        if dist <= HANDLE_MAX_DIST and dist < closest.get(cup["id"], (np.inf,))[0]:
-            closest[cup["id"]] = (dist, hx, hy)
-    for cup in cups:
-        cup["rz"] = LEFT_DOWN[2]
-        cup["has_handle"] = cup["id"] in closest
-        if cup["has_handle"]:
-            _, hx, hy = closest[cup["id"]]
-            angle = np.degrees(np.arctan2(hy - cup["y"], hx - cup["x"]))
-            cup["rz"] = round(float(LEFT_DOWN[2] + angle % 180 - 90), 1)
-
-
-def find_cups(objects):
-    """Every CUP BASE that is a cup (see mark_cup_bases) = one cup, most certain first.
-    Cups outside X_MIN..X_MAX, Y_MIN..Y_MAX get status "out of reach"."""
-    cups = []
-    for o in sorted(objects, key=lambda o: o["confidence"], reverse=True):
-        if o["class"] != "CUP BASE" or o["robot_x_mm"] is None:
-            continue
-        if not o["is_cup"]:
-            log(f"  CUP BASE at X={o['robot_x_mm']} Y={o['robot_y_mm']} Z={o['robot_z_mm']}: no CUP "
-                f"around it, no handle next to it, not at cup height - ignored (false detection?)")
-            continue
-        x, y = o["robot_x_mm"], o["robot_y_mm"]
-        reachable = X_MIN <= x <= X_MAX and Y_MIN <= y <= Y_MAX
-        diameter = o["diameter_mm"]
-        cups.append({"id": len(cups) + 1, "confidence": o["confidence"], "x": x, "y": y,
-                     "z": o["robot_z_mm"], "z_frames": o.get("robot_z_frames_mm", []),
-                     "diameter": diameter,
-                     "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
-                     "status": "waiting" if reachable else "out of reach"})
-    set_grip_rotation(cups, objects)
-    return cups
-
-
-def print_objects(objects):
-    for o in objects:
-        log(f"   {o['class']:<11} {o['confidence']:.2f}")
-        if not o["z_mm"]:
-            log("      no depth")
-            continue
-        log(f"      YOLO (camera):     X={o['x_mm']:7.1f}  Y={o['y_mm']:7.1f}  Z={o['z_mm']:7.1f} mm")
-        log(f"      calibrated (robot): X={o['robot_x_mm']:7.1f}  Y={o['robot_y_mm']:7.1f}  Z={o['robot_z_mm']:7.1f} mm")
-        if len(o.get("robot_z_frames_mm", [])) > 1:
-            log(f"      robot Z per frame: {o['robot_z_frames_mm']} -> averaged {o['robot_z_mm']}")
-
-
-# ================================================================
-# Saving
-# ================================================================
-
 class CaptureStore:
-    """Everything a capture produces, written into one folder (Data/Detections/)."""
+    """Save raw detections and schema-v2 cup observations without moving the robot."""
 
     def __init__(self, folder):
-        self.folder = Path(folder)
+        self.folder = Path(folder).resolve()
         self.folder.mkdir(parents=True, exist_ok=True)
+        self._grip_records = set()
 
-    def save_capture(self, stamp, rgb, depth, annotated, objects, K):
-        cv2.imwrite(str(self.folder / f"rgb_{stamp}.jpg"), rgb)
-        cv2.imwrite(str(self.folder / f"depth_{stamp}.png"), depth)
-        cv2.imwrite(str(self.folder / f"annotated_{stamp}.jpg"), annotated)
-        record = {"capture": stamp, "units": "mm", "intrinsics": K, "objects": objects}
-        self._write_json(record, f"detections_{stamp}.json", "latest.json")
+    def save(self, inventory):
+        save_inventory(self.folder, inventory)
+        for cup in inventory.get("cups", []):
+            verification = cup.get("last_verification", {})
+            execution = cup.get("execution", {})
+            if (cup.get("status") not in {"placed", "replaced", "movement_unconfirmed"}
+                    or execution.get("action") != "goto"):
+                continue
+            key = (inventory["capture"], cup["id"], verification.get("capture"), cup["status"])
+            if key in self._grip_records:
+                continue
+            record = {"capture": inventory["capture"], "cup": cup["id"],
+                      "diameter_mm": verification.get("grip_geometry", {}).get("diameter"),
+                      "grip_left_mm": cup.get("grip_left_mm"),
+                      "grip_right_mm": cup.get("grip_right_mm"), "status": cup["status"]}
+            try:
+                path = self.folder / "grips.csv"
+                new_file = not path.exists() or path.stat().st_size == 0
+                with path.open("a", newline="", encoding="utf-8") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=GRIP_FIELDS)
+                    if new_file:
+                        writer.writeheader()
+                    writer.writerow(record)
+                self._grip_records.add(key)
+            except OSError as error:
+                # Motion and recovery records above remain authoritative. A
+                # telemetry export must never retry an already completed move.
+                log(f"Could not append optional gripper telemetry: {error}")
+
+    def save_capture(self, inventory, rgb, depth, annotated, objects, K, purpose):
+        stamp = inventory["capture"]
+        for kind, array in (("rgb", rgb), ("depth", depth), ("annotated", annotated)):
+            if not cv2.imwrite(inventory["images"][kind], array):
+                raise OSError(f"Could not save {inventory['images'][kind]}")
+        record = {"capture": stamp, "units": "mm", "purpose": purpose, "intrinsics": K,
+                  "frame": inventory["frame"], "calibration_sha256": inventory["calibration_sha256"],
+                  "tag_offset_mm": inventory["tag_offset_mm"], "objects": objects}
+        atomic_json(self.folder / f"detections_{stamp}.json", record)
+        if purpose == "scan":
+            atomic_json(self.folder / "latest.json", record)
         self._append_csv(objects, stamp)
-
-    def save_cups(self, cups, stamp):
-        self._write_json({"capture": stamp, "units": "mm", "cups": cups},
-                         f"cups_{stamp}.json", "cups.json")
-
-    def save_grip(self, cup, stamp):
-        """One row per moved cup in grips.csv: its base diameter and where each gripper
-        closed on it, to work out how far to open the grippers for a given cup."""
-        path = self.folder / "grips.csv"
-        new_file = not path.exists()
-        with open(path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=GRIP_FIELDS)
-            if new_file:
-                writer.writeheader()
-            writer.writerow({"capture": stamp, "cup": cup["id"], "diameter_mm": cup["diameter"],
-                             "grip_left_mm": cup.get("grip_left_mm"),
-                             "grip_right_mm": cup.get("grip_right_mm"), "status": cup["status"]})
-
-    def _write_json(self, data, *names):
-        for name in names:
-            with open(self.folder / name, "w") as f:
-                json.dump(data, f, indent=2)
+        save_inventory(self.folder, inventory, latest=purpose == "scan")
 
     def _append_csv(self, objects, stamp):
-        """One row per object (an old file with other columns is renamed and kept).
-        If detections.csv is open elsewhere (Excel locks it), the rows go to detections_<stamp>.csv
-        instead: the CSV is only a log, it must not stop the run."""
         path = self.folder / "detections.csv"
         try:
             if path.exists():
-                with open(path) as f:
-                    header = f.readline().strip()
-                if header != ",".join(CSV_FIELDS):     # renamed after closing it (Windows refuses an open file)
+                with path.open() as stream:
+                    header = stream.readline().strip()
+                if header != ",".join(CSV_FIELDS):
                     path.rename(self.folder / f"detections_old_{stamp}.csv")
             self._write_rows(path, objects, stamp)
         except PermissionError:
             spare = self.folder / f"detections_{stamp}.csv"
-            log(f"  {path.name} is open in another program (Excel?) - rows saved to {spare.name}")
+            log(f"{path.name} is locked; saving these rows to {spare.name}")
             self._write_rows(spare, objects, stamp)
 
     @staticmethod
     def _write_rows(path, objects, stamp):
         new_file = not path.exists()
-        with open(path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
+        with path.open("a", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS, extrasaction="ignore")
             if new_file:
                 writer.writeheader()
-            writer.writerows({"capture": stamp, **o} for o in objects)
+            writer.writerows({"capture": stamp, **obj} for obj in objects)
 
 
-# ================================================================
-# Main loop
-# ================================================================
-
-class Picker:
-    """Capture, detect, save, then move all reachable cups one by one - once per Enter."""
-
-    def __init__(self, gateway, detector, handover, store, left_only=False):
-        self.gateway, self.detector, self.handover, self.store = gateway, detector, handover, store
-        self.left_only = left_only
-        self.captures = 0
-
-    def run(self):
-        log(f"Ready. Saving to: {self.store.folder}")
+class CaptureService:
+    def __init__(self, camera, detector, store, weights, *, placing_grid=None,
+                 grid_table_z=0.0, grid_cell_size=80.0, table_reference_path=None, depth_frames=1):
+        if type(depth_frames) is not int or not 1 <= depth_frames <= 9:
+            raise ValueError("depth_frames must be an integer from 1 to 9")
+        self.depth_frames = depth_frames
+        self.camera, self.detector, self.store = camera, detector, store
+        self.weights = Path(weights)
+        self.placing_grid = placing_grid
+        self._default_grid_cell_size = grid_cell_size
+        self.table_reference_path = (Path(table_reference_path) if table_reference_path is not None
+                                     else placing_grid.path.with_suffix(".table-reference.json")
+                                     if placing_grid is not None else None)
+        self._table_reference_bytes = self._read_table_reference()
+        if table_reference_path is not None and self._table_reference_bytes is None:
+            raise SelectionError("The requested empty-table reference file is missing.")
         try:
-            while input("\nPress Enter to capture + detect (q + Enter to quit): ").strip().lower() != "q":
-                self.capture_once()
-        except (KeyboardInterrupt, EOFError):
-            pass
-        log(f"Done. {self.captures} captures saved.")
+            self._table_reference_value = (json.loads(self._table_reference_bytes)
+                                           if self._table_reference_bytes is not None else None)
+        except (ValueError, UnicodeError) as error:
+            raise SelectionError("Empty-table reference contains invalid JSON; rebuild it from a verified empty scan.") from error
+        if self._table_reference_bytes is not None and not isinstance(self._table_reference_value, dict):
+            raise SelectionError("The empty-table reference must be a JSON object.")
+        self.placement_vision = (PlacementVision(detector.calibration, detector.K,
+                                table_z=grid_table_z, cell_size=grid_cell_size,
+                                table_reference=self._table_reference_value)
+                                 if placing_grid is not None else None)
 
-    def capture_once(self):
-        rgb, depth, depths = depth_average.capture_averaged(self.gateway, DEPTH_FRAMES)
-        log(f"Depth: mean of {len(depths)} frame(s)")
-        t = time.perf_counter()
-        objects, annotated = self.detector.analyse(rgb, depth, depths)
-        ms = (time.perf_counter() - t) * 1000
-
-        stamp = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.captures:04d}"
-        self.store.save_capture(stamp, rgb, depth, annotated, objects, self.detector.K)
-        self.captures += 1
-        log(f"[{stamp}] {len(objects)} objects, YOLO {ms:.0f} ms")
-        print_objects(objects)
-
-        cups = find_cups(objects)
-        self.store.save_cups(cups, stamp)
-        log(f"{len(cups)} cup(s) saved to cups.json")
-        while self.move_one(cups, stamp):          # all cups of this capture, most certain first
-            pass
-        out_of_reach = sum(c["status"] == "out of reach" for c in cups)
-        if out_of_reach:
-            log(f"  {out_of_reach} cup(s) not moved: out of reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
-
-    def move_one(self, cups, stamp):
-        """Hand over the first cup that is still "waiting" (the most certain reachable one).
-        True if it was placed, False if there was none left or it failed (then stop)."""
-        cup = next((c for c in cups if c["status"] == "waiting"), None)
-        if cup is None:
-            return False
-        places, place = None, None
-        if not self.left_only:
-            places = load_places()
-            place = next((p for p in places["locations"] if not p["occupied"]), None)
-            if place is None:
-                log(f"  all place locations are occupied - empty them and set occupied to false in {PLACE_FILE.name}")
-                return False
-        what = "left arm only" if self.left_only else f"hand-over, place at location {place['id']}"
-        log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} base Ø{cup['diameter']} mm -> {what}")
-        cup["status"] = "moving"
-        self.store.save_cups(cups, stamp)
-        placed = False
+    def _read_table_reference(self):
+        if self.table_reference_path is None:
+            return None
         try:
-            with self.gateway.control():           # keep robot control for the whole sequence
-                placed = self.handover.run(cup, self.left_only, place)
+            with self.table_reference_path.open("rb") as stream:
+                value = stream.read(65537)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise SelectionError("Cannot read the empty-table reference file.") from error
+        if len(value) > 65536:
+            raise SelectionError("Empty-table reference exceeds its size limit.")
+        return value
+
+    def _check_table_reference(self):
+        if self._read_table_reference() != self._table_reference_bytes:
+            raise SelectionError("Empty-table reference changed. Restart and scan again.")
+
+    def _observe(self):
+        calibration = self.detector.calibration
+        calibration.ensure_unchanged()
+        if self.camera.intrinsics() != self.detector.K:
+            raise CameraError("Camera intrinsics changed. Restart and scan again.")
+        rgb, depth, frame, samples = capture_fresh_samples(self.camera, self.depth_frames)
+        if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.shape[:2] != (self.detector.K.get("height"), self.detector.K.get("width")):
+            raise CameraError("Image dimensions do not match the camera intrinsics.")
+        if depth.shape != rgb.shape[:2]:
+            raise CameraError("Depth dimensions do not match the aligned RGB image.")
+        started = frame["observation_started_monotonic"]
+        before = time.perf_counter()
+        analyse_observation = getattr(self.detector, "analyse_observation", None)
+        self.detector._depth_samples = samples if len(samples) > 1 else ()
+        try:
+            if callable(analyse_observation):
+                objects, annotated = analyse_observation(rgb, depth, frame)
+            else:
+                objects, annotated = self.detector.analyse(rgb, depth)
         finally:
-            cup["status"] = "placed" if placed else "failed"
-            self.store.save_cups(cups, stamp)
-            self.store.save_grip(cup, stamp)
-        if placed and place is not None:
-            place["occupied"] = True               # the next cup goes to the next free location
-            save_places(places)
-            log(f"  location {place['id']} is now occupied")
-        log(f"  cup {cup['id']}: {cup['status']}")
-        return placed
+            self.detector._depth_samples = ()
+        elapsed_ms = (time.perf_counter() - before) * 1000
+        return rgb, depth, frame, started, objects, annotated, elapsed_ms
+
+    def capture(self, purpose):
+        from inference_integration import observation_group
+        # A recovered Mac cannot replace the selected provider halfway through
+        # one multi-frame grid assessment. Failover restarts its evidence set.
+        with observation_group(self.detector):
+            return self._capture_group(purpose)
+
+    def _capture_group(self, purpose):
+        calibration = self.detector.calibration
+        self._check_table_reference()
+        snapshot, grid_error = None, None
+        if self.placing_grid is not None:
+            try:
+                snapshot = self.placing_grid.snapshot()
+                cell_size = snapshot.get("cell_size_mm", self._default_grid_cell_size)
+                if self.placement_vision.cell_size != cell_size:
+                    self.placement_vision = PlacementVision(
+                        calibration, self.detector.K, table_z=self.placement_vision.table_z,
+                        cell_size=cell_size, table_reference=self._table_reference_value)
+            except SelectionError as error:
+                grid_error = str(error)
+        observations, sequences, inference_results = [], [], []
+        count = SCAN_FRAMES if purpose == "scan" and snapshot is not None else 1
+        completed, restarts = 0, 0
+        generation = getattr(self.detector, "generation", None)
+        while completed < count:
+            rgb, depth, frame, started, objects, annotated, elapsed_ms = self._observe()
+            current_generation = getattr(self.detector, "generation", None)
+            if current_generation != generation:
+                if completed:
+                    restarts += 1
+                    if restarts > 1:
+                        raise CameraError("Inference changed repeatedly during this scan; scan again")
+                    observations, sequences, inference_results = [], [], []
+                    completed = 0
+                generation = current_generation
+            metadata = getattr(self.detector, "inference_metadata", None)
+            if metadata is not None:
+                inference_results.append(dict(metadata))
+            if snapshot is not None:
+                observations.append(self.placement_vision.assess(depth, objects, snapshot["locations"]))
+                sequences.append(frame.get("sequence"))
+            completed += 1
+            if completed < count:
+                # Only the final observation is saved. Release previous image
+                # buffers before _observe() allocates the next RGB/depth/masks;
+                # tuple assignment otherwise retains them until that call ends.
+                del rgb, depth, annotated
+        calibration.ensure_unchanged()
+        self._check_table_reference()
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + purpose
+        images = {kind: str(self.store.folder / f"{kind}_{stamp}.{extension}")
+                  for kind, extension in (("rgb", "jpg"), ("depth", "png"), ("annotated", "jpg"))}
+        inventory = build_inventory(objects, capture_id=stamp, frame=frame,
+                                    calibration_id=calibration.digest, tag_offset=calibration.offset,
+                                    gateway=self.camera.api, images=images,
+                                    model={"weights": str(self.weights), "confidence_threshold": self.detector.conf,
+                                           "inference_ms": round(elapsed_ms, 1)})
+        if inference_results:
+            inventory["model"]["inference"] = inference_results[-1]
+            inventory["model"]["observation_results"] = inference_results
+        if observations:
+            self.placement_vision.exclude_placed_cups(inventory["cups"], snapshot["locations"])
+            if purpose == "scan":
+                observation = self.placement_vision.combine(snapshot, observations, sequences)
+            else:
+                observation = {"frame_count": 1, "slots": observations[-1], "applied": False,
+                               "released_ids": [], "message": "Verification image only; placement status unchanged."}
+            inventory["placement_observation"] = observation
+            observation["cell_size_mm"] = self.placement_vision.cell_size
+            if self.placement_vision.table_reference_metadata is not None:
+                observation["table_reference"] = copy.deepcopy(self.placement_vision.table_reference_metadata)
+                observation["table_reference"]["file_sha256"] = hashlib.sha256(self._table_reference_bytes).hexdigest()
+            self.placement_vision.draw(annotated, observation["slots"])
+        elif grid_error:
+            inventory["placement_observation"] = {"frame_count": 0, "slots": [], "applied": False,
+                "released_ids": [], "message": "Placement camera check unavailable: " + grid_error}
+        for cup in inventory["cups"]:
+            u, v = cup["pixel"]["u"], cup["pixel"]["v"]
+            if u is None or v is None:
+                continue
+            label = f"Cup {cup['id']}" + (" BLOCKED" if not cup["selectable"] else "")
+            if cup["selectable"] and pick_position_problem(cup, calibration.offset):
+                label += " HOVER ONLY"
+            position = (max(0, min(int(u), annotated.shape[1] - 200)), max(25, int(v) - 15))
+            cv2.putText(annotated, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 5)
+            cv2.putText(annotated, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        (0, 255, 0) if cup["selectable"] else (0, 180, 255), 2)
+        self.store.save_capture(inventory, rgb, depth, annotated, objects, self.detector.K, purpose)
+        log(f"[{purpose}] {len(inventory['cups'])} cup candidate(s), YOLO {elapsed_ms:.0f} ms")
+        return inventory, started
 
 
-def load_places():
-    with open(PLACE_FILE) as f:
-        return json.load(f)
+def print_cups(inventory):
+    if inventory is None:
+        log("No scan in this session. Use scan first.")
+        return
+    log(f"Capture: {inventory['capture']}")
+    log(" ID  Conf     Saved robot X/Y/Z (mm)      Hover flange X/Y/Z (mm)       Status")
+    for cup in inventory["cups"]:
+        def coordinates(position):
+            return " ".join(f"{position[a]:7.1f}" if position.get(a) is not None else "      ?" for a in ("x", "y", "z"))
+        hover = cup.get("hover_target")
+        corrected = coordinates(hover["flange_mm"]) if hover else "      --       --       --"
+        confidence = f"{cup['confidence']:.2f}" if cup["confidence"] is not None else "   ?"
+        status = cup["blocked_reason"] or cup["status"]
+        if cup["selectable"]:
+            pick_problem = pick_position_problem(cup, inventory.get("tag_offset_mm", (0, 0, 0)))
+            if pick_problem:
+                status = f"hover only: {pick_problem}"
+        log(f" {cup['id']:2d}  {confidence}  {coordinates(cup)}    {corrected}    {status}")
+    if not inventory["cups"]:
+        log("No cups detected.")
+    log(f"Numbered image: {inventory['images']['annotated']}")
+    observation = inventory.get("placement_observation")
+    if observation:
+        log(observation["message"])
+        if observation.get("released_ids"):
+            log("Placement locations released:", ", ".join(map(str, observation["released_ids"])))
 
 
-def save_places(places):
-    """Same layout as the file: one location per line."""
-    lines = ",\n".join("    " + json.dumps(p) for p in places["locations"])
-    with open(PLACE_FILE, "w") as f:
-        f.write(f'{{\n  "locations": [\n{lines}\n  ]\n}}\n')
+def handle_terminal(session, line):
+    """Only explicit goto/hover with a valid cup ID can request movement."""
+    parts = shlex.split(line)
+    command, values = (parts[0].lower(), parts[1:]) if parts else ("scan", [])
+    if command in ("q", "quit", "exit") and not values:
+        return False
+    if command in ("scan", "capture") and not values:
+        print_cups(session.scan())
+    elif command == "list" and not values:
+        print_cups(session.inventory)
+    elif command == "help" and not values:
+        log(HELP)
+    elif command == "reset" and not values:
+        session.acknowledge_recovery()
+        log("Recovery acknowledged. No command sent. Use scan before selecting another cup.")
+    elif command in ("show", "goto", "hover") and len(values) == 1:
+        try:
+            cup_id = int(values[0])
+        except ValueError:
+            raise SelectionError("Use a numeric cup ID, e.g. goto 2.") from None
+        if session.inventory is None:
+            raise SelectionError("Use scan first.")
+        if command == "show":
+            matches = [cup for cup in session.inventory["cups"] if cup["id"] == cup_id]
+            if not matches:
+                raise SelectionError(f"Cup {cup_id} is not in the current scan.")
+            log(json.dumps(matches[0], indent=2))
+        else:
+            log(f"Rechecking cup {cup_id} against a new camera observation ...")
+            session.execute_selection(action=command, capture_id=session.inventory["capture"], cup_id=cup_id)
+            if session.robot.dry_run:
+                log("Preview complete; no robot commands sent.")
+            elif command == "goto":
+                log("Robot reported the cup replaced and the left arm home. Scan again before another cup."
+                    if session.left_only else
+                    "Robot reported the pick, handover and placement complete; both home poses checked. Scan again before another cup.")
+            else:
+                log("Robot reported DONE above the selected cup. Scan again before another move.")
+    else:
+        raise SelectionError("Unknown command. Use scan, list, show <id>, goto <id>, hover <id>, reset, help, or quit.")
+    return True
 
 
-def main():
-    global USE_CAMERA_Z, DEPTH_FRAMES
-    parser = argparse.ArgumentParser(description="Capture, detect cups and hand one over between the arms")
+def positive(value):
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return value
+
+
+def handle_input(session, line, language=None):
+    """Keep operator commands separate from untrusted language interpretation."""
+    command = " ".join(line.strip().lower().split())
+    if command in STOP_COMMANDS:
+        try:
+            session.latch_stop()
+        except OSError as error:
+            log(f"Stop recovery state could not be saved: {error}")
+        result = session.request_stop()
+        if language is not None:
+            try:
+                language.cancel()
+            except SelectionError:
+                # Interactive operation uses TerminalController to invalidate
+                # the proposal when its ordinary worker exits.
+                pass
+        log(result["message"])
+        if not result.get("dry_run") and not result.get("stopped"):
+            log("Robot stop is unconfirmed. Use the physical robot controls; recovery remains required.")
+        return True
+    if language is None:
+        if command == "status":
+            log(json.dumps(session.status_summary(), indent=2))
+            return True
+        return handle_terminal(session, line)
+    words = line.strip().split()
+    first = words[0].lower() if words else ""
+    if command in START_COMMANDS:
+        result = language.start()
+    elif command == "status":
+        result = language.status()
+    elif command == "help":
+        log(language.help()["message"])
+        return True
+    elif command in ("goto all", "pick all", "pick all available cups"):
+        result = language.propose_batch(capture_id=session.inventory["capture"] if session.inventory else "")
+    elif first == "confirm":
+        if len(words) != 2:
+            raise SelectionError("Type confirm followed by the displayed proposal code.")
+        result = language.confirm(words[1])
+    elif first == "cancel":
+        if len(words) != 1:
+            raise SelectionError("Use cancel to discard a proposal. It does not stop robot motion.")
+        language.cancel()
+        log("Pending proposal cancelled. This does not stop an already dispatched robot movement.")
+        return True
+    elif (not words or (len(words) == 1 and first in
+          ("scan", "capture", "list", "help", "q", "quit", "exit", "reset"))
+          or (len(words) == 2 and first in ("show", "goto", "hover") and words[1].isdigit())):
+        if first not in ("list", "show", "help"):
+            language.cancel()
+        keep_running = handle_terminal(session, line)
+        if first == "help":
+            log(LANGUAGE_HELP)
+        return keep_running
+    elif first in ("reset", "home"):
+        raise SelectionError("Recovery and home are not language actions. Use the documented operator recovery procedure.")
+    else:
+        log("Interpreting locally ...")
+        result = language.propose(line)
+    if result["kind"] == "inventory":
+        print_cups(result["inventory"])
+    elif result["kind"] == "cup":
+        log(json.dumps(result["cup"], indent=2))
+    else:
+        if result["kind"] in ("reply", "clarify"):
+            log("LLM response — no robot action requested:")
+        log(result["message"])
+    return True
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--web" in argv:
+        from web_app import main as web_main
+        return web_main([argument for argument in argv if argument != "--web"])
+    from inference_integration import (add_inference_arguments, create_detector, create_robot,
+                                       validate_inference_arguments)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--web", action="store_true", help="Open the browser workflow; use --web --help for its options")
+    parser.add_argument("--left-only", action="store_true", help="Pick, lift and replace each selected cup with the left arm; no handover or placement-grid update")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
-    parser.add_argument("--gateway", default="http://169.254.125.202:8000", help="Gateway address")
-    parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold")
-    parser.add_argument("--left-only", action="store_true",
-                        help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
+    parser.add_argument("--calibration", default=str(CALIBRATION_FILE))
+    parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"), help="Placement locations and their occupied/reserved flags")
+    parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table, mm (default 0)")
+    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Fallback cell width in mm (default 80; 20..200); the grid file's cell_size_mm takes precedence")
+    parser.add_argument("--gateway", default="http://169.254.125.202:8000")
+    parser.add_argument("--conf", type=float, default=0.5)
+    parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=DEFAULT_DEPTH_FRAMES,
+                        help="Fresh frames averaged for cup coordinates (default 5; 1 disables averaging); grid checks use raw aligned depth")
     parser.add_argument("--camera-z", action="store_true",
-                        help=f"TEST: grip height from each cup's camera z + {CAMERA_Z_OFFSET} instead of PICK_Z {PICK_Z}")
-    parser.add_argument("--depth-frames", type=int, default=DEPTH_FRAMES,
-                        help=f"camera frames whose depth is averaged (default {DEPTH_FRAMES}, 1 = off)")
-    args = parser.parse_args()
-    USE_CAMERA_Z = args.camera_z
-    DEPTH_FRAMES = max(1, args.depth_frames)
-    if USE_CAMERA_Z:
-        log(f"--camera-z: grip height = cup camera z + {CAMERA_Z_OFFSET}, not below {CAMERA_Z_FLOOR}")
-
-    gateway = Gateway(args.gateway, load_token())
-    store = CaptureStore(args.output)
-    calibration = Calibration(CALIBRATION_FILE)
-    model = load_model()
-
-    log(f"Gateway: {gateway.api}")
-    K = gateway.intrinsics()
-    log(f"Intrinsics: fx={K['fx']:.1f} fy={K['fy']:.1f} cx={K['cx']:.1f} cy={K['cy']:.1f}")
-
-    abort = threading.Event()
-    left = Arm(gateway, "left", abort, calibration.offset)
-    right = Arm(gateway, "right", abort)
-    Picker(gateway, Detector(model, calibration, K, args.conf),
-           Handover(left, right, abort), store, args.left_only).run()
+                        help="Use measured cup-base Z + 20 mm for picking, with a 40 mm minimum TCP height")
+    parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
+    parser.add_argument("--speed", type=positive, default=None,
+                        help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
+                             f"normal {DEFAULT_SPEED}, automatic home {HOME_SPEED}. Turning is capped at 100.")
+    parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
+    parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
+    parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")
+    parser.add_argument("--llm", action="store_true", help="Enable local Ollama commands and saved-cup visual matching with movement confirmation")
+    parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct", help="Installed local Ollama model (default qwen3-vl:4b-instruct)")
+    parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Local Ollama address; loopback hosts only")
+    parser.add_argument("--check-llm", action="store_true", help="Test local interpretation only; no camera, token, YOLO or robot connection")
+    add_inference_arguments(parser)
+    args = parser.parse_args(argv)
+    validate_inference_arguments(args, parser)
+    if not math.isfinite(args.conf) or not 0 < args.conf <= 1:
+        parser.error("--conf must be greater than 0 and at most 1")
+    if args.speed is not None and not 1 <= args.speed <= 1500:
+        parser.error("--speed must be between 1 and 1500 mm/s")
+    if not math.isfinite(args.grid_table_z) or not math.isfinite(args.grid_cell_size) or not 20 <= args.grid_cell_size <= 200:
+        parser.error("--grid-table-z must be finite; --grid-cell-size must be 20..200 mm")
+    interpreter = DisabledIntentClient()
+    if args.llm or args.check_llm:
+        try:
+            interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url)
+            if args.check_llm:
+                scene = {"capture_id": "model-check-only", "scan_usable": True,
+                         "recovery_required": False,
+                         "direction_reference": "left/right in the numbered camera image",
+                         "known_attributes": ["id", "image_position", "availability"],
+                         "cups": [{"id": 2, "image_x": 100, "image_y": 100,
+                                   "hover_available": True, "pick_available": True,
+                                   "blocked_reason": None, "status": "available"}]}
+                intent = interpreter.interpret("Hover above cup two", scene)
+                log(json.dumps(intent, indent=2))
+                if intent["action"] != "hover" or intent["selector"] != "id" or intent["cup_id"] != 2:
+                    log("Model check failed: the sample request was not interpreted as hover cup 2. No robot connection was made.")
+                    return 1
+                log("Local model check passed. No camera or robot connection was made.")
+                return 0
+        except ValueError as error:
+            log(f"Local model setup failed: {error}")
+            return 1
+    detector = None
+    try:
+        headers = {"Authorization": f"Bearer {load_token()}"}
+        api = args.gateway.rstrip("/") + "/api/v1"
+        camera = CameraClient(api, headers)
+        calibration = Calibration(args.calibration)
+        detector, weights = create_detector(args, calibration, camera.intrinsics())
+        store = CaptureStore(args.output)
+        grid = None if args.left_only else PlacingGrid(args.placing_grid)
+        captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
+                                  grid_table_z=args.grid_table_z, grid_cell_size=args.grid_cell_size,
+                                  depth_frames=args.depth_frames)
+        recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
+        session = CupSession(captures.capture, store.save, create_robot(args, api, headers),
+                             calibration.digest, tag_offset=calibration.offset, speed=args.speed,
+                             max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
+                             recovery=recovery, placing_grid=grid, left_only=args.left_only,
+                             verification_frames=3, camera_z=args.camera_z)
+        from named_cups import NamedCupStore
+        from cup_visual_matcher import OllamaCupMatcher
+        library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
+        matcher = OllamaCupMatcher(model=args.llm_model, url=args.ollama_url) if args.llm else None
+        language = LanguageController(session, interpreter, audit_dir=store.folder / "language",
+                                      named_cups=library, cup_matcher=matcher)
+    except (OSError, ValueError, KeyError, CameraError, RobotCommandError) as error:
+        if detector is not None and callable(getattr(detector, "close", None)):
+            detector.close()
+        log(f"Startup failed: {error}")
+        return 1
+    log(f"Ready. Saving to: {store.folder}")
+    log(f"Gateway: {api}; terminal movement speed: {session.speed:g} mm/s; automatic home: {session.home_speed:g} mm/s")
+    log("LEFT ONLY: picks return to their original position; the right arm and placement grid are not used."
+        if args.left_only else
+        f"Placement grid: {args.placing_grid}; cup turning: {min(session.speed, FLIP_SPEED):g} mm/s, 30% acceleration")
+    log("DRY RUN: all RWS moves, gripper and home requests will only be printed." if args.dry_run else
+        ("LIVE: goto picks, lifts, replaces and homes the LEFT arm. hover only approaches; scan only saves detections."
+         if args.left_only else
+         "LIVE: goto picks, hands over, places and homes BOTH arms. hover only approaches; scan only saves detections."))
+    log(HELP)
+    if args.llm:
+        log(f"LOCAL LLM: {args.llm_model} via {args.ollama_url}")
+        log(LANGUAGE_HELP)
+    if session.motion_uncertain:
+        log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset and scan.")
+    terminal = TerminalController(session, language,
+                                  lambda line: handle_input(session, line, language), output=log)
+    interrupted = False
+    try:
+        while True:
+            if not terminal.submit(input("cups> ").strip()):
+                break
+    except (KeyboardInterrupt, EOFError):
+        interrupted = True
+        log("\nExiting; an active command will receive a software stop request. No automatic home or resume.")
+    finally:
+        terminal.close(interrupt=interrupted)
+        if callable(getattr(detector, "close", None)):
+            detector.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

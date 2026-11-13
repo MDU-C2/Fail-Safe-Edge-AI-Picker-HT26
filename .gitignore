@@ -14,3 +14,8 @@ capture_and_detect/data
 /calibration/calibration_runs
 .venv/
 /.idea
+
+# Local desktop metadata and generated validation/runtime artifacts.
+.DS_Store
+/output/
+/capture_and_detect/.placing_grid*.json.lock

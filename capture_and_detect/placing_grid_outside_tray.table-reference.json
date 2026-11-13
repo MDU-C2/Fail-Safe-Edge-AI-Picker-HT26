@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "kind": "placement_table_reference",
+  "units": "mm",
+  "identity": {
+    "calibration_sha256": "629463d26a18ea5f57b835ac35571f012b3f270d6afd153d723320bfdd845383",
+    "scale": 1.0428855024756027,
+    "rotation": [
+      [
+        -0.0020583458441793636,
+        0.9995218687489427,
+        0.03085120913363585
+      ],
+      [
+        0.9999920602860172,
+        0.0019520855275223323,
+        0.0034740073431431084
+      ],
+      [
+        0.0034121221128096155,
+        0.030858114892436714,
+        -0.9995179508983181
+      ]
+    ],
+    "translation": [
+      571.3386558122212,
+      35.89347028186715,
+      842.785408939766
+    ],
+    "tag_offset_mm": [
+      -122.0,
+      0.0,
+      40.0
+    ],
+    "intrinsics": {
+      "width": 1920,
+      "height": 1080,
+      "fx": 1162.467529296875,
+      "fy": 1162.467529296875,
+      "cx": 933.0515747070312,
+      "cy": 537.0249633789062
+    },
+    "locations": [
+      {
+        "id": 2,
+        "x": 350.0,
+        "y": -260.0,
+        "z": 230.0
+      },
+      {
+        "id": 3,
+        "x": 450.0,
+        "y": -260.0,
+        "z": 230.0
+      },
+      {
+        "id": 4,
+        "x": 550.0,
+        "y": -260.0,
+        "z": 230.0
+      },
+      {
+        "id": 5,
+        "x": 650.0,
+        "y": -260.0,
+        "z": 230.0
+      },
+      {
+        "id": 8,
+        "x": 350.0,
+        "y": -380.0,
+        "z": 230.0
+      },
+      {
+        "id": 9,
+        "x": 450.0,
+        "y": -380.0,
+        "z": 230.0
+      },
+      {
+        "id": 10,
+        "x": 550.0,
+        "y": -380.0,
+        "z": 230.0
+      }
+    ],
+    "cell_size_mm": 90.0,
+    "table_z_mm": 0.0
+  },
+  "source": {
+    "capture": "20261112_115617_554897_scan",
+    "depth_sha256": "847233dbe0dd7cba785e1d0fe782dc97591f93ef4a35ada32ded19ad6870184a",
+    "detections_sha256": "54515e88ad2801fabc20dc10894f1016477ffbdbb6251c010a1efdde7d990494",
+    "frame_sequences": [
+      342915,
+      342918,
+      342921
+    ],
+    "inventory_sha256": "4f3c2a0ffa18d777b975c51125819dbe146e0854edd5e481aec77162a64fa761",
+    "layout_reassessment": {
+      "cell_size_mm": 90,
+      "depth_frame_count": 1,
+      "location_count": 7,
+      "note": "The original empty scan used three advancing frames. Only its final RGB/depth pair is archived. P11 was removed; all seven retained cell footprints and 90 mm size are unchanged from the previous reference. The seven-cell layout was independently reassessed without a table reference or pixel exclusions on that archived pair, and refitted only from that empty scene. This is not a new three-frame capture and no live occupied scene was fitted.",
+      "original_scan_frame_count": 3,
+      "previous_grid_sha256": "29956dd906ec2809886532463c440dbd102362a93a33b0dacc1a32f4b61e0d8c",
+      "previous_layout_reassessment": {
+        "depth_frame_count": 1,
+        "new_row_y_mm": -380,
+        "note": "Original empty scan used three advancing frames. Only its final RGB/depth pair is archived; new cell geometry was independently reassessed on that pair. No live occupied scene was fitted.",
+        "original_reference_sha256": "564ebb1ca97cbbaeaa9de22bc12148b65e5d0e790e41008d1f200a753832b459",
+        "original_row_y_mm": -370,
+        "original_scan_frame_count": 3,
+        "verified_depth_sequence": 342921
+      },
+      "previous_reference_sha256": "3e570be3d73ef67a24e165684164d63cce7ae1b74b92be5b5219c2b37d122f85",
+      "removed_location_ids": [
+        11
+      ],
+      "retained_geometry_unchanged": true,
+      "retained_location_ids": [
+        2,
+        3,
+        4,
+        5,
+        8,
+        9,
+        10
+      ],
+      "verified_depth_sequence": 342921
+    },
+    "rgb_sha256": "846ea33c1e873debc2cb0df42061cc8e2a55831b5928c8ef33875cf9e6acfe01"
+  },
+  "plane_z_mm": [
+    0.046694638502800326,
+    -0.0005224497736966931,
+    -30.973118784752096
+  ],
+  "fit": {
+    "sample_count": 100200,
+    "bin_count": 15227,
+    "inlier_bin_count": 14343,
+    "rms_mm": 2.135806490896051,
+    "max_cell_residual_p99_mm": 11.779859928214352
+  }
+}

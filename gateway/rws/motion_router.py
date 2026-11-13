@@ -9,7 +9,7 @@ from fastapi import (
     status,
 )
 
-from gateway.control.router import require_control
+from gateway.control.router import get_control_manager, require_control, robot_authorization
 from gateway.events.manager import event_manager
 from gateway.models.commands import CommandResponse
 from gateway.models.rws import (
@@ -120,6 +120,19 @@ async def run(
     return response
 
 
+async def run_authorized(identity, request, function, *args):
+    manager = get_control_manager()
+    if manager.require_session and not request.wait:
+        raise HTTPException(status_code=409, detail="Session-fenced mode requires wait=true so command completion remains owned")
+    authorization = robot_authorization(identity, require_clear=True)
+
+    def execute():
+        with authorization.operation():
+            return function(*args, authorization=authorization)
+
+    return await run(execute)
+
+
 # ================================================================
 # Endpoints
 # ================================================================
@@ -145,7 +158,7 @@ async def run(
 )
 async def move(
     request: RwsMoveRequest,
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
@@ -156,7 +169,9 @@ async def move(
         else (request.rx, request.ry, request.rz)
     )
 
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.move,
         request.arm,
         (request.x, request.y, request.z),
@@ -177,7 +192,7 @@ async def move(
     ),
 )
 async def home(
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
@@ -185,7 +200,9 @@ async def home(
 ) -> CommandResponse:
     request = request or RwsMotionRequest()
 
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.home,
         request.arm,
         request.wait,
@@ -212,12 +229,14 @@ async def home(
 )
 async def gripper(
     request: RwsGripperRequest,
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.gripper,
         request.arm,
         request.action,

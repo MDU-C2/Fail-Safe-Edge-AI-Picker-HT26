@@ -27,6 +27,27 @@ def snapshot(objects=None, offset=(0, 0, 0)):
 
 
 class CupInventoryTests(unittest.TestCase):
+    def test_per_frame_depth_diagnostics_copy_the_selected_base_without_changing_target(self):
+        samples = [48.5, None, 51.5]
+        base = detection("CUP BASE", 100, 1, in_cup=True, robot_z_frames_mm=samples)
+        cup = snapshot([detection("CUP", 100, 0, robot_z_frames_mm=[120]), base])["cups"][0]
+        self.assertEqual(cup["z_frames"], samples)
+        self.assertIsNot(cup["z_frames"], samples)
+        self.assertEqual(cup["z"], 50)
+        samples[0] = 999
+        self.assertEqual(cup["z_frames"], [48.5, None, 51.5])
+        self.assertTrue(cup["selectable"])
+
+    def test_optional_per_frame_diagnostics_remain_finite_json_values(self):
+        for value, expected in ((None, []), ("50", []), ([True, float("nan"), float("inf"), 49],
+                                                       [None, None, None, 49])):
+            with self.subTest(value=value):
+                cup = snapshot([detection("CUP BASE", 100, 1, in_cup=True,
+                                          robot_z_frames_mm=value)])["cups"][0]
+                self.assertEqual(cup["z_frames"], expected)
+                json.dumps(cup, allow_nan=False)
+        self.assertEqual(snapshot()["cups"][0]["z_frames"], [])
+
     def test_current_calibration_produces_only_ready_then_corrected_hover(self):
         result = snapshot(offset=(-115, 0, 40))
         cup = selected_cup(result, "scan", 1)

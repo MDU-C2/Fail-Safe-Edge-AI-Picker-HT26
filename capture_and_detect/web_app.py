@@ -13,17 +13,27 @@ import time
 import uuid
 
 from web_controller import WebController, WebError
+from handover_plan import DEFAULT_SPEED, HOME_SPEED
 
 HERE = Path(__file__).resolve().parent
 
 
-def create_app(controller, *, port=8080, image_root=None):
-    # Optional web dependencies are never needed by the original terminal app.
+def create_app(controller, *, port=8080, image_root=None, allowed_origin=None):
+    # Optional web dependencies are never needed by terminal mode.
     from fastapi import FastAPI, Request
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, JSONResponse, Response
 
     root = Path(image_root).resolve() if image_root is not None else None
     hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    origins = {f"http://{host}" for host in hosts}
+    if allowed_origin is not None:
+        from urllib.parse import urlsplit
+        parsed = urlsplit(allowed_origin)
+        if (parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.username
+                or parsed.password or parsed.path or parsed.query or parsed.fragment):
+            raise ValueError("Dashboard origin must be an exact http(s) origin without a path or credentials.")
+        hosts.add(parsed.netloc.lower())
+        origins.add(allowed_origin)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -41,11 +51,12 @@ def create_app(controller, *, port=8080, image_root=None):
         if host not in hosts:
             return JSONResponse({"detail": "Use the local dashboard address printed in the terminal."}, status_code=403)
         origin = request.headers.get("origin")
-        if origin is not None and origin != f"http://{host}":
+        valid_origin = origin in origins and origin.rsplit("://", 1)[-1].lower() == host if origin else False
+        if origin is not None and not valid_origin:
             return JSONResponse({"detail": "Cross-origin requests are not allowed."}, status_code=403)
         if request.method not in ("GET", "HEAD"):
             token = request.headers.get("x-csrf-token", "")
-            if origin != f"http://{host}" or not hmac.compare_digest(token.encode("utf-8"), controller.state()["csrf_token"].encode("utf-8")):
+            if not valid_origin or not hmac.compare_digest(token.encode("utf-8"), controller.state()["csrf_token"].encode("utf-8")):
                 return JSONResponse({"detail": "Reload the local dashboard before sending a command."}, status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
@@ -70,6 +81,21 @@ def create_app(controller, *, port=8080, image_root=None):
     @app.get("/api/state")
     def state():
         return controller.state()
+
+    @app.get("/api/status")
+    def operator_status():
+        return controller.status()
+
+    @app.get("/api/help")
+    def operator_help():
+        return controller.help()
+
+    @app.get("/api/saved-image/{cup_id}")
+    def saved_image(cup_id: str):
+        data = controller.saved_image(cup_id)
+        if data is None:
+            return JSONResponse({"detail": "Saved cup image unavailable."}, status_code=404)
+        return Response(content=data, media_type="image/jpeg")
 
     @app.get("/api/image/{capture_id}")
     def image(capture_id: str):
@@ -141,17 +167,25 @@ class DemoLanguage:
         return {"action": action, "selector": selector, "cup_id": cup_id, "message": message}
 
 
-def demo_factory(directory):
+def demo_factory(directory, *, speed=None, camera_z=False):
     """Use real selection/planning checks and a dry-run robot with synthetic cups."""
     def factory(controller):
         from cup_commands import CupSession
-        from cup_inventory import build_inventory
+        from cup_inventory import atomic_json, build_inventory
         from language_commands import LanguageController
+        from placing_grid import PlacingGrid
         from robot_client import RobotClient
 
         directory.mkdir(parents=True, exist_ok=True)
         image_path = directory / "demo-table.svg"
         image_path.write_text(DEMO_IMAGE, encoding="utf-8")
+        # This synthetic grid belongs to the demo's temporary directory. Never
+        # load, reset, reserve or mark the project's real placement file here.
+        grid_path = directory / "demo-placing-grid.json"
+        atomic_json(grid_path, {"locations": [
+            {"id": index + 1, "x": 400 + (index % 4) * 80,
+             "y": -200 - (index // 4) * 80, "z": 230, "occupied": index < 9}
+            for index in range(12)]})
         sequence = 0
         def capture(purpose):
             nonlocal sequence
@@ -173,7 +207,8 @@ def demo_factory(directory):
             return result, time.monotonic()
         session = CupSession(capture, lambda inventory: controller.publish_session(),
                              RobotClient("http://127.0.0.1:1", {}, dry_run=True),
-                             "demo-calibration", tag_offset=(-115, 0, 40))
+                             "demo-calibration", tag_offset=(-115, 0, 40), speed=speed,
+                             placing_grid=PlacingGrid(grid_path), camera_z=camera_z)
         language = LanguageController(session, DemoLanguage(), audit_dir=directory / "language")
         return session, language
     return factory
@@ -182,25 +217,34 @@ def demo_factory(directory):
 def hardware_factory(args):
     def factory(controller):
         # Deferred imports keep demo and tests independent of YOLO/OpenCV.
-        from capture_and_detect_custom import (load_token, Calibration, load_model, Detector,
+        from capture_and_detect import (load_token, Calibration,
                                                CaptureStore, CaptureService)
+        from inference_integration import create_detector, create_robot
         from camera_client import CameraClient
         from cup_commands import CupSession
         from language_commands import LanguageController
         from local_llm import OllamaIntentClient
+        from cup_visual_matcher import OllamaCupMatcher
+        from named_cups import NamedCupStore
+        from placing_grid import PlacingGrid
         from recovery_journal import RecoveryJournal
         from robot_client import RobotClient
 
-        controller.event("Loading calibration and detection model…")
+        controller.event("Loading gateway credentials and calibration…")
         headers = {"Authorization": f"Bearer {load_token()}"}
         api = args.gateway.rstrip("/") + "/api/v1"
         camera = CameraClient(api, headers)
         calibration = Calibration(args.calibration)
-        model, weights = load_model()
         controller.event("Reading camera configuration from the Pi…")
-        detector = Detector(model, calibration, camera.intrinsics(), args.conf)
+        intrinsics = camera.intrinsics()
+        controller.event("Loading detection model…")
+        detector, weights = create_detector(args, calibration, intrinsics,
+            on_update=controller.publish_inference, register_resource=controller.attach_resource)
         store = CaptureStore(args.output)
-        captures = CaptureService(camera, detector, store, weights)
+        grid = PlacingGrid(args.placing_grid)
+        captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
+                                  grid_table_z=args.grid_table_z, grid_cell_size=args.grid_cell_size,
+                                  depth_frames=getattr(args, "depth_frames", 5))
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
         def capture(purpose):
             controller.event("Capturing and detecting cups…" if purpose == "scan" else "Rechecking the selected cup with a fresh camera observation…")
@@ -208,12 +252,16 @@ def hardware_factory(args):
         def save(inventory):
             store.save(inventory)
             controller.publish_session()
-        session = CupSession(capture, save, RobotClient(api, headers, dry_run=not args.live),
+        session = CupSession(capture, save, create_robot(args, api, headers),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                     recovery=recovery)
+                     recovery=recovery, placing_grid=grid, verification_frames=3,
+                     camera_z=getattr(args, "camera_z", False))
         interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url) if args.llm else NoLanguage()
-        return session, LanguageController(session, interpreter, audit_dir=store.folder / "language")
+        library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
+        matcher = OllamaCupMatcher(model=args.llm_model, url=args.ollama_url) if args.llm else None
+        return session, LanguageController(session, interpreter, audit_dir=store.folder / "language",
+                                           named_cups=library, cup_matcher=matcher)
     return factory
 
 
@@ -241,35 +289,52 @@ class ProcessLock:
 
 
 def main(argv=None):
+    from inference_integration import add_inference_arguments, validate_inference_arguments
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--demo", action="store_true", help="Sample cups only; no camera, model or robot connection (default without --gateway)")
     parser.add_argument("--gateway", help="Pi gateway base URL; uses camera-connected dry-run unless --live is given")
+    parser.add_argument("--controller-profile", default=str(HERE / "robot_controller.json"),
+                        help="Optional gateway-bound, read-only controller status connection profile")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--live", action="store_true", help="Enable physical robot execution after explicit confirmation")
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")
-    parser.add_argument("--llm", action="store_true", help="Enable typed natural language through local Ollama")
-    parser.add_argument("--llm-model", default="qwen3:4b")
+    parser.add_argument("--llm", action="store_true", help="Enable local Ollama commands and saved-cup visual matching")
+    parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
-    parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration.json"))
+    parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration_grid.json"))
+    parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"),
+                        help="Placement JSON shared with terminal mode; occupancy is preserved")
+    parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table in mm (default 0)")
+    parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Fallback cell width in mm (default 80; 20..200); the grid file's cell_size_mm takes precedence")
     parser.add_argument("--conf", type=float, default=0.5)
-    parser.add_argument("--speed", type=float, default=50)
+    parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=5,
+                        help="Fresh depth samples per observation (default 5); grid checks retain raw aligned depth")
+    parser.add_argument("--camera-z", action="store_true",
+                        help="Pick at measured cup-base Z + 20 mm, with a 40 mm minimum TCP height")
+    parser.add_argument("--speed", type=float, default=None,
+                        help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
+                             f"normal {DEFAULT_SPEED}, automatic home {HOME_SPEED}; cup flips are capped at 100")
     parser.add_argument("--max-result-age", type=float, default=15)
     parser.add_argument("--match-mm", type=float, default=20)
     parser.add_argument("--match-px", type=float, default=40)
+    add_inference_arguments(parser)
     args = parser.parse_args(argv)
+    validate_inference_arguments(args, parser)
     if not 1024 <= args.port <= 65535:
         parser.error("--port must be between 1024 and 65535")
     if args.demo and (args.gateway or args.live):
         parser.error("--demo cannot be combined with --gateway or --live")
     if args.live and not args.gateway:
         parser.error("--live requires --gateway")
-    for name in ("conf", "speed", "max_result_age", "match_mm", "match_px"):
+    for name in ("conf", "max_result_age", "match_mm", "match_px"):
         if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
             parser.error(f"--{name.replace('_', '-')} must be positive and finite")
-    if args.conf > 1 or not 1 <= args.speed <= 1500:
+    if args.conf > 1 or (args.speed is not None and (not math.isfinite(args.speed) or not 1 <= args.speed <= 1500)):
         parser.error("Confidence must be at most 1; speed must be between 1 and 1500 mm/s")
+    if not math.isfinite(args.grid_table_z) or not math.isfinite(args.grid_cell_size) or not 20 <= args.grid_cell_size <= 200:
+        parser.error("--grid-table-z must be finite; --grid-cell-size must be 20..200 mm")
     try:
         import uvicorn
         import fastapi
@@ -279,7 +344,7 @@ def main(argv=None):
     temporary = tempfile.TemporaryDirectory(prefix="cup-dashboard-") if mode == "demo" else None
     directory = Path(temporary.name if temporary else args.output).resolve()
     try:
-        factory = demo_factory(directory) if mode == "demo" else hardware_factory(args)
+        factory = demo_factory(directory, speed=args.speed, camera_z=args.camera_z) if mode == "demo" else hardware_factory(args)
         controller = WebController(factory, mode=mode, model="Scripted demo" if mode == "demo" else args.llm_model,
                                    llm_enabled=mode == "demo" or args.llm)
         app = create_app(controller, port=args.port, image_root=directory)

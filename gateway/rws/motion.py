@@ -1,7 +1,8 @@
 import math
 import threading
 import time
-from typing import Literal, NamedTuple
+from contextlib import nullcontext
+from typing import Callable, Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
@@ -182,6 +183,7 @@ class RwsMotion:
         rotation: tuple[float, float, float] | None,
         wait: bool = True,
         speed: MotionSpeed | None = None,
+        authorization=None,
     ) -> CommandResponse:
         """Move the arm's tool0 to position (mm, wobj0).
 
@@ -208,13 +210,14 @@ class RwsMotion:
 
             values["target_rot"] = rapid_array(orient_zyx(rz, ry, rx))
 
-        return self._run(arm, values, wait)
+        return self._run(arm, values, wait, authorization=authorization)
 
     def home(
         self,
         arm: Arm,
         wait: bool = True,
         speed: MotionSpeed | None = None,
+        authorization=None,
     ) -> CommandResponse:
         return self._run(
             arm,
@@ -224,6 +227,7 @@ class RwsMotion:
                 **self._speed_values(speed),
             },
             wait,
+            authorization=authorization,
         )
 
     def gripper(
@@ -233,6 +237,8 @@ class RwsMotion:
         wait: bool = True,
         position: float | None = None,
         force: float | None = None,
+        *,
+        authorization=None,
     ) -> CommandResponse:
         """Close ("grip"), open ("open") or move ("move") the gripper.
 
@@ -267,7 +273,7 @@ class RwsMotion:
             if force is None:
                 optional.add("grip_force")
 
-        return self._run(arm, values, wait, optional)
+        return self._run(arm, values, wait, optional=optional, authorization=authorization)
 
     def status(
         self,
@@ -288,6 +294,66 @@ class RwsMotion:
             )
 
         return self._result(arm)
+
+    def reset_program(self, start: bool = False, stop_generation: int | None = None,
+                      check_authorization: Callable[[], None] | None = None) -> None:
+        """Discard pending jobs and reset PP; optional fresh start is explicit.
+
+        Both per-arm locks exclude command staging, including wait=False jobs.
+        Stop remains callable independently. No motor or collision settings are
+        changed. Starting main may initialize/calibrate the grippers.
+        """
+        with self._client.program_change():
+            self._reset_program(start, stop_generation, check_authorization)
+
+    def _reset_program(self, start: bool, stop_generation: int | None, check_authorization) -> None:
+        generation = self._client.stop_generation() if stop_generation is None else stop_generation
+        self._client.check_stop_generation(generation)
+        deadline = time.monotonic() + 30
+
+        def check():
+            self._client.check_stop_generation(generation)
+            if check_authorization is not None:
+                check_authorization()
+            if time.monotonic() >= deadline:
+                raise MotionConflict("Program reset exceeded 30 seconds; no start will be sent")
+
+        check()
+        self._client.stop_for_reset()
+        held = []
+        try:
+            for arm in ARM_TASKS:
+                if not self._busy[arm].acquire(blocking=False):
+                    raise MotionConflict("Wait for the previous arm request to unwind before resetting RAPID")
+                held.append(self._busy[arm])
+            self._client.check_stop_generation(generation)
+            values = {"move_request": "FALSE", "go_home": "FALSE", "use_rot": "FALSE",
+                      "grip_cmd": '""', "move_ok": "FALSE"}
+            # Validate all required symbols before changing any of them.
+            for arm in ARM_TASKS:
+                for name in values:
+                    check()
+                    self._check_variable(arm, name, f"Missing {name}_{arm}; reset was not performed")
+            with self._client.mastership():
+                for arm in ARM_TASKS:
+                    for name, value in values.items():
+                        check()
+                        self._write(arm, name, value)
+                for arm in ARM_TASKS:
+                    for name, value in values.items():
+                        check()
+                        if self._read(arm, name).strip().upper() != value:
+                            raise MotionConflict(f"Reset could not verify {name}_{arm}; RAPID remains stopped")
+            check()
+            self._client.reset_program_pointer()
+            if self._client.execution_state() != "stopped":
+                raise MotionConflict("RAPID did not remain stopped after resetting its program pointer")
+            self._client.check_stop_generation(generation)
+            if start:
+                self._client.start_fresh(generation, deadline, check_authorization)
+        finally:
+            for lock in reversed(held):
+                lock.release()
 
     def in_safe_zone(
         self,
@@ -331,7 +397,9 @@ class RwsMotion:
         arm: Arm,
         values: dict[str, str],
         wait: bool,
-        optional: set[str] = frozenset(),
+        *,
+        optional: set[str] | frozenset[str] = frozenset(),
+        authorization=None,
     ) -> CommandResponse:
         """Write the job and set move_request.
 
@@ -344,6 +412,15 @@ class RwsMotion:
             raise MotionConflict(f"A {arm} arm job is already in progress")
 
         try:
+            generation = self._client.stop_generation() if hasattr(self._client, "stop_generation") else None
+
+            def check():
+                if authorization is not None:
+                    authorization()
+                if generation is not None:
+                    self._client.check_stop_generation(generation)
+
+            check()
             self._check_ready(arm)
 
             values = dict(values)
@@ -367,9 +444,13 @@ class RwsMotion:
                 )
 
             for name, value in values.items():
+                check()
                 self._write(arm, name, value)
 
-            self._write(arm, "move_request", "TRUE")
+            scope = self._client.dispatch_guard(generation, authorization) if generation is not None else nullcontext()
+            with scope:
+                check()
+                self._write(arm, "move_request", "TRUE")
 
             #
             # The arm task now owns the job; a new one is refused
@@ -381,7 +462,7 @@ class RwsMotion:
                     message="STARTED",
                 )
 
-            self._wait_for_job(arm)
+            self._wait_for_job(arm, check)
 
             return self._result(arm)
 
@@ -464,10 +545,13 @@ class RwsMotion:
     def _wait_for_job(
         self,
         arm: Arm,
+        check=None,
     ) -> None:
         deadline = time.monotonic() + self._timeout
 
         while self._read(arm, "move_request") == "TRUE":
+            if check is not None:
+                check()
             if self._client.execution_state() != "running":
                 raise MotionConflict("RAPID stopped before the move finished")
 

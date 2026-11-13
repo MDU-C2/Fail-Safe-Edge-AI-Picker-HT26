@@ -11,17 +11,21 @@ from fastapi import (
     status,
 )
 
-from gateway.control.router import require_control
+from gateway.control.router import get_control_manager, require_control, robot_authorization
+from gateway.control.manager import ControlConflict
 from gateway.events.manager import event_manager
 from gateway.models.rws import (
     RapidModuleUpload,
     RapidStartRequest,
     RapidStatus,
     RapidTask,
+    RapidResetRequest,
+    CollisionStatus,
 )
 from gateway.rws.arms_router import RAPID_NAME
 from gateway.rws.client import RwsError, rws_client
 from gateway.rws.errors import to_http_exception
+from gateway.rws.motion import MotionConflict, rws_motion
 from gateway.security.authentication import require_permission
 from gateway.security.identity import Identity
 
@@ -82,6 +86,7 @@ def read_status() -> RapidStatus:
         execution_state=rws_client.execution_state(),
         controller_state=rws_client.controller_state(),
         operation_mode=rws_client.operation_mode(),
+        stop_generation=getattr(rws_client, "stop_generation", lambda: None)(),
         tasks=[
             RapidTask(
                 name=task["name"],
@@ -147,6 +152,11 @@ async def run(
         raise to_http_exception(error) from error
 
 
+def lease_guard(identity: Identity):
+    """Bind long initialization to this exact lease, allowing renewal only."""
+    return robot_authorization(identity, manager=get_control_manager())
+
+
 # ================================================================
 # Endpoints
 # ================================================================
@@ -186,6 +196,8 @@ async def put_rapid_module(
         Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
+    if get_control_manager().require_session:
+        raise HTTPException(status_code=409, detail="Module changes are disabled in session-fenced operation; use a stopped maintenance deployment")
     check_source(
         module,
         upload.source,
@@ -229,6 +241,8 @@ async def delete_rapid_module(
         Depends(require_control("robot.control")),
     ],
 ) -> RapidStatus:
+    if get_control_manager().require_session:
+        raise HTTPException(status_code=409, detail="Module changes are disabled in session-fenced operation; use a stopped maintenance deployment")
     await run(
         require_stopped_task,
         task,
@@ -288,6 +302,7 @@ async def start_rapid(
     await run(
         rws_client.start,
         request.reset_program_pointer,
+        robot_authorization(identity, require_clear=True),
     )
 
     await event_manager.publish(
@@ -321,4 +336,52 @@ async def stop_rapid(
         },
     )
 
+    return await run(read_status)
+
+
+@router.get("/collision", response_model=CollisionStatus,
+            summary="Read controller collision acknowledgement state")
+async def get_collision(
+    _: Annotated[Identity, Depends(require_permission("robot.read"))],
+) -> CollisionStatus:
+    return CollisionStatus(collision_state=await run(rws_client.collision_state))
+
+
+@router.post("/collision/ack", response_model=CollisionStatus,
+             summary="Acknowledge an inspected collision without starting motion",
+             description="Requires the controller's Local Client privileges and disabled auto acknowledgement. "
+             "The controller may reject a remote gateway. Does not enable motors, start RAPID, or home arms.")
+async def acknowledge_collision(
+    identity: Annotated[Identity, Depends(require_control("robot.control"))],
+) -> CollisionStatus:
+    result = CollisionStatus(collision_state=await run(rws_client.acknowledge_collision, lease_guard(identity)))
+    await event_manager.publish("robot.rapid.collision_acknowledged", {"by": identity.client_id})
+    return result
+
+
+@router.post("/reset", response_model=RapidStatus,
+             summary="Discard pending jobs and reset RAPID to main",
+             description="Stops RAPID, clears and verifies both arm request flags, resets PP to main and leaves it stopped. "
+             "Explicit start=true initializes main afterwards and may calibrate the grippers. "
+             "Never enables motors or acknowledges a collision. Home is a separate command.")
+async def reset_rapid(
+    identity: Annotated[Identity, Depends(require_control("robot.control"))],
+    request: Annotated[RapidResetRequest, Body()] = RapidResetRequest(),
+) -> RapidStatus:
+    manager = get_control_manager()
+    authorization = lease_guard(identity)
+    generation = rws_client.stop_generation()
+    try:
+        manager.ensure_reset_allowed()
+        # The operator reset is tracked too: release during reset cannot grant
+        # another session permission to finish initialization.
+        def reset():
+            with authorization.operation():
+                rws_motion.reset_program(request.start, request.stop_generation, authorization)
+                with rws_client.dispatch_guard(generation, authorization):
+                    manager.clear_recovery(authorization)
+        await run(reset)
+    except (MotionConflict, ControlConflict) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await event_manager.publish("robot.rapid.reset", {"by": identity.client_id, "started": request.start})
     return await run(read_status)

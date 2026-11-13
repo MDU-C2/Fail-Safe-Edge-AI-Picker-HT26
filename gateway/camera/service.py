@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock
@@ -53,6 +54,13 @@ class CameraService:
         self._intrinsics: CameraIntrinsics | None = None
 
         self._lock = Lock()
+
+        #
+        # Long-poll readers sleep until a producer publishes or the
+        # connection changes. No polling thread or frame queue per client.
+        # Producers and async readers use the application's event loop.
+        #
+        self._frame_changed = asyncio.Condition()
 
     def get_status(self) -> CameraStatus:
         with self._lock:
@@ -147,6 +155,48 @@ class CameraService:
 
         return frame_set.rgb
 
+    async def wait_for_frame_set(
+        self,
+        after_sequence: int | None,
+        timeout_seconds: float,
+    ) -> CameraFrameSet | None:
+        """Return a newer pair, or None on timeout/disconnection.
+
+        A returned immutable frame set remains one exact pair even if
+        the producer publishes again while the response is streaming.
+        Waiting does not retain an old frame or consume a worker thread.
+        Cancellation propagates and asyncio removes the condition waiter.
+        """
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
+
+        async with self._frame_changed:
+            while True:
+                with self._lock:
+                    if not self._connected:
+                        return None
+
+                    if self._latest is not None and (
+                        after_sequence is None
+                        or self._latest.sequence > after_sequence
+                    ):
+                        return self._latest
+
+                remaining = deadline - loop.time()
+
+                if remaining <= 0:
+                    return None
+
+                try:
+                    await asyncio.wait_for(
+                        self._frame_changed.wait(),
+                        remaining,
+                    )
+
+                except asyncio.TimeoutError:
+                    return None
+
     def get_depth_frame(
         self,
     ) -> CameraFrame | None:
@@ -189,6 +239,9 @@ class CameraService:
                 changed = True
 
         if changed:
+            async with self._frame_changed:
+                self._frame_changed.notify_all()
+
             await self.publish_status()
 
     async def publish_frame_set(
@@ -253,6 +306,9 @@ class CameraService:
             self._latest = frame_set
             self._connected = True
             self._error = None
+
+        async with self._frame_changed:
+            self._frame_changed.notify_all()
 
         return frame_set
 

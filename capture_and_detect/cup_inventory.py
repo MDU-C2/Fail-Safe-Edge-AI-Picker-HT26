@@ -16,7 +16,10 @@ GRIPPER_TCP_Z = 159
 LEFT_READY = (400, 100, 450)
 LEFT_DOWN = (180, 0, 180)
 FLANGE_MIN = (180, -400, 50)
-FLANGE_MAX = (800, 500, 600)
+FLANGE_MAX = (800, 500, 700)
+Z_MIN = 199  # Minimum ordinary flange target, not a path or gripper-clearance guarantee.
+HANDLE_MAX_DIST = 100
+GRIP_MARGIN = 70
 ACCEPTANCE_FLAGS = ("in_cup", "near_handle", "cup_height")
 
 
@@ -63,6 +66,16 @@ def _flange_problem(position):
     return None
 
 
+def _motion_flange_problem(position, *, pick=False):
+    """Check endpoint limits, with the lower ordinary-motion flange bound."""
+    problem = _flange_problem(position)
+    if problem:
+        return problem
+    if position[2] < Z_MIN and not pick:
+        return f"flange target is below the ordinary motion clearance of {Z_MIN} mm"
+    return None
+
+
 def position_problem(cup, tag_offset=(0, 0, 0)):
     try:
         ox, oy, _ = normalize_offset(tag_offset)
@@ -102,6 +115,69 @@ def _duplicate_base(base, others):
     return sum(other is base for other in others) > 1
 
 
+def set_grip_geometry(cups, objects):
+    """Associate handles within this observation, without borrowing old geometry.
+
+    Jaws close perpendicular to the base-to-handle direction. Their symmetry
+    keeps yaw within 90 degrees of LEFT_DOWN. A missing usable handle retains
+    the default yaw; ambiguous geometry is explicit so picking can reject it
+    while ordinary hovering remains available. Coordinates are saved robot mm,
+    before the common calibration translation is applied to movement targets.
+    """
+    candidates = []
+    assigned = {}
+    for index, cup in enumerate(cups):
+        cup.update(rz=LEFT_DOWN[2], has_handle=False, grip_geometry_error=None)
+        quality = cup.get("depth_quality")
+        if (all(finite_number(cup.get(axis)) for axis in ("x", "y", "z"))
+                and not (isinstance(quality, dict) and quality.get("valid") is False)):
+            # Blocked candidates still compete for their own handles. Their
+            # handle must not be reassigned to a farther, selectable neighbour.
+            candidates.append((index, cup))
+            assigned[index] = []
+    for obj in objects:
+        if obj.get("class") != "CUP HANDLE" or not candidates:
+            continue
+        quality = obj.get("depth_quality")
+        if (not all(finite_number(obj.get("robot_" + axis + "_mm")) for axis in ("x", "y", "z"))
+                or ("z_mm" in obj and (not finite_number(obj["z_mm"]) or obj["z_mm"] <= 0))
+                or (isinstance(quality, dict) and quality.get("valid") is False)):
+            continue
+        hx, hy = obj["robot_x_mm"], obj["robot_y_mm"]
+        distances = sorted((math.hypot(hx - cup["x"], hy - cup["y"]), index)
+                           for index, cup in candidates)
+        distance, index = distances[0]
+        if distance > HANDLE_MAX_DIST:
+            continue
+        # Detector coordinates have 0.1 mm resolution. A tie at that precision
+        # does not establish which cup owns the handle.
+        tied = [other for value, other in distances
+                if math.isclose(value, distance, rel_tol=0, abs_tol=0.1)]
+        if len(tied) > 1:
+            for other in tied:
+                cups[other]["grip_geometry_error"] = "CUP HANDLE is equally close to multiple cup bases"
+            continue
+        if distance <= 0.1:
+            cups[index]["grip_geometry_error"] = "CUP HANDLE overlaps its cup base; grip direction is undefined"
+            continue
+        assigned[index].append((distance, hx, hy))
+    for index, matches in assigned.items():
+        cup = cups[index]
+        if not matches or cup.get("selectable") is not True or cup["grip_geometry_error"]:
+            continue
+        # Repeated detections at the same point imply the same direction, but
+        # equally near, distinct handles do not establish one grip orientation.
+        matches = sorted(set(matches))
+        distance, hx, hy = matches[0]
+        if any(math.isclose(other[0], distance, rel_tol=0, abs_tol=0.1)
+               for other in matches[1:]):
+            cup["grip_geometry_error"] = "Multiple equally close CUP HANDLE detections give an ambiguous grip direction"
+            continue
+        angle = math.degrees(math.atan2(hy - cup["y"], hx - cup["x"]))
+        cup["rz"] = round(LEFT_DOWN[2] + angle % 180 - 90, 1)
+        cup["has_handle"] = True
+
+
 def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, images, model,
                     tag_offset=(0, 0, 0)):
     """Keep CUP observations and supported orphan bases, including blocked entries.
@@ -135,23 +211,35 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
                                        else math.inf for axis in ("x_px", "y_px")))
     cups = []
     for cup_id, (point, parent, reason) in enumerate(entries, 1):
+        diameter = point.get("diameter_mm") if point["class"] == "CUP BASE" else None
+        diameter = float(diameter) if finite_number(diameter) and diameter > 0 else None
+        z_frames = point.get("robot_z_frames_mm", [])
+        z_frames = ([measurement(value) for value in z_frames]
+                    if isinstance(z_frames, (list, tuple)) else [])
         cup = {
             "id": cup_id,
             "confidence": measurement(point.get("confidence")),
             "x": measurement(point.get("robot_x_mm")),
             "y": measurement(point.get("robot_y_mm")),
             "z": measurement(point.get("robot_z_mm")),
+            "z_frames": z_frames,
             "camera_mm": {axis: measurement(point.get(axis + "_mm")) for axis in ("x", "y", "z")},
             "pixel": {"u": measurement(point.get("x_px")), "v": measurement(point.get("y_px"))},
             "bbox_xyxy": (parent or point).get("bbox_xyxy"),
             "cup_detection_id": parent.get("detection_id") if parent else None,
             "base_detection_id": point.get("detection_id") if point["class"] == "CUP BASE" else None,
+            "diameter": diameter,
+            "aperture": round(diameter + GRIP_MARGIN, 1) if diameter is not None else None,
         }
         evidence = [flag for flag in ACCEPTANCE_FLAGS if point.get(flag) is True]
         if parent is not None and point["class"] == "CUP BASE" and "in_cup" not in evidence:
             evidence.insert(0, "in_cup")  # Computed containment, not a truthy external flag.
         cup["acceptance_reasons"] = evidence if point["class"] == "CUP BASE" else []
         cup["robot_mm"] = {axis: cup[axis] for axis in ("x", "y", "z")}
+        if point["class"] == "CUP BASE" and isinstance(point.get("depth_quality"), dict):
+            cup["depth_quality"] = dict(point["depth_quality"])
+            if cup["depth_quality"].get("valid") is False:
+                reason = reason or cup["depth_quality"].get("reason") or "CUP BASE depth is unreliable"
         if point["class"] == "CUP BASE" and _duplicate_base(point, bases):
             reason = reason or "duplicate CUP BASE detection"
         if not all(finite_number(cup["pixel"][axis]) for axis in ("u", "v")):
@@ -161,6 +249,7 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
         cup.update(selectable=reason is None, blocked_reason=reason,
                    status="available" if reason is None else "blocked")
         cups.append(cup)
+    set_grip_geometry(cups, objects)
     return {
         "schema_version": 2,
         "capture": capture_id,

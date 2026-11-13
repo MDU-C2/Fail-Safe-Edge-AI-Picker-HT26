@@ -1,0 +1,7 @@
+# Optional Mac/Pi inference mode. Install into a dedicated Python environment.
+# Pin identical resolved versions on both hosts after verifying ARM64 wheels.
+-r requirements-web.txt
+numpy>=1.26,<3
+opencv-python>=4.10,<6
+ultralytics>=8.3,<9
+torch>=2.4,<3
