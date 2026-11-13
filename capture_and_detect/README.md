@@ -188,8 +188,8 @@ also depends on the robot controller. Both arms share one control lease and
 renewal loop, with at most one outstanding request per arm, an initial right-arm
 home check and a camera verification before each cup's motion.
 
-1. Verify the selected cup, grip geometry and destination with a fresh camera
-   observation, then close the empty right gripper, home the right arm and check
+1. Verify the selected cup, grip geometry and destination with three consecutive
+   clear camera observations, then close the empty right gripper, home the right arm and check
    its measured joint positions.
 2. Close the empty left gripper and move the left arm to ready.
 3. Approach above the verified cup with its detected grip rotation, open the
@@ -320,15 +320,44 @@ uses the same atomic file lock as reservations. Camera checks never clear reserv
 locations or robot recovery. During recovery, and in dry-run mode, observations
 are previews only and do not change the saved grid. Motion verification captures
 also draw the overlay but do not release locations.
-The chosen destination is checked before motion. A clear first verification
-continues immediately. A sensor-related unknown caused by table mismatch or
-missing depth may trigger three additional stationary camera checks; all three
-must be clear. A cup, object, raised depth, occlusion, malformed evidence or a
-failed recheck blocks the sequence. Calibration, frame progression, destination
-geometry, frozen table reference, target identity, grip geometry, image age and
-Stop are checked throughout. No camera retry occurs after movement begins or
-at left ready. Saved verification records retain the observations and reasons.
+The terminal and hardware dashboard require **three consecutive clear destination
+observations**, with at most six foreground attempts per cup. A depth-only anomaly
+or an occluded frame resets the clear count; it is not averaged away or treated
+as a vote for clearance. In these foreground checks, a detected cup or other
+labelled object at the destination, malformed evidence, changed calibration,
+geometry or reference, stale frames, changed target/grip geometry or Stop blocks
+the attempt. Persistent depth uncertainty still blocks after the bounded attempts.
+Saved verification records retain every check and the reason it counted or failed.
+Each assessed cell also records `raised_depth_pixels`,
+`raised_depth_inside_cell_pixels` and `raised_depth_outside_cell_pixels`. These
+distinguish physical intrusion from foreground depth overlapping the cell's
+camera projection. Outside-cell depth can still hide the destination, so these
+diagnostics do not relax clearance checks or change placement decisions.
+
+In a live batch, after `right_clear` has reported completion and been recorded,
+one camera worker can collect up to two observations for the next cup while the
+arms finish returning home. It does not move the robot or update reservations.
+The next cup waits for all current jobs and home checks to succeed, then takes
+at least one new observation after that barrier. The right arm may still hide
+cups or the destination during its return. These early observations are optional:
+a structurally valid but nonclear view, missing/ambiguous target, changed grip
+estimate or stale early image discards all early credit. A later clear background
+image cannot restore it. The app then requires three consecutive clear images
+after home, within six foreground attempts; the two early images do not use that
+budget. This does not classify the obstruction as an arm or mark hidden space
+clear. Malformed evidence, changed source/calibration/geometry/reference,
+repeated camera identities and capture errors still fail closed.
+All accepted evidence must remain fresh through the pick's freshness gates.
+Stop or a failed return discards the prefetch and drains its worker before
+another operation can use the camera.
+The first cup has no preceding return phase, so its checks run before motion.
+There is still no second camera check at left ready or a retry of robot movement.
 These checks do not observe the entire transfer continuously.
+
+Library callers retain the legacy single-frame path unless they explicitly set
+`CupSession(..., verification_frames=3)`. Its existing stationary three-clear
+recheck for eligible unknown depth remains available; production launchers use
+the three-frame mode described above.
 
 The overlay uses placement **X/Y and table Z=0 mm**, not flange Z=230 mm.
 It inverts the calibration using all three tag-offset components. Cells are
@@ -392,6 +421,49 @@ cups, raised depth and uncertain visibility still prevent placement. The image
 labels distinguish **CUP**, **OBJECT** and **DEPTH CHECK** so an unmatched depth
 patch is not presented as an additional cup.
 
+The operator-selected **cup-local uncertainty allowance** also handles depth
+fragments that fail the connected-region rules below. Around each confidently
+assigned cup, observed raised samples may be excluded from neighbouring cells
+when both their perspective-scaled image distance and physical XY distance are
+within **40 mm of that same cup**. Small detached fragments can qualify; the
+allowance does not depend on depth joining two or more cups. The exact mask must
+still supply at least 32 usable samples, at least 95% plausible valid depth and
+the same unique physical cell majority used for cup assignment. Samples must
+be above 30 mm, no higher than 160 mm and no higher than that cup's observed top
+plus 5 mm. This does not change the ordinary 30 mm obstacle threshold.
+
+A wider allowance handles low depth tails outside the grid that overlap a
+destination in the camera image: both distances may extend to **80 mm**, but
+only for samples **outside every cell's physical footprint**, at most **70 mm
+above the table**, and below the same cup-height ceiling. These samples must
+connect to the cup's raised exact-mask samples through observed raised depth
+inside both distance bounds. A connecting path does not give its in-cell
+samples this wider allowance.
+
+These allowances exclude every detection's exact mask, protected mask holes and
+missing depth. Known cup cells remain occupied; labelled objects retain their
+checks. Excluded samples reduce measured visibility rather than count as clear
+table, so at least half the checking area and floor must still be visible and
+pass the remaining table/depth checks. A cup assignment records
+`depth_uncertainty`, including the two margins and edge/tail pixel counts;
+each cell records `cup_uncertain_excluded_pixels`.
+
+**Accepted limitation:** small unlabelled objects close to cups can be missed,
+even when disconnected from the cup's depth. Saved-scene tests demonstrate this
+for 20 × 20 mm objects at 40 mm and 80 mm heights within the local margin, and
+for a low 40 × 40 × 40 mm object outside all cells within the wider tail.
+The same small objects with labels remain blocked. Tested 40 × 40 × 80 mm and
+60 × 60 × 80 mm obstacles extending beyond the local margin also remain blocked;
+this is evidence for those scenes, not a guarantee for all object arrangements.
+The saved 08:02:24–08:02:29 checks from 13 November clear both P10 and P11
+while preserving the other cups. After a cup was successfully placed in P10,
+its foreground depth spill reached 51–65 mm above the table outside all cells;
+the earlier 50 mm tail-height cap incorrectly blocked P11. The 70 mm limit
+allows those observed tails while retaining the 80 mm distance bound, cup-height
+ceiling and connection to the same cup. It does not extend the 40 mm allowance
+inside other cells. Fresh multi-frame checks, placement targets,
+reservations and recovery handling are unchanged.
+
 In neighbouring cells, the assigned cup's exact mask pixels with valid,
 plausible depth are excluded from the obstacle/table tests. The default policy
 also groups **connected raised-depth regions** belonging to that cup. A region
@@ -401,15 +473,17 @@ Regions touching an image edge or exceeding 131,072 pixels
 are rejected. Raised samples must be above 30 mm and at or below 160 mm relative
 to the table. Enclosed mask holes and invalid depth stay outside the exemption.
 
-When depth joins **two to four cups in different cells**, their disjoint exact
-YOLO masks can divide that region. Each pixel goes to its nearest cup mask in
+When depth joins **two to four cups in different cells**, the exclusive pixels
+of their exact YOLO masks can divide that region. Pixels shared by overlapping
+masks cannot seed either cup or connect a part to it; they remain unresolved.
+Each other pixel goes to its nearest cup mask in
 the image, provided the closest mask wins by more than one pixel of distance.
-Exact mask pixels stay with their own cup. Each resulting part must connect to
+Exclusive exact-mask pixels stay with their own cup. Each resulting part must connect to
 its own mask, contain at least 32 exact pixels, and have at least 50% exact-mask
 coverage. Each part must also favour its cup's existing physical cell. Another
 detected object anywhere in the original shared region rejects the split.
-Overlapping masks, cups sharing one cell, or unsupported parts retain the prior
-checks. All participants must pass the final pooled area checks before a shared
+Cups sharing one cell or masks with insufficient exclusive support retain the
+prior checks. All participants must pass the final pooled area checks before an individual
 split is applied; failure cancels that split and any connected shared splits.
 
 An unresolved seam between parts normally remains checked. A thin boundary can
@@ -431,6 +505,39 @@ still blocks because it fails the 3D continuity check. Records include total
 seam pixels and shared-boundary pixels separately. Remaining uncertainty can
 still block a cell; the number of blocked cells is not forced to equal cup count.
 
+When that individual split fails, the **cup-edge tolerance** can instead treat a
+joined region as belonging collectively to two to four identified cups. Each
+cup must still have a confirmed physical owner cell and at least 32 exclusive
+raised exact-mask pixels. Together, exclusive cup seeds must cover at least half
+the region, and at least half its unique physical XY bins must lie in the union
+of their owner cells. Other labelled objects veto the region. Successful
+individual splits keep their existing rules.
+
+For samples physically inside another grid cell, the group exemption requires
+both image proximity and physical XY proximity within **20 mm of the same cup**.
+Only finite, positive-depth exact-mask samples at plausible cup height and owned
+by that cup can support the outline. Zero depth, mask holes, overlapping-mask
+conflicts and existing foreign ownership cannot expand it. The owning cells
+remain occupied; shared samples reduce the visible area of neighbouring cells,
+which must still have enough observed clear table. No missing depth is filled.
+
+This is the operator-selected tolerance for joined cup-depth edges. It pools
+support across cups without requiring each individual partition's 50% coverage,
+the older fringe's 25% area cap, or its 12 mm surface continuity. It can miss
+small unlabelled objects touching those edges: the saved P10 scene with an
+8 × 20 × 40 mm item joined to a cup by a thin bridge is a documented example.
+The same item with an object label still blocks. Samples outside the accepted
+cup uncertainty regions retain their checks; this heuristic cannot detect every
+obstacle. It clears all six saved 13:24:55–13:25:00 P10 failures; repeated frames
+alone could not resolve those persistent depth edges. The rule applies to every
+placement cell and does not move the placement targets.
+
+Saved cup assignments include `depth_shared_groups`, listing participating cell
+IDs, exclusive support, physical area support, shared pixel counts and retained
+foreign-cell pixels. These are group evidence, not a successful individual cup
+footprint assignment. Fresh camera checks, motion completion, recovery and
+reservation checks remain active. Restart a running dashboard to load the change.
+
 Observed robot X/Y points occupy a **2 × 2 mm raster**; each occupied bin votes
 once, avoiding double counting dense image samples. The exact raised cup-mask
 footprint must have one largest-area cell containing at least half that footprint,
@@ -449,7 +556,8 @@ pixels attributed to the cup.
 This is an approximate observed footprint, not a measurement of hidden space.
 **Known limitation accepted for this policy:** an unlabelled object touching a
 cup's depth region can be absorbed into the cup and missed in a neighbouring
-cell. A separately detected object or disconnected depth object still blocks.
+cell. A separately detected object still blocks. Disconnected depth is checked
+unless it qualifies for the separate cup-local uncertainty allowance above.
 The saved-frame replay clears P9/P10, while its touching-object counterexample
 demonstrates this limitation. Missing depth and insufficient visible table still
 block placement; this policy does not force all non-cup cells to become free.
@@ -482,19 +590,32 @@ behavior. Reservations remain unchanged until their normal completion or explici
 release. Occupied or unknown locations elsewhere do not block a pick into a
 different, verified clear destination.
 
-### Eight-position layout outside the marked tray
+### Seven-position layout outside the marked tray
 
-`placing_grid_outside_tray.json` now contains **P2–P5 and P8–P11**, with
+`placing_grid_outside_tray.json` now contains **P2–P5 and P8–P10**, with
 **90 × 90 mm cells**. P1, P7, P6 and P12 were removed at the operator's request
-after a failed move toward P6. IDs were not renumbered. The remaining placement
-centres are unchanged: X=350, 450, 550 and 650 mm, at Y=−260 and −370 mm;
-flange Z stays at 230 mm. In the image they form two columns of four. The
-overall footprint is 390 × 200 mm, with 10 mm gaps along X and 20 mm along Y.
+after a failed move toward P6. P11 was subsequently removed after its raised
+placement approach failed; the operator chose seven positions instead of a third
+row. IDs were not renumbered. The first row (P2–P5) stays at Y=−260 mm with
+X=350, 450, 550 and 650 mm. The second row (P8–P10) stays at Y=−380 mm with
+X=350, 450 and 550 mm. Centre spacing between rows is 120 mm. Flange Z stays at
+230 mm. In the image they form columns of four and three. The bounding footprint
+is 390 × 210 mm, with 10 mm gaps along X and 30 mm along Y.
 
 The selected location's JSON X/Y/Z goes directly to the placing motion; for
-example, P3 still places at X=450, Y=−260, flange Z=230 mm. Shrinking the cells
-changes their assessment/overlay footprints, not these destinations. Removing
-the four outer cells does not prove every remaining target is reachable.
+example, P3 still places at X=450, Y=−260, flange Z=230 mm, while P9 now places
+at X=450, Y=−380, flange Z=230 mm. The second-row shift changes both the camera
+overlay and the robot's destinations. The earlier cell-size reduction changed
+only the assessment footprints. Removing locations does not prove every
+remaining target is reachable.
+
+The matching frozen table reference was derived from the original verified
+empty-table capture. Only the last RGB/depth pair of that three-frame scan is
+archived, so reassessment for the shifted layout uses that pair, with this
+limitation recorded in the reference provenance. The seven-cell reference is
+fitted only after all seven unchanged areas independently pass the empty-frame
+check without a reference or cup exclusions. The live scene is not used to fit a
+new reference; a fresh scan is still required after the layout changes.
 
 The grid file's optional `cell_size_mm` is now authoritative for each capture,
 including motion verification. This file sets it to 90. `--grid-cell-size` is
@@ -511,9 +632,11 @@ python capture_and_detect.py --web --gateway http://192.168.125.20:8000 \
   --placing-grid placing_grid_outside_tray.json --grid-cell-size 90
 ```
 
-Restart the app and run **Scan workspace** after this update. Remaining occupied
-and reserved states were preserved; removing P6 does not release P9's related
-reservation or acknowledge recovery. A complete backup of the former grid is
+Restart the app and run **Scan workspace** after this update. The seven remaining
+occupied/reserved records are preserved. The removed P11 record is retained in
+the layout backup; the interrupted run's recovery journal remains unchanged.
+Removing a destination does not acknowledge recovery or release a held cup.
+A complete backup of the former twelve-position grid is
 saved in `output/placing-grid-before-eight-cells-20261111_123234_115061.json`
 relative to the repository root. The usual three-frame checks, cup assignment,
 obstacle checks and reservation rules still apply. Flat tape does not count as
@@ -612,8 +735,8 @@ assumes the same cup size and tabletop setup as the existing handover code.
 
 The selected cup must match a fresh observation uniquely within **20 mm in 3D
 and 40 pixels**, with unchanged calibration and advancing camera sequences.
-This verification runs once per cup, before any robot command in its sequence.
-Its coordinates are used for the pick; there is no second camera check at left
+This verification window completes before any robot command in that cup's sequence.
+Its final accepted coordinates are used for the pick; there is no second camera check at left
 ready. Other cups' IDs in verification images never change the user's selection.
 
 Image age is checked before starting, approaching, descending and gripping.
@@ -752,7 +875,24 @@ separate from the Pi gateway requirements.
 ### Robot controls panel
 
 Expand **Robot controls** in the same dashboard. These explicit controls do not
-use the language model or a cup detection:
+use the language model or a cup detection. In live mode the app reads the
+gateway's `/openapi.json` at startup and when **Refresh robot status** is used.
+Only actions supported by that contract and their required status checks are
+shown. Unsupported actions are also rejected by the backend before obtaining
+control or writing recovery records. If discovery fails, movement controls stay
+hidden and Refresh remains available to try again. Demo/dry-run controls are
+previews and do not discover or contact hardware.
+
+The current Lynx C++ gateway (API version 0.4.0) supports Home, grippers,
+status and software Stop. Its missing collision-status route is supplied by
+the read-only controller connection described below. Collision acknowledgement,
+guarded reset and guarded initialization are hidden on that gateway. Its legacy
+`POST /robot/rapid/start` with `reset_program_pointer=true` starts execution from
+main; it does not provide the reset-and-leave-stopped contract or the generation
+check that prevents a delayed initialization from restarting after Stop.
+The dashboard does not use it as a substitute for those actions.
+
+Controls available according to the connected gateway:
 
 - **Movement speed** sets normal speed for future cup plans, from 1 to 1500 mm/s,
   and caps sequence homes at `min(selected speed, 200)` mm/s. Cup flips remain
@@ -762,13 +902,13 @@ use the language model or a cup detection:
   home cap when needed. It cancels pending selections and lasts until the app
   restarts. It does not change a movement already running or the FlexPendant
   speed override.
-- **Home left / right / both** reviews a home request without needing a scan.
-  Both runs left first, then right, only after the first arm's completion and
+- **Home left / right / Right, then left home** reviews a home request without needing a scan.
+  Both runs right first, then left, only after the first arm's completion and
   measured home joints are confirmed. Manual home speed is capped at
   `min(selected speed, 100)` mm/s, separate from homes within the cup sequence.
 - **Open / close grippers** operates the selected arm or both, sequentially.
   Opening a gripper can release a held cup. These controls do not reposition it.
-- **Refresh robot status** reads RAPID execution, motor state, operation mode,
+- **Refresh robot status** refreshes available controls and reads RAPID execution, motor state, operation mode,
   and collision acknowledgement state. It is a timestamped snapshot. Demo and
   dry-run modes show simulated status and send no robot requests.
 - **Make all locations available** opens a review for every placement location.
@@ -782,13 +922,13 @@ use the language model or a cup detection:
   controller restart or new operation cancels the review so it cannot clear a
   different set of records from the one you inspected. It is an explicit panel
   control, not a language-model command.
-- **Review app recovery** leads to the existing inspection acknowledgement. It
+- **Acknowledge app recovery** leads to the existing inspection acknowledgement. It
   clears only this app's local recovery block and sends no robot command.
 - **Acknowledge collision** requests the controller's acknowledgement after
   inspection. It does not start RAPID, turn motors on, or move home.
-- **Reset RAPID** stops execution, clears and verifies pending arm request
+- **Reset robot program (leave stopped)** stops execution, clears and verifies pending arm request
   flags, and resets the program pointer to main. It leaves RAPID stopped.
-- **Initialize RAPID** explicitly clears pending requests and starts at main,
+- **Initialize robot program** explicitly clears pending requests and starts at main,
   rather than resuming an interrupted instruction. The arm programs may
   initialize/calibrate the grippers. AUTO, motors already on, and a cleared
   collision state are required; the app does not switch modes or enable motors.
@@ -812,16 +952,33 @@ The Pi gateway may be refused. In that case use the FlexPendant; this app does
 not change privileges or bypass collision supervision. Motor enable, emergency
 stop recovery and other controller faults can also require physical controls.
 
-**Deployment:** install the updated gateway code in this checkout before using
-the live robot panel. The new home/gripper controls require a confirmed clear
-collision status as well as RAPID running, motors on and AUTO mode; an unknown
-or unreadable collision state blocks these commands. Speed applies locally.
-Rebuild and redeploy the Pi Docker image using
-[`gateway/README_START.md`](../gateway/README_START.md#deploy-to-the-raspberry-pi),
-then restart the Mac web app. Restarting an old Docker image does not install
-these routes. An older gateway is rejected for these new actions; there is no
-fallback to resuming RAPID or sending raw commands. Do not update/restart the
-gateway during robot movement.
+**Controller status on Lynx:** `--controller-profile` defaults to the adjacent
+`robot_controller.json`. This explicit profile binds gateway
+`http://192.168.125.20:8000/api/v1` to controller `http://192.168.125.1`.
+It contains URLs only. An absent profile or a different gateway URL does not
+enable the native connection. Use a separate verified profile when changing
+the installation; the app does not guess a controller from the gateway address.
+Native reads use ABB Digest authentication and the gateway's existing credential
+defaults, with `GATEWAY_RWS_USER` and `GATEWAY_RWS_PASSWORD` overrides.
+
+Before each manual home/gripper command, the app reads both arms' six joints and
+arm angle from the gateway and native controller, requiring agreement within
+0.1 degree. It then reads `/rw/panel/coldetstate`. These are GET requests only;
+this helper cannot reset/start/stop the robot, acknowledge faults, or enable motors.
+The joint comparison checks consistency, not unique controller identity.
+Collision must be `INIT` or `CONFIRMED`, with RAPID running, motors on and AUTO.
+Missing data, a mismatched joint reading, a failed request or another collision
+state blocks the command. When the gateway advertises its own collision-status
+route, that route is used; failure does not trigger a native fallback.
+
+**Deployment:** restart the Mac dashboard after the robot is idle to load these
+UI/backend changes. A browser refresh alone does not reload Python code.
+Guarded reset/initialization and collision acknowledgement need those routes
+implemented in the installed gateway package. The Python gateway in this
+checkout provides them; updating its source does not update the Lynx C++ package.
+For a Pi Docker deployment see
+[`gateway/README_START.md`](../gateway/README_START.md#deploy-to-the-raspberry-pi).
+Do not update/restart either gateway or dashboard during robot movement.
 
 ## Local language commands
 

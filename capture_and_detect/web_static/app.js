@@ -569,6 +569,29 @@
     text("save-cup-hint", !enabled ? "Saving references is unavailable in this session." : !safeScan() ? "Scan again and select a cup before saving its reference." : cup?.can_save !== true ? "This detection cannot be saved. Choose a cup with a usable reference image." : "Save a name and reference image locally. Saving sends no movement command.");
   }
 
+  // Only explicit server capabilities authorize hardware previews. The browser
+  // never infers support from gateway names, demo mode or an earlier snapshot.
+  function robotCapability(action) {
+    const capabilities = state?.robot_controls?.capabilities;
+    const capability = capabilities && !Array.isArray(capabilities) && typeof capabilities === "object"
+      && Object.hasOwn(capabilities, action) ? capabilities[action] : null;
+    return capability && !Array.isArray(capability) && typeof capability === "object" ? capability : null;
+  }
+
+  const robotActionSupported = (action) => robotCapability(action)?.supported === true;
+  const robotStatusAvailable = () => robotCapability("robot_status")?.supported !== false;
+  const capabilityText = (action, field, fallback = "") => {
+    const value = robotCapability(action)?.[field];
+    return typeof value === "string" && value.trim() ? value : fallback;
+  };
+
+  function robotRequestSupported(path, payload) {
+    if (path === "/api/control_preview") return robotActionSupported(payload.action);
+    if (path === "/api/control_confirm") return robotActionSupported(state?.robot_controls?.proposal?.action);
+    if (path === "/api/robot_status") return robotStatusAvailable();
+    return true; // Stop remains a best-effort request; local settings need no gateway action.
+  }
+
   function renderRobotControls() {
     const controls = state?.robot_controls;
     const snapshot = controls?.status;
@@ -585,9 +608,28 @@
     renderHandoverControls();
     renderReleaseLocations();
     text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
-    dom["robot-status-button"].disabled = !idle() || Boolean(state?.stop_in_flight);
+    hide("robot-status-button", !robotStatusAvailable());
+    dom["robot-status-button"].disabled = !idle() || Boolean(state?.stop_in_flight) || !robotStatusAvailable();
     text("robot-status-button", state?.busy && state.operation === "robot_status" ? "Reading controller…" : "Refresh robot status");
-    document.querySelectorAll("[data-robot-action]").forEach((button) => { button.disabled = !enabled; });
+    const actionButtons = Array.from(document.querySelectorAll("[data-robot-action]"));
+    actionButtons.forEach((button) => {
+      const action = button.dataset.robotAction;
+      const supported = robotActionSupported(action);
+      button.hidden = !supported;
+      button.disabled = !enabled || !supported;
+      button.dataset.defaultLabel ||= button.textContent;
+      if (!button.dataset.arm) button.textContent = capabilityText(action, "label", button.dataset.defaultLabel);
+      button.title = capabilityText(action, "description", capabilityText(action, "reason"));
+    });
+    hide("robot-home-tool", !robotActionSupported("home"));
+    hide("robot-gripper-tool", !robotActionSupported("open") && !robotActionSupported("grip"));
+    const capabilityMap = controls?.capabilities;
+    const knownCapabilities = capabilityMap && typeof capabilityMap === "object" && !Array.isArray(capabilityMap);
+    const supportedActions = actionButtons.some((button) => !button.hidden);
+    text("robot-capability-notice", !knownCapabilities
+      ? "Gateway controls have not been confirmed. Refresh robot status to check which actions are available. Local settings remain available."
+      : !supportedActions ? "No robot actions are available from this gateway. Local settings and app recovery remain available."
+      : "Only controls supported by this gateway are shown. Each robot action still needs a reviewed confirmation.");
     dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
     text("robot-controls-badge", !connected ? "Disconnected" : state?.recovery_required ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
     dom["robot-controls-panel"].classList.toggle("live", state?.mode === "live");
@@ -599,16 +641,21 @@
     const statusError = asMessage(snapshot?.collision_error);
     text("robot-status-error", statusError);
     hide("robot-status-error", !statusError);
-    const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : state?.recovery_required ? "Inspect both arms and the cup, then use Review app recovery to clear the local block. This does not clear the robot’s collision fault." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
+    const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : state?.recovery_required ? "Inspect both arms and the cup, then use Acknowledge app recovery to clear the local block. This does not clear the robot’s collision fault." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
     text("robot-control-inhibit", inhibit);
     hide("robot-control-inhibit", !inhibit);
     hide("robot-control-proposal", !proposal || localStopInhibit || state?.stop_requested);
     dom["robot-control-cancel"].disabled = !enabled || !proposal;
-    dom["robot-control-ack"].disabled = !enabled || !proposal;
+    const proposalSupported = Boolean(proposal && robotActionSupported(proposal.action));
+    dom["robot-control-ack"].disabled = !enabled || !proposalSupported;
+    hide("robot-control-ack-row", !proposalSupported);
+    hide("robot-control-confirm", !proposalSupported);
+    if (!proposalSupported) dom["robot-control-ack"].checked = false;
     if (proposal) {
-      const titles = {home: "Move to home", open: "Open gripper", grip: "Close gripper", collision_ack: "Acknowledge controller collision", rapid_reset: "Reset RAPID and leave stopped", rapid_start: "Initialize RAPID from a fresh start"};
-      text("robot-control-proposal-heading", `${titles[proposal.action] || humanize(proposal.action)}${proposal.arm ? ` · ${proposal.arm === "both" ? "both arms" : `${proposal.arm} arm`}` : ""}`);
-      text("robot-control-description", proposal.description);
+      const titles = {home: "Move to home", open: "Open gripper", grip: "Close gripper", collision_ack: "Acknowledge controller collision", rapid_reset: "Reset robot program (leave stopped)", rapid_start: "Initialize robot program"};
+      text("robot-control-proposal-heading", `${capabilityText(proposal.action, "label", titles[proposal.action] || humanize(proposal.action))}${proposal.arm ? ` · ${proposal.arm === "both" ? "both arms" : `${proposal.arm} arm`}` : ""}`);
+      text("robot-control-description", proposalSupported ? proposal.description
+        : capabilityText(proposal.action, "reason", "This action is no longer available from the gateway. Cancel this preview and refresh robot status."));
       text("robot-control-proposal-speed", Number.isFinite(proposal.speed) ? `Reviewed speed: ${speedText(proposal.speed)}.` : "");
       hide("robot-control-proposal-speed", !Number.isFinite(proposal.speed));
       text("robot-control-confirm", state?.mode === "live" ? "Confirm robot action" : "Run preview only");
@@ -670,7 +717,7 @@
     const remaining = proposal ? Math.max(0, Math.ceil((controlDeadline - performance.now()) / 1000)) : 0;
     text("robot-control-countdown", remaining ? `${remaining}s to confirm` : "Preview expired");
     dom["robot-control-countdown"].classList.toggle("expired", remaining === 0);
-    dom["robot-control-confirm"].disabled = !proposal || !controlActionable() || remaining === 0 || !dom["robot-control-ack"].checked;
+    dom["robot-control-confirm"].disabled = !proposal || !robotActionSupported(proposal.action) || !controlActionable() || remaining === 0 || !dom["robot-control-ack"].checked;
   }
 
   function updateCountdown() {
@@ -846,7 +893,7 @@
     const stopping = path === "/api/stop";
     const adminMutation = ["/api/speed", "/api/handover_offset", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
     const permitted = stopping ? canStop() : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
-    if (!permitted || !state?.csrf_token) return;
+    if (!permitted || !state?.csrf_token || !robotRequestSupported(path, payload)) return;
     if (releaseReview) cancelReleaseReview();
     const instance = state.instance_id;
     quickGeneration += 1;
@@ -1016,7 +1063,7 @@
   });
   dom["robot-status-button"].addEventListener("click", () => { if (!dom["robot-status-button"].disabled) post("/api/robot_status"); });
   document.querySelectorAll("[data-robot-action]").forEach((button) => button.addEventListener("click", () => {
-    if (!button.disabled) post("/api/control_preview", { action: button.dataset.robotAction, arm: button.dataset.arm || null });
+    if (!button.disabled && !button.hidden && robotActionSupported(button.dataset.robotAction)) post("/api/control_preview", { action: button.dataset.robotAction, arm: button.dataset.arm || null });
   }));
   dom["robot-local-recovery-button"].addEventListener("click", () => {
     if (dom["robot-local-recovery-button"].disabled) return;

@@ -24,7 +24,7 @@ def control_plan(action, arm, speed):
     if action in ("home", "open", "grip"):
         if arm not in ("left", "right", "both"):
             raise SelectionError("Choose the left arm, right arm, or both arms.")
-        arms = ("left", "right") if arm == "both" else (arm,)
+        arms = (("right", "left") if action == "home" else ("left", "right")) if arm == "both" else (arm,)
         for target in arms:
             body = {"arm": target, "wait": True}
             if action == "home":
@@ -34,7 +34,7 @@ def control_plan(action, arm, speed):
                 body["action"] = action
                 endpoint = RobotClient.GRIPPER_ENDPOINT
             jobs.append({"name": f"operator_{target}_{action}", "endpoint": endpoint, "body": body})
-        target = "left arm, then right arm" if arm == "both" else f"{arm} arm"
+        target = f"{arms[0]} arm, then {arms[1]} arm" if arm == "both" else f"{arm} arm"
         if action == "home":
             description = (f"Move the {target} to its configured home joint position at up to "
                            f"{min(speed, 100):g} mm/s. Inspect the whole return path first. "
@@ -82,7 +82,26 @@ class RobotControls:
                         ("token", "action", "arm", "speed", "description")}
             proposal["expires_in"] = max(0, self.ttl - (self.clock() - self.pending["created"]))
         return {"status": copy.deepcopy(self.status), "proposal": proposal,
-                "home_speed": min(self.session.speed, 100)}
+                "home_speed": min(self.session.speed, 100), "capabilities": self.capabilities()}
+
+    def capabilities(self):
+        capabilities = getattr(self.session.robot, "operator_capabilities", None)
+        if isinstance(capabilities, dict):
+            return copy.deepcopy(capabilities)
+        # Custom library robots must explicitly advertise real operator actions.
+        # Simulation has no external endpoint and may preview all controls.
+        supported = self.session.robot.dry_run is True
+        return {action: {"supported": supported if supported or action != "robot_status" else None,
+                        "reason": None if supported else
+                "Robot control support has not been read. Refresh robot status."}
+                for action in ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
+                               "rapid_start", "collision_ack", "collision_status")}
+
+    def _require_supported(self, action):
+        capability = self.capabilities().get(action, {})
+        if capability.get("supported") is not True:
+            raise SelectionError(capability.get("reason") or "This action is not supported by the connected gateway.")
+        return capability
 
     def _check_ready(self):
         self.session._check_stop()
@@ -102,6 +121,10 @@ class RobotControls:
         # Discard a prior successful snapshot on failure, rather than displaying
         # it as fresh after losing the gateway connection.
         self.status = None
+        refresh = getattr(self.session.robot, "refresh_operator_capabilities", None)
+        if callable(refresh):
+            refresh()
+        self._require_supported("robot_status")
         self.status = self.session.robot.read_control_status()
         return {"message": "Robot status refreshed." if not self.session.robot.dry_run else
                            "Simulated robot status; no gateway request sent."}
@@ -119,9 +142,10 @@ class RobotControls:
     def propose(self, action, arm):
         self.cancel()
         self._check_ready()
+        capability = self._require_supported(action)
         plan = control_plan(action, arm, self.session.speed)
         self.pending = {**plan, "token": secrets.token_hex(8), "created": self.clock(),
-                        "session_speed": self.session.speed}
+                        "session_speed": self.session.speed, "capability": capability}
         return {"message": "Review the robot control action and acknowledge inspection before confirming."}
 
     def confirm(self, token):
@@ -131,6 +155,9 @@ class RobotControls:
         if self.clock() - pending["created"] >= self.ttl:
             raise SelectionError("Robot control preview expired. Preview the action again.")
         self._check_ready()
+        capability = self._require_supported(pending["action"])
+        if capability != pending["capability"]:
+            raise SelectionError("Gateway support changed. Review the robot action again.")
         if self.session.speed != pending["session_speed"]:
             raise SelectionError("Speed changed. Preview the action again.")
         self.status = None

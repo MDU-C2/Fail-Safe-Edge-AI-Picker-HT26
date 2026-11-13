@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "gateway_api": "http://192.168.125.20:8000/api/v1",
+  "controller_url": "http://192.168.125.1"
+}

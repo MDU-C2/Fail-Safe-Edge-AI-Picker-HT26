@@ -17,6 +17,7 @@ from cup_inventory import finite_number
 from detection_masks import decode_mask
 from placement_depth_split import MAX_GROUPS, split_component
 from placement_depth_shared import shared_boundaries
+from placement_depth_group import shared_group_region
 
 
 MAX_FRAME_PIXELS = 8_388_608
@@ -29,7 +30,8 @@ XY_BIN_MM = 2.0
 _METADATA = ("depth_region_pixels", "depth_region_extra_pixels", "depth_area_mm2",
              "depth_area_by_location_mm2", "depth_area_fraction", "depth_assignment_method",
              "depth_seed_area_mm2", "depth_seed_area_fraction", "depth_split_components",
-             "depth_split_pixels", "depth_split_seam_pixels", "depth_shared_boundary_pixels")
+             "depth_split_pixels", "depth_split_seam_pixels", "depth_shared_boundary_pixels",
+             "depth_shared_groups")
 
 
 def _holes(mask):
@@ -75,6 +77,14 @@ def assign_depth_regions(depth, objects, locations, owners, assignments, *, tran
     receives an invented single owner. Both owner cells remain occupied.
     Bounds also limit mask/candidate bounding-box work and the pooled pixels of
     each cup. Rejection retains exact-mask/fringe ownership without augmentation.
+
+    If a 2--4 cup split cannot pass individually, the operator-selected group
+    fallback may share their observed region: each cup still needs its exact
+    physical cell vote, but coverage and area are pooled across the group.
+    Samples inside another cell require both image and physical XY proximity
+    within 20 mm of a valid exact cup outline. Small unlabelled touching objects
+    can be missed by this explicitly accepted tolerance. See ``depth_shared_groups``
+    for its audit evidence; no individual cup is assigned the pooled footprint.
     """
     if (not isinstance(depth, np.ndarray) or depth.ndim != 2
             or not np.issubdtype(depth.dtype, np.number) or np.iscomplexobj(depth)
@@ -198,7 +208,7 @@ def assign_depth_regions(depth, objects, locations, owners, assignments, *, tran
     # Check the remaining crop work before mutating any cup's ownership. A
     # later resource rejection must not return a partially augmented fallback.
     work += sum(int(stats[c, cv2.CC_STAT_WIDTH]) * int(stats[c, cv2.CC_STAT_HEIGHT])
-                * (1 if len(associations[c]) == 1 else 5 + 8 * len(associations[c]))
+                * (1 if len(associations[c]) == 1 else 8 + 12 * len(associations[c]))
                 for c in candidates)
     if work > work_limit:
         return fallback
@@ -331,7 +341,7 @@ def assign_depth_regions(depth, objects, locations, owners, assignments, *, tran
                             or not shared_vote_agrees(parts[g], boundary, records[groups[g][0]]["location_id"])):
                         shared = []
                         break
-            bundles.append({"parts": parts, "seam": seam_coordinates, "shared": shared})
+            bundles.append({"component": component, "parts": parts, "seam": seam_coordinates, "shared": shared})
 
     def pooled_plans(active):
         coordinates = {}
@@ -409,4 +419,81 @@ def assign_depth_regions(depth, objects, locations, owners, assignments, *, tran
                           depth_split_seam_pixels=sum(len(b["seam"][0]) for b in split_bundles),
                           depth_shared_boundary_pixels=sum(len(c[0]) for b in split_bundles
                                                            for pair, c in b["shared"] if g in pair))
+    # A failed individual split may still have reliable collective cup support.
+    # Keep that ambiguity explicit; never invent one owner for these samples.
+    accepted = {bundle["component"] for bundle in bundles}
+    support_cache = {}
+    # Cap augmentation work per cup (accepted region plans plus shared groups).
+    # The original exact-mask/fringe ownership remains independently bounded.
+    shared_counts = {g: len(plan[0]) for g, plan in plans.items()}
+    for bundle in bundles:
+        for pair, coordinates in bundle["shared"]:
+            for g in pair:
+                shared_counts[g] = shared_counts.get(g, 0) + len(coordinates[0])
+    scale = float(np.linalg.svd(matrix, compute_uv=False).min())
+    if not np.isfinite(scale) or scale <= 1e-12:
+        return updated, records, shared_regions
+    for component in candidates:
+        members = [g for g, _ in associations[component]]
+        if (component in accepted or not 2 <= len(members) <= MAX_GROUPS
+                or any(g not in seed_votes for g in members)):
+            continue
+        x, y, w, h = stats[component, :4]
+        region = labels[y:y+h, x:x+w] == component
+        seeds, hulls = [], []
+        for g in members:
+            record_index, _, sx, sy, mask = groups[g]
+            if g not in support_cache:
+                local_depth = depth[sy:sy+mask.shape[0], sx:sx+mask.shape[1]]
+                my, mx = np.nonzero(mask & np.isfinite(local_depth) & (local_depth > 0))
+                world = physical_points(my+sy, mx+sx)
+                support_cache[g] = None
+                if world is not None:
+                    optical = depth[my+sy, mx+sx]
+                    owner = place_indices[records[record_index]["location_id"]] + 1
+                    valid = (np.isfinite(optical) & (optical > 0)
+                             & (world[:, 2]-table_z >= -30.) & (world[:, 2]-table_z <= check_height)
+                             & (owners[my+sy, mx+sx] == owner))
+                    if np.count_nonzero(valid) >= MIN_SEED_PIXELS:
+                        support = np.zeros(mask.shape, dtype=bool)
+                        support[my[valid], mx[valid]] = True
+                        hull = cv2.convexHull(world[valid, :2].astype(np.float32))
+                        if len(hull) >= 3 and cv2.contourArea(hull) > 0:
+                            support_cache[g] = support, hull
+            cached = support_cache[g]
+            if cached is None:
+                break
+            support, hull = cached
+            seed = np.zeros(region.shape, dtype=bool)
+            left, top = max(x, sx), max(y, sy)
+            right, bottom = min(x+w, sx+mask.shape[1]), min(y+h, sy+mask.shape[0])
+            seed[top-y:bottom-y, left-x:right-x] = support[top-sy:bottom-sy, left-sx:right-sx]
+            seeds.append(seed)
+            hulls.append(hull)
+        else:
+            supported_pixels = region | np.logical_or.reduce(seeds)
+            rows, columns = np.nonzero(supported_pixels)
+            world = physical_points(rows+y, columns+x)
+            if world is None:
+                continue
+            points = np.full(region.shape + (3,), np.nan)
+            points[rows, columns] = world
+            owner_indices = [place_indices[records[groups[g][0]]["location_id"]] for g in members]
+            eligible = ((owners[y:y+h, x:x+w] == 0) & (updated[y:y+h, x:x+w] == 0))
+            result = shared_group_region(
+                region, seeds, hulls, points,
+                depth[y:y+h, x:x+w], eligible,
+                locations=locations, owner_indices=owner_indices, cell_size=cell_size,
+                min_depth_scale=scale, focal_length=max(fx, fy))
+            if result is None:
+                continue
+            selected, evidence = result
+            if any(shared_counts.get(g, 0) + evidence["shared_pixels"] > MAX_REGION_PIXELS for g in members):
+                continue
+            rows, columns = np.nonzero(selected)
+            shared_regions.append((frozenset(i+1 for i in owner_indices), (rows+y, columns+x)))
+            evidence["location_ids"] = [locations[i]["id"] for i in owner_indices]
+            for g in members:
+                shared_counts[g] = shared_counts.get(g, 0) + evidence["shared_pixels"]
+                records[groups[g][0]].setdefault("depth_shared_groups", []).append(copy.deepcopy(evidence))
     return updated, records, shared_regions

@@ -33,6 +33,10 @@ class WebFixture:
         self.capture_error = None
         self.robot = RobotDouble()
         self.robot.dry_run = dry_run
+        self.robot.operator_capabilities = {
+            action: {"supported": True, "reason": None, "protocol": "offline_fixture"}
+            for action in ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
+                           "rapid_start", "collision_ack", "collision_status")}
         self.interpreter = Mock()
         self.interpreter.interpret.return_value = {
             "action": "hover", "selector": "id", "cup_id": 1, "message": "Hover above cup 1."}

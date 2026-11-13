@@ -40,10 +40,12 @@ class PlacementCupSummaryTests(PlacementCupFixture):
         self.assertEqual(result["cup_summary"]["location_ids"], [11])
         self.assertEqual([slot["state"] for slot in result["slots"]], ["occupied", "clear"])
 
-    def test_unlabelled_obstacle_is_preserved_even_when_cup_count_is_one(self):
+    def test_larger_unlabelled_obstacle_is_preserved_even_when_cup_count_is_one(self):
         mask = self.mask()
         self.depth[mask] = 450.
-        self.depth[234:242, 370:378] = 450.
+        # Leave a substantial core beyond the accepted 40 mm cup margin; a
+        # cup count of one must not cap independent obstacle occupancy at one.
+        self.depth[228:252, 360:402] = 450.
         result = self.combine(self.vision.assess(self.depth, [self.obj(mask)], self.locations))
         self.assertEqual(result["cup_summary"]["assigned_count"], 1)
         self.assertEqual(result["cup_summary"]["location_ids"], [11])

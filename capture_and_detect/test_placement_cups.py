@@ -282,13 +282,18 @@ class PlacementCupIntegrationTests(PlacementCupFixture):
         self.depth[mask] = 450.
         self.assertEqual(self.states(), ["occupied", "occupied"])
 
-    def test_noncup_inside_cup_box_but_outside_exact_mask_still_blocks_neighbor(self):
+    def test_small_unlabelled_fragment_inside_cup_box_uses_local_uncertainty(self):
         mask = self.mask()
         self.depth[mask] = 450.
         obj = self.obj(mask, box=[330, 232, 380, 248])
         self.assertEqual(self.states([obj]), ["occupied", "clear"])
-        self.depth[236:240, 370:374] = 450.
-        self.assertEqual(self.states([obj]), ["occupied", "occupied"])
+        fragment = self.mask(370, 374, 236, 240)
+        self.depth[fragment] = 450.
+        # This roughly 6 x 6 mm fragment is within the accepted 40 mm cup
+        # uncertainty band. Its small-object ambiguity is intentional.
+        self.assertEqual(self.states([obj]), ["occupied", "clear"])
+        other = self.obj(fragment, kind="BLOCK", detection_id=21)
+        self.assertEqual(self.states([obj, other]), ["occupied", "occupied"])
 
     def test_hole_inside_cup_mask_keeps_missing_depth_unknown_and_other_obstacle_blocked(self):
         mask = self.mask(y0=230, y1=250)
@@ -419,14 +424,18 @@ class PlacementCupDepthFringeTests(PlacementCupFixture):
         self.assertTrue(np.all(owner[spill] == 1))
         self.assertEqual(self.states([obj]), ["occupied", "clear"])
 
-    def test_close_disconnected_obstacle_remains_unowned_and_blocks_neighbor(self):
+    def test_small_disconnected_fragment_remains_unowned_but_uses_uncertainty(self):
         mask, obstacle = self.mask(), self.mask(360, 362, 236, 244)
         self.depth[mask | obstacle] = 450.
         obj = self.obj(mask)
         owner, _, assignments = self.assign([obj])
         self.assertFalse(owner[obstacle].any())
         self.assertEqual(assignments[0]["depth_fringe_pixels"], 0)
-        self.assertEqual(self.states([obj]), ["occupied", "occupied"])
+        # The local uncertainty policy accepts detached tiny fragments without
+        # asserting that the cup owns them. Exact ownership stays unchanged.
+        slots = self.vision.assess(self.depth, [obj], self.locations)
+        self.assertEqual([slot["state"] for slot in slots], ["occupied", "clear"])
+        self.assertGreater(slots[1]["cup_uncertain_excluded_pixels"], 0)
 
     def test_legacy_fringe_rejects_abrupt_step_but_whole_depth_region_can_own_it(self):
         mask, obstacle = self.mask(), self.mask(358, 360, 236, 244)
@@ -503,7 +512,7 @@ class PlacementCupDepthFringeTests(PlacementCupFixture):
         self.assertFalse(owner[232:248, 317:324].any())
         self.assertEqual(self.states([obj]), ["occupied", "clear"])
 
-    def test_narrower_fringe_preserves_disconnected_and_detected_neighbor_objects(self):
+    def test_narrower_fringe_preserves_labels_while_tiny_unlabelled_fragment_is_uncertain(self):
         mask, outer = self.mask(), self.mask(317, 330)
         for kind in ("disconnected", "segmented", "box"):
             with self.subTest(kind=kind):
@@ -522,9 +531,10 @@ class PlacementCupDepthFringeTests(PlacementCupFixture):
                 self.assertEqual(assignments[0]["depth_fringe_pixels"], 96)
                 self.assertFalse(owner[obstacle].any())
                 self.assertFalse(owner[232:248, 317:324].any())
-                self.assertEqual(self.states(objects), ["occupied", "occupied"])
+                expected = "clear" if kind == "disconnected" else "occupied"
+                self.assertEqual(self.states(objects), ["occupied", expected])
 
-    def test_narrower_fringe_leaves_large_outer_neighbor_obstacle_blocked(self):
+    def test_strip_over_fringe_budget_still_fits_the_local_uncertainty_band(self):
         mask, spill = self.mask(328, 358), self.mask(358, 366)
         self.assertGreater(spill.sum(), mask.sum() * .25)
         self.depth[mask | spill] = 450.
@@ -535,7 +545,9 @@ class PlacementCupDepthFringeTests(PlacementCupFixture):
         self.assertTrue(np.all(owner[232:248, 358:364] == 1))
         self.assertFalse(owner[232:248, 364:366].any())
         self.assertTrue(np.all(owner[mask] == 1))
-        self.assertEqual(self.states([obj]), ["occupied", "occupied"])
+        # Over 25% of this small mask is only a 12 x 24 mm strip. The separate
+        # 40 mm uncertainty policy accepts it without expanding exact ownership.
+        self.assertEqual(self.states([obj]), ["occupied", "clear"])
 
     def test_legacy_fringe_rejects_over_quarter_but_depth_region_uses_majority_area(self):
         mask = self.mask()

@@ -85,7 +85,10 @@ class PlacementVisionTests(unittest.TestCase):
 
     def test_missed_yolo_cup_still_blocks_from_raised_depth_cluster(self):
         self.depth[238:243, 318:323] = 450.0
-        self.assertEqual(self.assess(objects=[])["state"], "occupied")
+        result = self.assess(objects=[])
+        self.assertEqual(result["state"], "occupied")
+        self.assertEqual(result["raised_depth_inside_cell_pixels"], 25)
+        self.assertEqual(result["raised_depth_outside_cell_pixels"], 0)
 
     def test_small_contiguous_raised_cluster_blocks_despite_table_majority(self):
         self.depth[239:241, 318:322] = 450.0  # Eight connected elevated pixels.
@@ -127,6 +130,9 @@ class PlacementVisionTests(unittest.TestCase):
         result = self.assess(location=dict(self.location, x=500.0))
         self.assertEqual(result["table_fraction"], 1.0)
         self.assertEqual(result["state"], "occupied")
+        self.assertEqual(result["raised_depth_inside_cell_pixels"], 0)
+        self.assertEqual(result["raised_depth_outside_cell_pixels"], 16)
+        self.assertEqual(result["raised_depth_pixels"], 16)
 
     def test_object_overhanging_cell_boundary_remains_occupied(self):
         # Physical X536..543.5 spans the destination's X540 boundary.

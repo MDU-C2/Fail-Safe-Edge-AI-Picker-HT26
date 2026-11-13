@@ -1,4 +1,4 @@
-"""Split observed depth pixels between disjoint exact cup-mask anchors.
+"""Split observed depth pixels between exclusive exact cup-mask anchors.
 
 Nearest-mask distance is a geometry heuristic, not proof of object identity.
 An unlabelled object touching a cup can still be attributed to it. The caller
@@ -22,8 +22,10 @@ def split_component(component, seeds):
     """Return ``(partitions, seam)`` in seed order, or reject with ``None``.
 
     Inputs must be equally shaped two-dimensional boolean arrays. The component
-    crop is bounded, and two to four disjoint seed masks must lie wholly within
-    it. Each seed contains at least 32 pixels. Pixels whose nearest two seeds
+    crop is bounded, and two to four seed masks must lie wholly within it.
+    Overlapping seed pixels support neither cup and remain in the returned
+    seam, where the caller preserves them as ownership conflicts. Each cup
+    needs at least 32 exclusive seed pixels. Pixels whose nearest two seeds
     differ in Euclidean image distance by at most one pixel stay unclaimed;
     exclusive exact seed pixels remain assigned even when adjacent.
 
@@ -40,17 +42,23 @@ def split_component(component, seeds):
             or not MIN_GROUPS <= len(seeds) <= MAX_GROUPS):
         return None
 
-    exact = np.zeros(component.shape, dtype=bool)
-    seed_counts = []
+    support_count = np.zeros(component.shape, dtype=np.uint8)
     for seed in seeds:
         if (not isinstance(seed, np.ndarray) or seed.shape != component.shape
                 or seed.dtype != np.bool_):
             return None
-        count = int(np.count_nonzero(seed))
-        if count < MIN_SEED_PIXELS or np.any(seed & (~component | exact)):
+        if np.any(seed & ~component):
             return None
-        exact |= seed
-        seed_counts.append(count)
+        support_count += seed
+    ambiguous = support_count > 1
+    # A shared prediction cannot establish either identity or an anchoring
+    # path. Exclude it from distance anchors, coverage and partition traversal.
+    # Keep it in the output seam rather than arbitrarily assigning one cup.
+    seeds = [seed & ~ambiguous for seed in seeds]
+    seed_counts = [int(np.count_nonzero(seed)) for seed in seeds]
+    if any(count < MIN_SEED_PIXELS for count in seed_counts):
+        return None
+    exact = support_count == 1
 
     distances = np.stack([
         cv2.distanceTransform((~seed).astype(np.uint8), cv2.DIST_L2,
@@ -60,7 +68,7 @@ def split_component(component, seeds):
     nearest = np.argmin(distances, axis=0)
     ordered = np.partition(distances, 1, axis=0)
     uncertain = (ordered[1] - ordered[0]) <= SEAM_MARGIN_PX
-    nearest[~component | uncertain] = -1
+    nearest[~component | uncertain | ambiguous] = -1
     for index, seed in enumerate(seeds):
         nearest[seed] = index
 

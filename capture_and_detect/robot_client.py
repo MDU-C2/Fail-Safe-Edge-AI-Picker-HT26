@@ -9,6 +9,7 @@ software stop; it is not a hardware emergency stop.
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import copy
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
@@ -16,6 +17,7 @@ import math
 import threading
 import time
 from typing import Callable, Mapping, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -55,6 +57,72 @@ class RobotClient:
         self._stop_event = threading.Event()
         self._stop_finished = threading.Event()
         self._stop_finished.set()
+        self._operator_gateway = None
+        self._controller_status = None
+        self._capability_error = None
+
+    def configure_operator_controls(self, controller_profile=None):
+        """Discover read-only support once; no control lease or motion is sent."""
+        if not self.dry_run and controller_profile is not None:
+            from controller_status import load_controller_status_profile
+            self._controller_status = load_controller_status_profile(controller_profile, self.api)
+        return self.refresh_operator_capabilities()
+
+    def refresh_operator_capabilities(self):
+        from gateway_capabilities import parse_gateway_capabilities
+        if self.dry_run:
+            return self.operator_capabilities
+        parts = urlsplit(self.api)
+        endpoint = f"{parts.scheme}://{parts.netloc}/openapi.json"
+        response = None
+        self._capability_error = None
+        # Invalidate prior support before I/O; a failed refresh cannot preserve
+        # a stale confirmation for an endpoint no longer offered by the gateway.
+        self._operator_gateway = parse_gateway_capabilities(None, api_prefix=parts.path)
+        try:
+            response = requests.get(endpoint, headers=self.headers, timeout=self.CONTROL_TIMEOUT,
+                                    allow_redirects=False)
+            response.raise_for_status()
+            if response.status_code != 200 or len(response.content) > 2_000_000:
+                raise ValueError("Invalid gateway API specification response")
+            self._operator_gateway = parse_gateway_capabilities(response.json(), api_prefix=parts.path)
+            if not self._operator_gateway.get("schema_valid"):
+                raise ValueError("Gateway API specification is invalid")
+        except (requests.RequestException, ValueError):
+            self._capability_error = "Gateway controls could not be discovered; refresh robot status."
+        finally:
+            if response is not None:
+                response.close()
+        return self.operator_capabilities
+
+    @property
+    def operator_capabilities(self):
+        actions = ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
+                   "rapid_start", "collision_ack", "collision_status")
+        if self.dry_run:
+            return {name: {"supported": True, "reason": None, "protocol": "preview"} for name in actions}
+        if self._operator_gateway is None:
+            return None  # Library clients retain their existing explicit API.
+        result = copy.deepcopy(self._operator_gateway["actions"])
+        if not self._operator_gateway.get("schema_valid"):
+            # Keep the read-only discovery button available after a disconnect.
+            # None means unknown, never permission to dispatch a robot action.
+            result["robot_status"].update(supported=None, reason=self._capability_error)
+        if (self._operator_gateway.get("schema_valid") and self._controller_status is not None
+                and self._operator_gateway["protocols"]["joint_readback"]
+                and not result["collision_status"]["advertised"]):
+            result["collision_status"].update(supported=True, reason=None, protocol="native_read_only")
+        for name in ("home", "open", "grip"):
+            if result[name]["supported"] and not result["collision_status"]["supported"]:
+                result[name].update(supported=False,
+                    reason="A verified controller status connection is required before moving this robot.")
+        return result
+
+    def require_control_action(self, action):
+        capabilities = self.operator_capabilities
+        if capabilities is not None and capabilities.get(action, {}).get("supported") is not True:
+            reason = capabilities.get(action, {}).get("reason") or self._capability_error
+            raise RobotCommandError(reason or "This robot control is not supported by the connected gateway.")
 
     @property
     def stop_requested(self):
@@ -150,11 +218,21 @@ class RobotClient:
         result = self._control_status_fields(self._get_object("/robot/rapid"))
         result["collision_state"] = None
         try:
-            state = self._get_object("/robot/rapid/collision").get("collision_state")
+            gateway_collision = (self._operator_gateway is None
+                or self._operator_gateway["actions"]["collision_status"]["advertised"])
+            if gateway_collision:
+                state = self._get_object("/robot/rapid/collision").get("collision_state")
+                result["collision_source"] = "gateway"
+            elif (self._controller_status is not None
+                  and self._operator_gateway["protocols"]["joint_readback"]):
+                state = self._controller_status.read_collision(self._get_object)
+                result["collision_source"] = "controller"
+            else:
+                raise RobotCommandError("This gateway does not provide collision status and no matching controller connection is configured.")
             if not isinstance(state, str) or state not in {"INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"}:
                 raise RobotCommandError("Controller returned an unknown collision state.")
             result["collision_state"] = state
-        except RobotCommandError as exc:
+        except (RobotCommandError, ValueError, requests.RequestException) as exc:
             result["collision_error"] = str(exc)
         result["read_at"] = datetime.now(timezone.utc).isoformat()
         return result
@@ -168,6 +246,7 @@ class RobotClient:
         """
         if not isinstance(action, str) or action not in {"rapid_reset", "rapid_start", "collision_ack"}:
             raise RobotCommandError("Unknown robot control action.")
+        self.require_control_action(action)
         self._check_stop()
         if not self._execution_lock.acquire(blocking=False):
             raise RobotCommandError("This client is already executing a command sequence.")

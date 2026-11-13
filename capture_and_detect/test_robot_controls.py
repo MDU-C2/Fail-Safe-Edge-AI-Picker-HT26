@@ -60,7 +60,7 @@ class RobotControlPlanTests(unittest.TestCase):
             for arm in ("left", "right", "both"):
                 with self.subTest(action=action, arm=arm):
                     plan = control_plan(action, arm, 1200)
-                    expected = ["left", "right"] if arm == "both" else [arm]
+                    expected = (["right", "left"] if action == "home" else ["left", "right"]) if arm == "both" else [arm]
                     self.assertEqual([job["body"]["arm"] for job in plan["jobs"]], expected)
                     self.assertTrue(all(job["body"]["wait"] is True for job in plan["jobs"]))
                     if action == "home":
@@ -163,11 +163,11 @@ class RobotControlSessionTests(OfflineControlFixture):
                 self.assertIsNone(self.controls.pending)
                 self.assertEqual(self.robot.jobs, [])
 
-    def test_both_home_runs_left_then_right_at_capped_speed_and_invalidates_scan(self):
+    def test_both_home_runs_right_then_left_at_capped_speed_and_invalidates_scan(self):
         self.session.scan()
         self.session.execute_control("home", "both")
         self.assertEqual([job["name"] for job in self.robot.jobs],
-                         ["operator_left_home", "operator_right_home"])
+                         ["operator_right_home", "operator_left_home"])
         self.assertEqual([job["body"]["speed"] for job in self.robot.jobs], [100, 100])
         self.assertEqual(self.robot.read_control_status.call_count, 2)
         self.robot.control_action.assert_not_called()
@@ -177,11 +177,11 @@ class RobotControlSessionTests(OfflineControlFixture):
         self.assertFalse(self.recovery.required())
 
     def test_first_home_failure_prevents_second_and_persists_across_restart(self):
-        self.robot.error = RobotCommandError("left home unconfirmed")
-        self.robot.error_at = "operator_left_home"
+        self.robot.error = RobotCommandError("right home unconfirmed")
+        self.robot.error_at = "operator_right_home"
         with self.assertRaisesRegex(RobotCommandError, "unconfirmed"):
             self.session.execute_control("home", "both")
-        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["left"])
+        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["right"])
         self.assertTrue(self.session.motion_uncertain)
         self.assertTrue(self.recovery.required())
         restarted = CupSession(Mock(), Mock(), self.robot, "cal-1", recovery=self.recovery)
@@ -244,7 +244,7 @@ class RobotControlSessionTests(OfflineControlFixture):
         self.robot.after_move = lambda _: self.session.latch_stop()
         with self.assertRaisesRegex(SelectionError, "Software stop"):
             self.session.execute_control("home", "both")
-        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["left"])
+        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["right"])
         self.assertTrue(self.session.stop_requested)
         self.assertTrue(self.recovery.required())
         self.assertFalse(self.session.scan_usable)
@@ -462,7 +462,7 @@ class WebRobotControlTests(OfflineControlFixture):
         self.assertTrue(final["recovery_required"])
         self.assertFalse(final["scan_usable"])
         self.assertTrue(self.recovery.required())
-        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["left"])
+        self.assertEqual([job["body"]["arm"] for job in self.robot.jobs], ["right"])
 
     def test_stop_during_admin_preview_prevents_late_proposal_publication(self):
         self.admin_proposal()

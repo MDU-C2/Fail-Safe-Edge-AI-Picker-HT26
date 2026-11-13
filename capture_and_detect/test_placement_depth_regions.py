@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 from placement_depth_regions import assign_depth_regions, shared_boundaries
+from placement_depth_group import shared_group_region
 from test_placement_cups import PlacementCupFixture
 
 
@@ -447,6 +448,90 @@ class PlacementDepthRegionTests(PlacementCupFixture):
                 else:
                     self.assertEqual(len(shared), 1)
                     self.assertTrue(all(r['depth_shared_boundary_pixels'] > 0 for r in records))
+
+
+class SharedGroupIntegrationTests(PlacementCupFixture):
+    def fixture(self):
+        # The smaller cup's individual partition is under 50% exact support,
+        # while the two exact masks together cover over half the joined depth.
+        first, second = self.mask(310, 344), self.mask(354, 366)
+        region = self.mask(310, 398)
+        self.depth[region] = 450.
+        return first, second, region
+
+    def evaluate(self, objects):
+        owners, _, assignments = self.assign(objects)
+        exact = np.zeros(self.depth.shape, dtype=bool)
+        from detection_masks import decode_mask
+        for obj in objects:
+            if obj['class'] != 'CUP':
+                continue
+            x, y, mask = decode_mask(obj['segmentation'], self.depth.shape)
+            exact[y:y+mask.shape[0], x:x+mask.shape[1]] |= mask
+        owners[~exact] = 0  # Isolate group attribution from the old fringe.
+        result = assign_depth_regions(
+            self.depth, objects, self.locations, owners, assignments,
+            transform=self.vision.transform, translation=self.vision.translation,
+            intrinsics=self.K, cell_size=self.vision.cell_size)
+        np.testing.assert_array_equal(owners, result[0])
+        shared = np.zeros(self.depth.shape, dtype=bool)
+        for _, coordinates in result[2]:
+            shared[coordinates] = True
+        return result, shared
+
+    def test_failed_individual_coverage_can_share_group_without_assigning_one_owner(self):
+        first, second, region = self.fixture()
+        result, shared = self.evaluate([self.obj(first), self.obj(second, detection_id=21)])
+        self.assertEqual([r['location_id'] for r in result[1]], [11, 3])
+        self.assertEqual(result[2][0][0], frozenset({1, 2}))
+        np.testing.assert_array_equal(shared, region & ~(first | second))
+        self.assertTrue(all('depth_assignment_method' not in r for r in result[1]))
+        self.assertTrue(all(r['depth_shared_groups'][0]['shared_pixels'] == int(shared.sum()) for r in result[1]))
+
+    def test_unusable_exact_mask_pixels_cannot_expand_the_group_outline(self):
+        first, second, _ = self.fixture()
+        _, expected = self.evaluate([self.obj(first), self.obj(second, detection_id=21)])
+        # Fewer than 5% unusable mask pixels are allowed during cup assignment.
+        # A far-away zero/extreme/NaN sample must not stretch the physical hull.
+        first[210, 500] = True
+        for depth in (0., np.nan, np.inf, 1e6):
+            with self.subTest(depth=depth):
+                self.depth[210, 500] = depth
+                with patch('placement_depth_regions.shared_group_region', wraps=shared_group_region) as observed:
+                    _, shared = self.evaluate([self.obj(first), self.obj(second, detection_id=21)])
+                np.testing.assert_array_equal(shared, expected)
+                self.assertEqual(observed.call_count, 1)
+                hull = observed.call_args.args[2][0]
+                self.assertGreaterEqual(float(hull[:, 0, 0].min()), 185.)
+                self.assertLessEqual(float(hull[:, 0, 0].max()), 234.5)
+
+    def test_other_label_vetoes_failed_split_group_with_mask_or_box(self):
+        first, second, _ = self.fixture()
+        obstacle = self.mask(372, 378, 235, 243)
+        for mask in (True, False):
+            with self.subTest(mask=mask):
+                other = self.obj(obstacle, kind='BLOCK', detection_id=22)
+                if not mask:
+                    other.pop('segmentation')
+                result, shared = self.evaluate([self.obj(first), self.obj(second, detection_id=21), other])
+                self.assertFalse(shared.any())
+                self.assertTrue(all('depth_shared_groups' not in r for r in result[1]))
+
+    def test_group_evidence_is_removed_when_reassessment_no_longer_supports_it(self):
+        first, second, _ = self.fixture()
+        objects = [self.obj(first), self.obj(second, detection_id=21)]
+        result, _ = self.evaluate(objects)
+        # Flat depth provides no joined raised component; a prior assessment
+        # must not supply stale shared attribution on the next frame.
+        self.depth[:] = 500.
+        owners, _, _ = self.assign(objects)
+        updated, records, shared = assign_depth_regions(
+            self.depth, objects, self.locations, owners, result[1],
+            transform=self.vision.transform, translation=self.vision.translation,
+            intrinsics=self.K, cell_size=self.vision.cell_size)
+        self.assertEqual(shared, [])
+        self.assertTrue(all('depth_shared_groups' not in r for r in records))
+        np.testing.assert_array_equal(updated, owners)
 
 
 if __name__ == "__main__":

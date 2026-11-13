@@ -679,7 +679,8 @@ def main(argv=None):
         session = CupSession(captures.capture, store.save, create_robot(args, api, headers),
                              calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                              max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                             recovery=recovery, placing_grid=grid, left_only=args.left_only)
+                             recovery=recovery, placing_grid=grid, left_only=args.left_only,
+                             verification_frames=3)
         from named_cups import NamedCupStore
         from cup_visual_matcher import OllamaCupMatcher
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)

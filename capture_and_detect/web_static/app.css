@@ -56,3 +56,7 @@
 .inference-panel[data-tone="stale"] .inference-accepted strong,.inference-panel[data-tone="stale"] .inference-routing dd{color:#95694e}
 @media(max-width:1000px){.inference-overview{grid-template-columns:minmax(185px,1fr) minmax(0,1.6fr);gap:20px}.inference-routing{grid-template-columns:1fr 1fr;gap:10px 16px}.inference-routing>div:last-child{grid-column:1/-1}}
 @media(max-width:580px){.inference-panel{padding:16px 16px 0}.inference-heading{align-items:flex-start;gap:10px}.inference-badge{font-size:9px;max-width:155px}.inference-overview{grid-template-columns:1fr;gap:15px;margin-top:15px}.inference-routing{border-top:1px solid #e3e8d9;padding-top:13px}.inference-evidence{grid-template-columns:1fr;gap:9px}.inference-event{grid-template-columns:72px minmax(0,1fr);gap:7px}.inference-stale{font-size:10px}}
+
+.robot-capability-notice{font-size:10px;line-height:1.65;color:#73826b;margin:12px 0 0;padding:10px 12px;background:#f4f6ed;border:1px solid #e1e7d7;border-radius:6px}.robot-recovery-actions .button{white-space:normal;text-align:center}
+
+.robot-arm-actions .button{white-space:normal;text-align:center}

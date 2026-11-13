@@ -68,25 +68,19 @@
       {
         "id": 8,
         "x": 350.0,
-        "y": -370.0,
+        "y": -380.0,
         "z": 230.0
       },
       {
         "id": 9,
         "x": 450.0,
-        "y": -370.0,
+        "y": -380.0,
         "z": 230.0
       },
       {
         "id": 10,
         "x": 550.0,
-        "y": -370.0,
-        "z": 230.0
-      },
-      {
-        "id": 11,
-        "x": 650.0,
-        "y": -370.0,
+        "y": -380.0,
         "z": 230.0
       }
     ],
@@ -103,18 +97,50 @@
       342921
     ],
     "inventory_sha256": "4f3c2a0ffa18d777b975c51125819dbe146e0854edd5e481aec77162a64fa761",
+    "layout_reassessment": {
+      "cell_size_mm": 90,
+      "depth_frame_count": 1,
+      "location_count": 7,
+      "note": "The original empty scan used three advancing frames. Only its final RGB/depth pair is archived. P11 was removed; all seven retained cell footprints and 90 mm size are unchanged from the previous reference. The seven-cell layout was independently reassessed without a table reference or pixel exclusions on that archived pair, and refitted only from that empty scene. This is not a new three-frame capture and no live occupied scene was fitted.",
+      "original_scan_frame_count": 3,
+      "previous_grid_sha256": "29956dd906ec2809886532463c440dbd102362a93a33b0dacc1a32f4b61e0d8c",
+      "previous_layout_reassessment": {
+        "depth_frame_count": 1,
+        "new_row_y_mm": -380,
+        "note": "Original empty scan used three advancing frames. Only its final RGB/depth pair is archived; new cell geometry was independently reassessed on that pair. No live occupied scene was fitted.",
+        "original_reference_sha256": "564ebb1ca97cbbaeaa9de22bc12148b65e5d0e790e41008d1f200a753832b459",
+        "original_row_y_mm": -370,
+        "original_scan_frame_count": 3,
+        "verified_depth_sequence": 342921
+      },
+      "previous_reference_sha256": "3e570be3d73ef67a24e165684164d63cce7ae1b74b92be5b5219c2b37d122f85",
+      "removed_location_ids": [
+        11
+      ],
+      "retained_geometry_unchanged": true,
+      "retained_location_ids": [
+        2,
+        3,
+        4,
+        5,
+        8,
+        9,
+        10
+      ],
+      "verified_depth_sequence": 342921
+    },
     "rgb_sha256": "846ea33c1e873debc2cb0df42061cc8e2a55831b5928c8ef33875cf9e6acfe01"
   },
   "plane_z_mm": [
-    0.030905129517223417,
-    0.0019263092799371103,
-    -23.39260929537633
+    0.046694638502800326,
+    -0.0005224497736966931,
+    -30.973118784752096
   ],
   "fit": {
-    "sample_count": 114302,
-    "bin_count": 17428,
-    "inlier_bin_count": 17276,
-    "rms_mm": 3.2759969980467165,
-    "max_cell_residual_p99_mm": 11.018908708509501
+    "sample_count": 100200,
+    "bin_count": 15227,
+    "inlier_bin_count": 14343,
+    "rms_mm": 2.135806490896051,
+    "max_cell_residual_p99_mm": 11.779859928214352
   }
 }

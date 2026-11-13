@@ -14,6 +14,7 @@ from cup_inventory import SelectionError, finite_number
 from detection_masks import decode_mask
 from placement_cups import assign_cups
 from placement_depth_regions import assign_depth_regions
+from placement_cup_uncertainty import cup_uncertainty_regions
 from placement_table_reference import TableReference
 
 SCAN_FRAMES = 3
@@ -164,6 +165,16 @@ class PlacementVision:
             depth, objects, locations, owners, assignments,
             transform=self.transform, translation=self.translation, intrinsics=self.K,
             cell_size=self.cell_size, table_z=self.table_z, check_height=CHECK_HEIGHT_MM)
+        uncertain_regions, uncertain_evidence = cup_uncertainty_regions(
+            depth, objects, locations, assignments,
+            transform=self.transform, translation=self.translation, intrinsics=self.K,
+            cell_size=self.cell_size, table_z=self.table_z, check_height=CHECK_HEIGHT_MM)
+        for assignment in assignments:
+            evidence = [entry for entry in uncertain_evidence
+                        if entry["location_id"] == assignment["location_id"]
+                        and entry["object_indices"] == assignment["object_indices"]]
+            if evidence:
+                assignment["depth_uncertainty"] = copy.deepcopy(evidence[0])
         # A second detected object can never be erased by a cup exemption,
         # including when its segmentation overlaps the cup prediction.
         protected = np.zeros(depth.shape, dtype=bool)
@@ -224,14 +235,22 @@ class PlacementVision:
                     continue
                 within = (rows >= y0) & (rows < y1) & (columns >= x0) & (columns < x1)
                 shared_elsewhere[rows[within]-y0, columns[within]-x0] = True
-            # A supported boundary can belong to either of two known cups.
-            # Keep both owning cells occupied and exclude it only elsewhere.
-            ignored = (roi & (((owner > 0) & (owner != location_index + 1)) | shared_elsewhere)
+            uncertain_elsewhere = np.zeros(roi.shape, dtype=bool)
+            for owner_indices, (rows, columns) in uncertain_regions:
+                if location_index + 1 in owner_indices:
+                    continue
+                within = (rows >= y0) & (rows < y1) & (columns >= x0) & (columns < x1)
+                uncertain_elsewhere[rows[within]-y0, columns[within]-x0] = True
+            # Supported edges may belong to a group of two to four known cups.
+            # Keep their owning cells occupied and exclude them only elsewhere.
+            ignored = (roi & (((owner > 0) & (owner != location_index + 1))
+                             | shared_elsewhere | uncertain_elsewhere)
                        & ~protected[y0:y1, x0:x1])
             checked_roi = roi & ~ignored
             checked_floor = floor_roi & ~ignored
             slot["cup_excluded_pixels"] = int(ignored.sum())
             slot["cup_shared_excluded_pixels"] = int((ignored & shared_elsewhere).sum())
+            slot["cup_uncertain_excluded_pixels"] = int((ignored & uncertain_elsewhere).sum())
             visible_fraction = float(checked_roi.sum() / roi.sum())
             floor_visible_fraction = float(checked_floor.sum() / floor_roi.sum())
             slot["visible_fraction"] = round(visible_fraction, 4)
@@ -247,6 +266,20 @@ class PlacementVision:
                   + self.transform[2, 2]) * z + self.translation[2] - self.table_z
             high = valid & checked_roi & (rz > TABLE_TOLERANCE_MM)
             high &= ~self._clearly_behind_volume(z, xx + x0, yy + y0, location)
+            rx = (self.transform[0, 0] * (xx+x0-self.K["cx"]) / self.K["fx"]
+                  + self.transform[0, 1] * (yy+y0-self.K["cy"]) / self.K["fy"]
+                  + self.transform[0, 2]) * z + self.translation[0]
+            ry = (self.transform[1, 0] * (xx+x0-self.K["cx"]) / self.K["fx"]
+                  + self.transform[1, 1] * (yy+y0-self.K["cy"]) / self.K["fy"]
+                  + self.transform[1, 2]) * z + self.translation[1]
+            # Preserve the distinction in saved evidence: a foreground sample
+            # can overlap the camera projection without physically occupying
+            # this cell. Both still undergo the existing clearance checks.
+            inside_cell = ((np.abs(rx-location["x"]) <= self.cell_size/2)
+                           & (np.abs(ry-location["y"]) <= self.cell_size/2))
+            slot["raised_depth_pixels"] = int(high.sum())
+            slot["raised_depth_inside_cell_pixels"] = int((high & inside_cell).sum())
+            slot["raised_depth_outside_cell_pixels"] = int((high & ~inside_cell).sum())
             # Confirm visible table across the cell footprint after excluding
             # masks and accepted depth regions of cups assigned elsewhere. The wider volume still
             # vetoes other obstacles and unexplained missing depth.
@@ -258,12 +291,6 @@ class PlacementVision:
                 # and raised-obstacle checks retain their original 30 mm band;
                 # shifting the upper band would misclassify low cup edges.
                 # Never refit against a scene containing cups.
-                rx = (self.transform[0, 0] * (xx+x0-self.K["cx"]) / self.K["fx"]
-                      + self.transform[0, 1] * (yy+y0-self.K["cy"]) / self.K["fy"]
-                      + self.transform[0, 2]) * z + self.translation[0]
-                ry = (self.transform[1, 0] * (xx+x0-self.K["cx"]) / self.K["fx"]
-                      + self.transform[1, 1] * (yy+y0-self.K["cy"]) / self.K["fy"]
-                      + self.transform[1, 2]) * z + self.translation[1]
                 floor_residual = rz + self.table_z - np.minimum(reference.expected_height(rx, ry), self.table_z)
             off_table = valid & checked_floor & ((rz > TABLE_TOLERANCE_MM)
                                                  | (floor_residual < -TABLE_TOLERANCE_MM))
@@ -303,7 +330,9 @@ class PlacementVision:
                                   "Depth does not consistently match the calibrated table plane.")
                 slot["reason_code"] = "table_depth"
             else:
-                reason = ("Visible table clear; segmented cup pixels belong to another cell."
+                reason = ("Visible table clear; nearby cup-edge depth uncertainty excluded."
+                          if (ignored & uncertain_elsewhere).any() else
+                          "Visible table clear; segmented cup pixels belong to another cell."
                           if ignored.any() else "Clear table depth observed; no overlapping object detection.")
                 slot.update(state="clear", reason=reason, reason_code="clear")
         return slots

@@ -45,10 +45,48 @@ class DepthSplitHelperTests(unittest.TestCase):
         np.testing.assert_array_equal(forward[1], reverse[0])
         np.testing.assert_array_equal(first_seam, second_seam)
 
-    def test_overlapping_exact_seeds_reject_the_whole_split(self):
+    def test_overlapping_seed_pixels_remain_conflicts_without_losing_supported_parts(self):
         component, seeds = self.bridge()
         seeds[1][20, 30] = True
+        originals = [seed.copy() for seed in seeds]
+        parts, seam = split_component(component, seeds)
+        overlap = seeds[0] & seeds[1]
+        self.assertTrue(np.all(seam[overlap]))
+        self.assertFalse((parts[0] | parts[1])[overlap].any())
+        for index in (0, 1):
+            self.assertTrue(np.all(parts[index][seeds[index] & ~overlap]))
+            np.testing.assert_array_equal(seeds[index], originals[index])
+        np.testing.assert_array_equal(parts[0] | parts[1] | seam, component)
+        reverse, reversed_seam = split_component(component, list(reversed(seeds)))
+        np.testing.assert_array_equal(parts[0], reverse[1])
+        np.testing.assert_array_equal(parts[1], reverse[0])
+        np.testing.assert_array_equal(seam, reversed_seam)
+
+    def test_shared_pixels_cannot_supply_the_minimum_exclusive_seed_count(self):
+        component, seeds = self.bridge()
+        seeds[1] = seeds[0].copy()
+        seeds[1][20, 60:91] = True  # Only 31 exclusive samples for cup two.
+        with patch("placement_depth_split.cv2.distanceTransform") as distance:
+            self.assertIsNone(split_component(component, seeds))
+        distance.assert_not_called()
+
+    def test_overlap_does_not_rescue_an_under_supported_partition(self):
+        component, seeds = self.bridge()
+        seeds[1][:] = False
+        seeds[1][20:28, 76:84] = True
+        seeds[1][4:44, 4:30] = True  # These belong to both cups, not cup two.
         self.assertIsNone(split_component(component, seeds))
+
+    def test_shared_seed_strip_cannot_anchor_an_island_across_conflicted_pixels(self):
+        component = np.zeros((24, 40), dtype=bool)
+        component[4:20, 4:36] = True
+        first, second = np.zeros_like(component), np.zeros_like(component)
+        first[4:20, 4:20] = True
+        second[4:20, 18:36] = True
+        parts, seam = split_component(component, [first, second])
+        self.assertTrue(np.all(seam[4:20, 18:20]))
+        self.assertFalse(parts[0][:, 18:].any())
+        self.assertFalse(parts[1][:, :20].any())
 
     def test_one_partition_with_insufficient_seed_coverage_rejects_all(self):
         component, seeds = self.bridge()
@@ -165,19 +203,41 @@ class DepthSplitIntegrationTests(PlacementCupFixture):
         self.assertEqual([a["location_id"] for a in before[1]], [11, 11])
         self.assert_fallback(self.augment(objects, before), before)
 
-    def test_overlapping_exact_cup_masks_cannot_be_resolved_by_distance(self):
+    def test_overlap_remains_unresolved_while_exclusive_cup_evidence_is_retained(self):
         first, second = self.mask(330, 358), self.mask(342, 370)
         self.depth[first | second] = 450.
         objects = [self.obj(first), self.obj(second, detection_id=21)]
         before = self.baseline(objects, first | second)
         self.assertTrue(np.all(before[0][first & second] == -1))
-        self.assert_fallback(self.augment(objects, before), before)
+        owners, assignments, shared = self.augment(objects, before)
+        self.assertTrue(np.all(owners[first & second] == -1))
+        self.assertTrue(np.all(owners[first & ~second] == 1))
+        self.assertTrue(np.all(owners[second & ~first] == 2))
+        self.assertTrue(all(a.get("depth_assignment_method") == "connected_depth_area"
+                            for a in assignments))
+        self.assertEqual(shared, [])
+
+    def test_tiny_mask_overlap_does_not_discard_supported_depth_or_claim_separate_obstacle(self):
+        first, second, connection = self.bridge()
+        second[240, 343] = True  # One ambiguous exact pixel inside cup one.
+        obstacle = self.mask(350, 356, 270, 276)
+        self.depth[obstacle] = 450.
+        objects = [self.obj(first), self.obj(second, detection_id=21)]
+        before = self.baseline(objects, first | second)
+        owners, assignments, _ = self.augment(objects, before)
+        self.assertEqual(owners[240, 343], -1)
+        self.assertEqual(owners[240, 345], 1)
+        self.assertEqual(owners[240, 352], 2)
+        self.assertFalse(owners[obstacle].any())
+        self.assertTrue(all(a.get("depth_assignment_method") == "connected_depth_area"
+                            for a in assignments))
 
     def test_third_label_on_bridge_vetoes_the_entire_split_for_mask_or_box(self):
         first, second, _ = self.bridge()
         obstacle = self.mask(347, 351, 234, 238)
-        for with_mask in (True, False):
-            with self.subTest(with_mask=with_mask):
+        for with_mask, overlap in ((True, False), (False, False), (True, True), (False, True)):
+            with self.subTest(with_mask=with_mask, overlap=overlap):
+                second[240, 343] = overlap
                 other = self.obj(obstacle, kind="BLOCK", detection_id=22)
                 if not with_mask:
                     other.pop("segmentation")
@@ -207,7 +267,7 @@ class DepthSplitIntegrationTests(PlacementCupFixture):
             record["depth_area_mm2"], record["depth_region_pixels"]) for record in records}
         self.assertEqual(evidence(forward[1]), evidence(reverse[1]))
 
-    def test_late_pooled_owner_rejection_cancels_all_participants_of_the_shared_split(self):
+    def test_late_pooled_rejection_cancels_split_but_can_keep_explicit_group_support(self):
         first, second, connection = self.bridge(y0=228, y1=240)
         other_seed = self.mask(360, 378, 252, 266)
         other_halo = self.mask(378, 396, 252, 266)
@@ -220,7 +280,20 @@ class DepthSplitIntegrationTests(PlacementCupFixture):
         # partial shared split or apply a seam after that final rejection.
         before[0][234, 348] = 1
         result = self.augment(objects, before)
-        self.assert_fallback(result, before)
+        np.testing.assert_array_equal(result[0], before[0])
+        self.assertTrue(all("depth_assignment_method" not in r for r in result[1]))
+        # The newly accepted group tolerance is independent of the rejected
+        # individual split. It never chooses one cup for the bridge or claims
+        # the separate region whose physical owner was rejected.
+        self.assertEqual(len(result[2]), 1)
+        possible_owners, coordinates = result[2][0]
+        self.assertEqual(possible_owners, frozenset({1, 2}))
+        shared = np.zeros(self.depth.shape, dtype=bool)
+        shared[coordinates] = True
+        self.assertTrue(np.all(connection[shared]))
+        self.assertFalse(shared[234, 348])  # Existing fringe remains untouched.
+        self.assertTrue(shared[234, 352])
+        self.assertTrue(all(r["depth_shared_groups"][0]["location_ids"] == [11, 3] for r in result[1]))
         self.assertFalse(result[0][other_halo].any())
         self.assertEqual(result[0][234, 352], 0)
 

@@ -254,7 +254,7 @@ def hardware_factory(args):
         session = CupSession(capture, save, create_robot(args, api, headers),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
-                     recovery=recovery, placing_grid=grid)
+                     recovery=recovery, placing_grid=grid, verification_frames=3)
         interpreter = OllamaIntentClient(model=args.llm_model, url=args.ollama_url) if args.llm else NoLanguage()
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
         matcher = OllamaCupMatcher(model=args.llm_model, url=args.ollama_url) if args.llm else None
@@ -292,6 +292,8 @@ def main(argv=None):
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--demo", action="store_true", help="Sample cups only; no camera, model or robot connection (default without --gateway)")
     parser.add_argument("--gateway", help="Pi gateway base URL; uses camera-connected dry-run unless --live is given")
+    parser.add_argument("--controller-profile", default=str(HERE / "robot_controller.json"),
+                        help="Optional gateway-bound, read-only controller status connection profile")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--live", action="store_true", help="Enable physical robot execution after explicit confirmation")
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")
