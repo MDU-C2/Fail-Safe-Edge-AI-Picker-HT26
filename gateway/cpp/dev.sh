@@ -13,6 +13,7 @@
 #   gateway/cpp/dev.sh sanitize             unit tests + suite under ASan/UBSan and TSan
 #   gateway/cpp/dev.sh image                runtime image, with its sizes
 #   gateway/cpp/dev.sh wmopkg [VERSION]     WeOS package for the Lynx -> gateway/cpp/dist/ (see LYNX.md)
+#   gateway/cpp/dev.sh serve CERT_DIR [ARGS] the dev gateway over TLS, mock camera + robot (TLS.md)
 #   gateway/cpp/dev.sh shell                a shell in the toolchain
 #
 # The repository is mounted at /src; the build trees live in the
@@ -166,6 +167,32 @@ case "$command" in
         ls -l "$dist/gateway-cpp-$version.wmopkg"
         ;;
 
+    serve)
+        #
+        # CERT_DIR is one issued/NAME folder of the lab CA, e.g.
+        # /mnt/c/Users/<you>/ht26-lab-ca/issued/gateway-laptop; only
+        # it is mounted, read-only. Settings come from gateway/.env,
+        # but the camera and robot are always the mocks.
+        #
+        [ $# -gt 0 ] || { echo "usage: dev.sh serve CERT_DIR [--host H] [--port P]" >&2; exit 2; }
+        certs=$(cd "$1" && pwd)
+        name=$(basename "$certs")
+        shift
+        [ -f "$certs/$name.crt" ] && [ -f "$certs/$name.key" ] \
+            || { echo "dev.sh: no $name.crt / $name.key in $certs" >&2; exit 1; }
+        docker run --rm --init \
+            --network host \
+            -v "$REPO:/src" \
+            -v "$VOLUME:/src/gateway/cpp/build" \
+            -v "$certs:/tls:ro" \
+            -e GATEWAY_TLS_CERT_FILE="/tls/$name.crt" \
+            -e GATEWAY_TLS_KEY_FILE="/tls/$name.key" \
+            -e GATEWAY_CAMERA_PROVIDER=mock \
+            -e GATEWAY_ROBOT_PROVIDER=mock \
+            -w /src \
+            "$IMAGE" sh -c "cmake --build gateway/cpp/build/dev >/dev/null && exec gateway/cpp/build/dev/gateway ${*:---host 127.0.0.1 --port 8000}"
+        ;;
+
     shell)
         docker run --rm -it \
             -v "$REPO:/src" \
@@ -175,7 +202,7 @@ case "$command" in
         ;;
 
     *)
-        sed -n '2,23p' "$0"
+        sed -n '2,24p' "$0"
         exit 2
         ;;
 esac

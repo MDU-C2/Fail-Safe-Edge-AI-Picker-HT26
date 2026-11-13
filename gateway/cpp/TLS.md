@@ -144,14 +144,23 @@ way. `GET /health` reports `"tls": {"enabled": true|false}`.
 Running a gateway on this laptop (WSL / Docker) with TLS:
 
 ```bash
+# Git Bash: once
 gateway/cpp/tools/lab_ca.sh issue-server gateway-laptop IP:127.0.0.1 DNS:localhost
-GATEWAY_TLS_CERT_FILE=~/ht26-lab-ca/issued/gateway-laptop/gateway-laptop.crt \
-GATEWAY_TLS_KEY_FILE=~/ht26-lab-ca/issued/gateway-laptop/gateway-laptop.key \
-    gateway/cpp/build/dev/gateway --host 127.0.0.1 --port 8000
 ```
 
-(In Docker, mount the two files read-only and point the variables at
-the mount; never copy them into an image.)
+```powershell
+# PowerShell: the dev gateway on https://127.0.0.1:8000, mock camera and robot
+wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh serve /mnt/c/Users/<you>/ht26-lab-ca/issued/gateway-laptop
+
+# another PowerShell: a client
+$env:REQUESTS_CA_BUNDLE = "gateway/tls/lab-ca.crt"
+$env:GATEWAY_TOKEN = "<the diagnostics token from client_tokens.json>"
+python gateway/scripts/smoke_test.py --url https://127.0.0.1:8000/api/v1 --read-only
+```
+
+`dev.sh serve` mounts only that one folder, read-only, into the
+toolchain container (never copy keys into the repository or an
+image); other settings come from `gateway/.env`.
 
 The legacy Python gateway has no TLS settings; uvicorn would take
 `--ssl-certfile` / `--ssl-keyfile`, but it is not deployed any more.
