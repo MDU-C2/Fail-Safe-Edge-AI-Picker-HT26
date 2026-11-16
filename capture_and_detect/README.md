@@ -5,15 +5,27 @@ Run **`python capture_and_detect.py` for the terminal** and
 run one controller at a time. Both use the same camera, grid, motion and recovery
 modules. `--web` on the terminal script remains a dashboard alias.
 
-The default terminal restores the original workflow: **Enter captures a fresh
+The default terminal uses the `vision_detection4` workflow: **Enter captures a fresh
 scene and processes all available cups; `q` then Enter quits.** Live Enter starts
 the checked pick-and-place cycle without another confirmation. Use `--dry-run`
 to preview it without movement. Each cup still undergoes the existing verification,
 destination and recovery checks.
 
+The next prompt appears after the whole batch finishes or is blocked. During a
+batch, `stop` and `status` remain available; extra Enter presses are rejected
+without queuing another cycle. **The ordinary terminal sends no automatic Home
+before, between or after cups.** After each handover the left arm stays above the
+handover; the right releases the cup and stays 80 mm above its placement. The
+next cup starts through the existing left-ready and right-approach poses. In
+`--left-only` mode, the left arm stays above the cup it replaced. Both grippers
+are empty at a successfully completed cycle's end. Start with empty grippers
+and the picking/transfer paths clear; this mode does not park the arms for you.
+Add `--home-after-cup` to restore automatic Home in the ordinary terminal.
+
 For the optional `scan`, `goto 2`, and `goto all` command shell, add `--commands`.
 In that shell, `scan` only observes, `goto 2` verifies and picks cup 2, and
 `goto all` previews a batch for confirmation. Cup IDs refer to the current scan.
+That shell and the dashboard retain their existing automatic Home behaviour.
 For a browser preview without hardware, use `python web_app.py --demo`.
 
 Windows multi-device setup is described in
@@ -279,8 +291,12 @@ also allows separate pick/lift, right handover, flip and placement settings.
 The overall speed caps every stage. For example, applying 75 mm/s sets normal, loaded-pick, turning and
 sequence-home speeds to 75 mm/s. Actual speed
 also depends on the robot controller. Both arms share one control lease and
-renewal loop, with at most one outstanding request per arm, an initial right-arm
-home check and a camera verification before each cup's motion.
+renewal loop, with at most one outstanding request per arm and a camera
+verification before each cup's motion. The sequence below includes Home as used
+by the dashboard, `--commands`, and the terminal's `--home-after-cup` option.
+The ordinary terminal omits the initial Home and both return sequences: step 7
+leaves the left arm at its lifted handover pose, step 8 ends at `right_clear`,
+and step 9 still waits for all dispatched movements to finish.
 
 1. Verify the selected cup, grip geometry and destination with three consecutive
    clear camera observations, then close the empty right gripper, home the right arm and check
@@ -428,7 +444,7 @@ distinguish physical intrusion from foreground depth overlapping the cell's
 camera projection. Outside-cell depth can still hide the destination, so these
 diagnostics do not relax clearance checks or change placement decisions.
 
-In a live batch, after `right_clear` has reported completion and been recorded,
+In a live batch with automatic Home, after `right_clear` has reported completion and been recorded,
 one camera worker can collect up to two observations for the next cup while the
 arms finish returning home. It does not move the robot or update reservations.
 The next cup waits for all current jobs and home checks to succeed, then takes
@@ -447,6 +463,13 @@ another operation can use the camera.
 The first cup has no preceding return phase, so its checks run before motion.
 There is still no second camera check at left ready or a retry of robot movement.
 These checks do not observe the entire transfer continuously.
+
+In the ordinary terminal's no-Home workflow, return-phase prefetch is disabled.
+All three checks for the next cup begin after every move for the previous cup
+has completed, including the right arm's clearance lift. Saved audit records
+call these `post_clearance` checks; they never claim either arm is home. An arm
+that still obscures the next destination can still block its camera check;
+remaining at a clearance pose does not prove that the camera can see the cell.
 
 Library callers retain the legacy single-frame path unless they explicitly set
 `CupSession(..., verification_frames=3)`. Its existing stationary three-clear

@@ -14,11 +14,12 @@ class TerminalController:
     to leave the language controller; it never delays the stop request.
     """
 
-    def __init__(self, session, language, handler, *, output=print):
+    def __init__(self, session, language, handler, *, output=print, idle_prompt=None):
         self.session = session
         self.language = language
         self.handler = handler
         self.output = output
+        self.idle_prompt = idle_prompt
         self._lock = threading.Lock()
         self._normal = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cups-command")
         self._stop = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cups-stop")
@@ -26,15 +27,49 @@ class TerminalController:
         self._stop_active = False
         self._cancel_pending = False
         self._closed = False
+        self._exiting = False
+        self._foreground_active = 0
+        self._prompt_visible = False
 
     @property
     def busy(self):
         with self._lock:
             return self._normal_active or self._stop_active
 
+    def render_prompt(self):
+        """Render the opt-in ready prompt once, only while completely idle.
+
+        The callback should only write the prompt, without calling back into
+        this controller. Running it under the lock orders the prompt before a
+        newly accepted command, including a very short command's completion.
+        """
+        with self._lock:
+            self._render_prompt_locked()
+
+    def _render_prompt_locked(self):
+        if (self.idle_prompt is not None and not self._prompt_visible
+                and not self._closed and not self._exiting
+                and not self._normal_active and not self._stop_active
+                and not self._foreground_active):
+            self._prompt_visible = True
+            self.idle_prompt()
+
     def submit(self, line):
         """Return False to leave the input loop; never queue an ordinary action."""
         command = " ".join(line.strip().lower().split())
+        with self._lock:
+            self._prompt_visible = False
+            self._foreground_active += 1
+            if command in ("q", "quit", "exit"):
+                self._exiting = True
+        try:
+            return self._submit(line, command)
+        finally:
+            with self._lock:
+                self._foreground_active -= 1
+                self._render_prompt_locked()
+
+    def _submit(self, line, command):
         if command in STOP_COMMANDS:
             self.request_stop()
             return True
@@ -86,6 +121,7 @@ class TerminalController:
                 with self._lock:
                     if not self._cancel_pending:
                         self._normal_active = False
+                        self._render_prompt_locked()
                         break
                     self._cancel_pending = False
                 self._cancel_proposal()
@@ -122,9 +158,12 @@ class TerminalController:
         finally:
             with self._lock:
                 self._stop_active = False
+                self._render_prompt_locked()
 
     def close(self, *, interrupt=False):
         """An active exit requests Stop; an idle exit sends no robot command."""
+        with self._lock:
+            self._exiting = True
         if interrupt and self.busy:
             self.request_stop()
         with self._lock:

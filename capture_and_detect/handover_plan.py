@@ -222,7 +222,8 @@ class _Plan:
 
 
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
-                  home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None):
+                  home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None,
+                  home_after_cup=True):
     """Build one guarded transfer with per-arm order and cross-arm dependencies.
 
     The accepted observation supplies the cup's yaw and aperture. Only cup
@@ -243,11 +244,17 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     placing/return sequence overlaps the left return. Left release still waits
     for right grip, and right lowering waits for left clearance. Every job's
     ``after`` names must complete before dispatch. The initial right home is
-    retained as an additional startup guard before left picking begins.
+    retained as an additional startup guard before left picking begins when
+    ``home_after_cup`` is true (the default). With it false, the terminal's
+    vision_detection4 workflow leaves both empty grippers open at their clear
+    targets, and starts the next cup through LEFT_READY without a home command.
+    The right approach still waits for the left lift to finish.
 
     The right arm homes from its raised placement position without a mandatory
     600 mm move. There is no retry or fallback after any unconfirmed movement.
     """
+    if type(home_after_cup) is not bool:
+        raise SelectionError("home_after_cup must be a boolean")
     plan = _Plan(speed, home_speed, dependencies=True, phase_speeds=phase_speeds)
     alignment = handover_settings(handover_offset, plan.phase_speeds["handover"])
     take = tuple(alignment["receive_mm"][axis] for axis in "xyz")
@@ -261,8 +268,10 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     turn_half = tuple((a + b) / 2 for a, b in zip(below, place_above))
 
     plan.grip("right_close_travel", "right", "grip")
-    plan.home("right_home_start", "right")
-    plan.pick(cup, tag_offset, after=("right_home_start",), camera_z=camera_z)
+    if home_after_cup:
+        plan.home("right_home_start", "right")
+    plan.pick(cup, tag_offset, after=("right_home_start",) if home_after_cup else (),
+              camera_z=camera_z)
     plan.move("left_handover", "left", HANDOVER_L, LEFT_DOWN,
               move_speed=plan.phase_speeds["pick_lift"])
     plan.move("right_via", "right", R_VIA, RIGHT_UP, after=("lift_cup",),
@@ -280,21 +289,27 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
     plan.move("right_retreat", "right", place_above, RIGHT_DOWN,
               move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
-    plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
+    if home_after_cup:
+        plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
     plan.move("right_place", "right", spot, RIGHT_DOWN, pick=True, move_speed=plan.phase_speeds["placement"])
     plan.grip("right_release", "right", "open")
     plan.move("right_clear", "right", place_above, RIGHT_DOWN, move_speed=plan.phase_speeds["placement"])
-    plan.return_home("right", place_above, RIGHT_DOWN)
+    if home_after_cup:
+        plan.return_home("right", place_above, RIGHT_DOWN)
     return plan.jobs
 
 
-def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False, phase_speeds=None):
-    """Pick, lift and replace the verified cup, then return only the left arm."""
+def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False,
+                   phase_speeds=None, home_after_cup=True):
+    """Pick, lift and replace; optionally return home after clearing the cup."""
+    if type(home_after_cup) is not bool:
+        raise SelectionError("home_after_cup must be a boolean")
     plan = _Plan(speed, home_speed, phase_speeds=phase_speeds)
     above, pick, rotation = plan.pick(cup, tag_offset, camera_z=camera_z)
     plan.move("replace_cup", "left", pick, rotation,
               move_speed=min(plan.phase_speeds["pick_lift"], plan.phase_speeds["placement"]), pick=True)
     plan.grip("left_release", "left", "open")
     plan.move("left_clear", "left", above, rotation, move_speed=plan.phase_speeds["placement"])
-    plan.return_home("left", above, rotation)
+    if home_after_cup:
+        plan.return_home("left", above, rotation)
     return plan.jobs

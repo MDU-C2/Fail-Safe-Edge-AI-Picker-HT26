@@ -2,6 +2,8 @@
 
 Press Enter to capture a fresh scene and pick all available cups, limited by
 clear placement locations. Each cup is verified before the existing handover.
+The ordinary terminal leaves the arms at their final clearance poses, as in
+vision_detection4. --home-after-cup restores automatic home after each cup.
 Type q to quit. --dry-run previews requests without moving hardware.
 Use --commands for the scan/goto/confirm shell, or run web_app.py for the browser
 UI (--web remains an alias; --web --demo runs a hardware-free demonstration).
@@ -674,7 +676,7 @@ def terminal_prompt(session, command_mode=False):
         return "cups> "
     if session.stop_requested or session.motion_uncertain:
         return "Recovery required — inspect robot, then type reset + Enter (q to quit): "
-    return "Press Enter to process cups (q + Enter to quit): "
+    return "Press Enter to capture + detect (q + Enter to quit): "
 
 
 def handle_process_input(session, line):
@@ -698,6 +700,10 @@ def handle_process_input(session, line):
                              "Pressing Enter without typing reset does not acknowledge recovery.")
     inventory = session.scan()
     print_cups(inventory)
+    if not any(cup.get("selectable") and not cup.get("blocked_reason")
+               and not pick_position_problem(cup, session.tag_offset) for cup in inventory["cups"]):
+        log("No reachable cups available in this capture. Press Enter to capture again.")
+        return True
     # Keep the batch tied to this scan, its destinations and the settings used
     # for the preview. CupSession rechecks all of them before dispatch.
     motion = session.motion_settings()
@@ -709,6 +715,10 @@ def handle_process_input(session, line):
                           placement=preview["placement"], expected_motion=motion)
     if session.robot.dry_run:
         log("Preview complete; no robot commands sent.")
+    elif not session.home_after_cup:
+        log("Robot reported the batch complete; the left arm remains above the replaced cup."
+            if session.left_only else
+            "Robot reported the batch complete; left arm above handover, right arm above the last placement. No automatic home.")
     else:
         log("Robot reported the batch complete; the left arm is home."
             if session.left_only else "Robot reported the batch complete; both home poses checked.")
@@ -725,6 +735,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--web", action="store_true", help="Open the browser workflow; use --web --help for its options")
     parser.add_argument("--commands", action="store_true", help="Use the scan/goto/confirm command shell instead of Enter to process all cups")
+    parser.add_argument("--home-after-cup", action="store_true",
+                        help="Return home after each cup; the ordinary Enter workflow otherwise stays at clearance poses like vision_detection4")
     parser.add_argument("--left-only", action="store_true", help="Pick, lift and replace each selected cup with the left arm; no handover or placement-grid update")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(CALIBRATION_FILE))
@@ -801,7 +813,8 @@ def main(argv=None):
                              calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                              max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
                              recovery=recovery, placing_grid=grid, left_only=args.left_only,
-                             verification_frames=3, camera_z=args.camera_z)
+                             verification_frames=3, camera_z=args.camera_z,
+                             home_after_cup=bool(command_mode or args.home_after_cup))
         from named_cups import NamedCupStore
         from cup_visual_matcher import OllamaCupMatcher
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
@@ -816,7 +829,9 @@ def main(argv=None):
         log(f"Startup failed: {error}")
         return 1
     log(f"Ready. Saving to: {store.folder}")
-    log(f"Gateway: {api}; terminal movement speed: {session.speed:g} mm/s; automatic home: {session.home_speed:g} mm/s")
+    log(f"Gateway: {api}; terminal movement speed: {session.speed:g} mm/s")
+    log(f"Automatic home after each cup: {session.home_speed:g} mm/s" if session.home_after_cup else
+        "Branch-4 terminal movement: no automatic home before, between or after cups; arms remain at their clearance poses.")
     log("LEFT ONLY: picks return to their original position; the right arm and placement grid are not used."
         if args.left_only else
         f"Placement grid: {args.placing_grid}; cup turning: {min(session.speed, FLIP_SPEED):g} mm/s, 30% acceleration")
@@ -840,11 +855,16 @@ def main(argv=None):
         log(f"Recovery record: {recovery.path}")
     terminal = TerminalController(session, language,
                                   (lambda line: handle_input(session, line, language)) if command_mode else
-                                  (lambda line: handle_process_input(session, line)), output=log)
+                                  (lambda line: handle_process_input(session, line)), output=log,
+                                  idle_prompt=None if command_mode else
+                                  lambda: print(terminal_prompt(session), end="", flush=True))
     interrupted = False
     try:
+        if not command_mode:
+            terminal.render_prompt()
         while True:
-            if not terminal.submit(input(terminal_prompt(session, command_mode)).strip()):
+            line = input("cups> ") if command_mode else input()
+            if not terminal.submit(line.strip()):
                 break
     except (KeyboardInterrupt, EOFError):
         interrupted = True

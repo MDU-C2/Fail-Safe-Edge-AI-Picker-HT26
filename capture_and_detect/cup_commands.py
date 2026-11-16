@@ -50,7 +50,9 @@ class CupSession:
                  match_mm=20.0, match_px=40.0, tag_offset=(0, 0, 0), speed=None,
                  clock=time.monotonic, recovery=None, placing_grid=None, handover_offset=(0, 0, 0),
                  left_only=False, verification_frames=1, camera_z=False,
-                 strict_single_verification=False, phase_speeds=None):
+                 strict_single_verification=False, phase_speeds=None, home_after_cup=True):
+        if type(home_after_cup) is not bool:
+            raise ValueError("home_after_cup must be a boolean")
         if type(left_only) is not bool:
             raise ValueError("left_only must be a boolean")
         if type(camera_z) is not bool:
@@ -79,6 +81,7 @@ class CupSession:
         self.recovery = recovery
         self.placing_grid = placing_grid
         self.left_only = left_only
+        self._home_after_cup = home_after_cup
         self._camera_z = camera_z
         self.verification_frames = verification_frames
         self.strict_single_verification = strict_single_verification
@@ -89,6 +92,11 @@ class CupSession:
         self._stop_call_lock = threading.Lock()
         self._activity_lock = threading.Lock()
         self._state_lock = threading.RLock()
+
+    @property
+    def home_after_cup(self):
+        """Fixed at session startup; terminal continuation must not change mid-batch."""
+        return self._home_after_cup
 
     @property
     def camera_z(self):
@@ -250,14 +258,15 @@ class CupSession:
             raise SelectionError("Choose goto or hover.")
         if self.left_only:
             left_only_jobs(cup, tag_offset=self.tag_offset, speed=self.speed,
-                           home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds)
+                           home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds,
+                           home_after_cup=self.home_after_cup)
             return {"cup_ids": [cup_id], "placement": None}
         if self.placing_grid is None:
             raise SelectionError("No placement grid configured. Restart with --placing-grid.")
         placement = self.placing_grid.preview(1)
         handover_jobs(cup, place=placement["locations"][0], tag_offset=self.tag_offset, speed=self.speed,
                       home_speed=self.home_speed, handover_offset=self.handover_offset,
-                      camera_z=self.camera_z, phase_speeds=self.phase_speeds)
+                      camera_z=self.camera_z, phase_speeds=self.phase_speeds, home_after_cup=self.home_after_cup)
         return {"cup_ids": [cup_id], "placement": placement}
 
     def preview_batch(self, *, capture_id):
@@ -272,7 +281,8 @@ class CupSession:
         if self.left_only:
             for cup in candidates:
                 left_only_jobs(cup, tag_offset=self.tag_offset, speed=self.speed,
-                               home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds)
+                               home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds,
+                               home_after_cup=self.home_after_cup)
             return {"cup_ids": [cup["id"] for cup in candidates], "placement": None,
                     "excluded_cup_ids": []}
         available = sum(not place["occupied"] and not place.get("vision_blocked", False)
@@ -284,7 +294,7 @@ class CupSession:
         for cup, place in zip(chosen, placement["locations"]):
             handover_jobs(cup, place=place, tag_offset=self.tag_offset, speed=self.speed,
                           home_speed=self.home_speed, handover_offset=self.handover_offset,
-                          camera_z=self.camera_z, phase_speeds=self.phase_speeds)
+                          camera_z=self.camera_z, phase_speeds=self.phase_speeds, home_after_cup=self.home_after_cup)
         return {"cup_ids": [cup["id"] for cup in chosen], "placement": placement,
                 "excluded_cup_ids": [cup["id"] for cup in candidates[len(chosen):]]}
 
@@ -335,7 +345,7 @@ class CupSession:
         context = {"placement": copy.deepcopy(placement), "reservation": None, "index": 0,
                    "sequence": self.inventory["frame"]["sequence"], "completed_cup_ids": [],
                    "identity_check": identity_check, "cup_ids": list(cup_ids), "batch": batch,
-                   "prefetch": None, "home_completed_at": None}
+                   "prefetch": None, "motion_completed_at": None}
         if placement is not None:
             self.placing_grid.validate_preview(placement)
         jobs = []
@@ -413,16 +423,20 @@ class CupSession:
                  if action == "goto" and not self.left_only else None)
         multi_frame = self.verification_frames == 3 and place is not None
         strict_single = self.strict_single_verification
+        observation_phase = "post_home" if self.home_after_cup else "post_clearance"
+        completed_pose = ("both arms have confirmed home" if self.home_after_cup else
+                          "the previous cup's clearance moves have completed")
 
         def plan(target):
             if action == "goto":
                 if self.left_only:
                     return left_only_jobs(target, tag_offset=self.tag_offset, speed=self.speed,
                                           home_speed=self.home_speed, camera_z=self.camera_z,
-                                          phase_speeds=self.phase_speeds)
+                                          phase_speeds=self.phase_speeds, home_after_cup=self.home_after_cup)
                 return handover_jobs(target, place=place, tag_offset=self.tag_offset, speed=self.speed,
                                      home_speed=self.home_speed, handover_offset=self.handover_offset,
-                                     camera_z=self.camera_z, phase_speeds=self.phase_speeds)
+                                     camera_z=self.camera_z, phase_speeds=self.phase_speeds,
+                                     home_after_cup=self.home_after_cup)
             return [{"name": name, "endpoint": "/robot/rws/move", "body": body}
                     for name, body in zip(("left_ready", "approach_cup"),
                                           hover_moves(target, tag_offset=self.tag_offset, speed=self.speed))]
@@ -571,8 +585,8 @@ class CupSession:
                         check.update(disposition="discarded", view_status="pending_view")
                         check.setdefault("discard_reason", reason)
                 audit["multi_frame"]["clear_count"] = 0
-                audit["prefetch"].update(discarded_count=sum(check.get("prefetched", False) for check in checks),
-                                         requires_three_post_home=True)
+                audit["prefetch"].update({"discarded_count": sum(check.get("prefetched", False) for check in checks),
+                                         f"requires_three_{observation_phase}": True})
 
             def persist_pending_view():
                 self.save(self.inventory)
@@ -587,13 +601,16 @@ class CupSession:
                     scan_observation = self.inventory.get("placement_observation")
                     expected_identity = destination_identity(scan_observation, destination(scan_observation))
                     audit["multi_frame"] = {"required_clear": 3, "clear_count": 0,
-                                            "max_post_home_observations": 6, "post_home_observations": 0}
+                                            f"max_{observation_phase}_observations": 6,
+                                            f"{observation_phase}_observations": 0}
                     if context["prefetch"] is not None:
                         prefetched, prefetch_error = context["prefetch"].drain()
                         context["prefetch"] = None
-                    audit["prefetch"] = {"capture_count": len(prefetched), "max_observations": 2,
-                                         "discarded_count": 0, "requires_three_post_home": False,
-                                         "home_completed_at": context["home_completed_at"]}
+                    audit["prefetch"] = {"capture_count": len(prefetched),
+                                         "max_observations": 2 if self.home_after_cup else 0,
+                                         "discarded_count": 0, f"requires_three_{observation_phase}": False,
+                                         ("home_completed_at" if self.home_after_cup else "clearance_completed_at"):
+                                             context["motion_completed_at"]}
                 # Three-frame mode tolerates only bounded depth uncertainty;
                 # the legacy mode retains its one-clear / three-recheck policy.
                 for attempt in range(1 if strict_single else len(prefetched) + 6 if multi_frame else 4):
@@ -606,7 +623,7 @@ class CupSession:
                             raise prefetch_error
                         fresh, started = self.capture("verification")
                         if multi_frame:
-                            audit["multi_frame"]["post_home_observations"] += 1
+                            audit["multi_frame"][f"{observation_phase}_observations"] += 1
                     if not isinstance(fresh, dict):
                         raise SelectionError("Malformed verification observation; scan again.")
                     observation = fresh.get("placement_observation")
@@ -628,6 +645,9 @@ class CupSession:
                             raise SelectionError("Prefetched verification has an invalid or future capture time; motion blocked.")
                     else:
                         verification_age(started)
+                        if (not self.home_after_cup and context["motion_completed_at"] is not None
+                                and started < context["motion_completed_at"]):
+                            raise SelectionError(f"Verification must begin after {completed_pose}; scan again.")
                     offset = fresh.get("tag_offset_mm", (0, 0, 0))
                     if (fresh.get("calibration_sha256") != self.calibration_id
                             or not isinstance(offset, (list, tuple)) or tuple(offset) != self.tag_offset):
@@ -737,19 +757,19 @@ class CupSession:
                     if slot is not None:
                         audit["placement_visibility"] = copy.deepcopy(slot)
                     if multi_frame and clear_count < 3:
-                        if not was_prefetched and audit["multi_frame"]["post_home_observations"] == 6:
+                        if not was_prefetched and audit["multi_frame"][f"{observation_phase}_observations"] == 6:
                             raise SelectionError(f"Placement location {place['id']} did not produce three consecutive "
-                                                 f"clear camera checks in six post-home observations. {slot.get('reason', '')} "
+                                                 f"clear camera checks in six {observation_phase.replace('_', '-')} observations. {slot.get('reason', '')} "
                                                  "Inspect the destination and scan again.")
                         self.save(self.inventory)
                         self._check_stop()
                         verification_age(started)
                         continue
-                    if multi_frame and (was_prefetched or (context["home_completed_at"] is not None
-                                                           and started < context["home_completed_at"])):
-                        raise SelectionError("Final verification must begin after both arms have confirmed home; scan again.")
-                    if strict_single and context["home_completed_at"] is not None and started < context["home_completed_at"]:
-                        raise SelectionError("Final verification must begin after both arms have confirmed home; scan again.")
+                    if multi_frame and was_prefetched:
+                        raise SelectionError(f"Final verification must begin after {completed_pose}; scan again.")
+                    if ((multi_frame or strict_single or not self.home_after_cup)
+                            and context["motion_completed_at"] is not None and started < context["motion_completed_at"]):
+                        raise SelectionError(f"Final verification must begin after {completed_pose}; scan again.")
                     if rechecking:
                         audit["stationary_recheck"]["clear_count"] = attempt
                         if attempt < 3:
@@ -797,6 +817,7 @@ class CupSession:
         original["status"] = "command_pending"
         original["execution"] = {"action": action, "state": "pending", "completed_steps": [],
                                  "pending_jobs": {}, "pending_steps": [], "total_steps": len(jobs),
+                                 "home_after_cup": self.home_after_cup,
                                  "placement": copy.deepcopy(place)}
         execution = original["execution"]
         original["grip_left_mm"] = None
@@ -871,7 +892,7 @@ class CupSession:
                 execution["pending_jobs"].pop(job["name"], None)
                 pending_changed()
             persist_execution()
-            if (job["name"] == "right_clear" and multi_frame and context["batch"]
+            if (self.home_after_cup and job["name"] == "right_clear" and multi_frame and context["batch"]
                     and context["index"] + 1 < len(context["cup_ids"]) and not self.robot.dry_run):
                 self._check_stop()
                 if context["prefetch"] is not None:
@@ -897,7 +918,9 @@ class CupSession:
             if (execution["pending_jobs"] or len(execution["completed_steps"]) != len(jobs)
                     or {job["name"] for job in execution["completed_steps"]} != {job["name"] for job in jobs}):
                 raise SelectionError("Not every robot step was confirmed. Inspect both arms before recovery.")
-            context["home_completed_at"] = self.clock()
+            # This means all planned jobs completed. The terminal's branch-4
+            # choreography ends at clearance poses; it must never claim Home.
+            context["motion_completed_at"] = self.clock()
             if place is not None:
                 self.placing_grid.complete(context["reservation"], place["id"])
             original["status"] = ("replaced" if self.left_only else "placed") if action == "goto" else "at_hover"

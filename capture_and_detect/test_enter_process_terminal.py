@@ -63,6 +63,28 @@ class EnterProcessTests(unittest.TestCase):
         self.assertEqual(self.grid.path.read_bytes(), original_grid)
         self.assertIn("no robot commands sent", self.output.getvalue())
 
+    def test_no_home_enter_processes_batch_and_reports_actual_end_positions(self):
+        def capture(purpose):
+            frame, _ = self.capture(purpose)
+            return frame, 100
+        session = CupSession(capture, Mock(), self.robot, "cal-1", clock=lambda: 100,
+                             placing_grid=self.grid, home_after_cup=False)
+        app.handle_process_input(session, "")
+        self.assertEqual(session.batch_progress["completed_cups"], [1, 2])
+        self.assertEqual(len(self.robot.jobs), 46)
+        self.assertFalse(any(job["endpoint"].endswith("/home") for job in self.robot.jobs))
+        self.assertIn("left arm above handover, right arm above the last placement", self.output.getvalue())
+        self.assertNotIn("both home poses checked", self.output.getvalue())
+
+    def test_empty_capture_finishes_without_motion_or_recovery_error(self):
+        self.session.capture = Mock(return_value=(inventory(objects=[]), 99))
+        with patch.object(self.session, "execute_batch") as execute:
+            self.assertTrue(app.handle_process_input(self.session, ""))
+        execute.assert_not_called()
+        self.assertEqual(self.robot.jobs, [])
+        self.assertFalse(self.session.motion_uncertain)
+        self.assertIn("No reachable cups available", self.output.getvalue())
+
     def test_quit_has_no_capture_or_motion(self):
         for line in ("q", " Q ", "quit", "exit"):
             self.assertFalse(app.handle_process_input(self.session, line))
@@ -88,7 +110,7 @@ class EnterProcessTests(unittest.TestCase):
         self.assertEqual(self.robot.jobs, [])
 
     def test_prompt_names_reset_while_recovery_or_stop_is_required(self):
-        ready_prompt = "Press Enter to process cups (q + Enter to quit): "
+        ready_prompt = "Press Enter to capture + detect (q + Enter to quit): "
         recovery_prompt = "Recovery required — inspect robot, then type reset + Enter (q to quit): "
         self.assertEqual(app.terminal_prompt(self.session), ready_prompt)
         self.session.motion_uncertain = True
@@ -117,7 +139,7 @@ class EnterProcessTests(unittest.TestCase):
         app.handle_process_input(session, "reset")
         self.assertFalse(journal.required())
         self.assertFalse(session.motion_uncertain)
-        self.assertEqual(app.terminal_prompt(session), "Press Enter to process cups (q + Enter to quit): ")
+        self.assertEqual(app.terminal_prompt(session), "Press Enter to capture + detect (q + Enter to quit): ")
         restarted = CupSession(self.capture, Mock(), self.robot, "cal-1", recovery=RecoveryJournal(journal.path))
         self.assertFalse(restarted.motion_uncertain)
         self.assertEqual(app.terminal_prompt(restarted), app.terminal_prompt(session))
@@ -129,7 +151,7 @@ class EnterProcessTests(unittest.TestCase):
         original = journal.path.read_bytes()
         app.handle_process_input(session, "reset")
         self.assertFalse(session.motion_uncertain)
-        self.assertIn("Press Enter to process", app.terminal_prompt(session))
+        self.assertIn("Press Enter to capture + detect", app.terminal_prompt(session))
         self.assertEqual(journal.path.read_bytes(), original)
         restarted = CupSession(self.capture, Mock(), RobotDouble(), "cal-1", recovery=RecoveryJournal(journal.path))
         self.assertTrue(restarted.motion_uncertain)
@@ -234,7 +256,8 @@ class EnterProcessTests(unittest.TestCase):
         self.assertTrue(any("nothing was queued" in message for message in messages))
 
     def test_main_defaults_to_enter_mode_and_explicit_flags_keep_command_shell(self):
-        for flags, command_mode, recovery_required in (([], False, False), (["--commands"], True, False),
+        for flags, command_mode, recovery_required in (([], False, False), (["--home-after-cup"], False, False),
+                (["--commands"], True, False),
                 (["--llm"], True, False), ([], False, True), (["--commands"], True, True)):
             with self.subTest(flags=flags, recovery_required=recovery_required), ExitStack() as stack:
                 self.session.motion_uncertain = recovery_required
@@ -247,7 +270,7 @@ class EnterProcessTests(unittest.TestCase):
                     digest="cal-1", offset=(0, 0, 0))))
                 stack.enter_context(patch.object(app, "CaptureStore", return_value=SimpleNamespace(
                     folder=self.grid.path.parent, save=Mock())))
-                stack.enter_context(patch.object(app, "CupSession", return_value=self.session))
+                create_session = stack.enter_context(patch.object(app, "CupSession", return_value=self.session))
                 stack.enter_context(patch("device_agent.ExecutionLock"))
                 stack.enter_context(patch("named_cups.NamedCupStore"))
                 stack.enter_context(patch("cup_visual_matcher.OllamaCupMatcher"))
@@ -257,17 +280,25 @@ class EnterProcessTests(unittest.TestCase):
                 command = stack.enter_context(patch.object(app, "handle_input", return_value=True))
                 read = stack.enter_context(patch("builtins.input", side_effect=["", "q"]))
 
-                def controller(session, language, handler, output):
-                    return SimpleNamespace(submit=lambda line: False if line == "q" else handler(line),
-                                           close=Mock())
+                def controller(session, language, handler, output, idle_prompt):
+                    def submit(line):
+                        if line == "q":
+                            return False
+                        result = handler(line)
+                        if idle_prompt:
+                            idle_prompt()
+                        return result
+                    return SimpleNamespace(submit=submit, render_prompt=idle_prompt, close=Mock())
 
                 stack.enter_context(patch.object(app, "TerminalController", side_effect=controller))
                 self.assertEqual(app.main(flags), 0)
                 self.assertEqual(command.call_count, int(command_mode))
                 self.assertEqual(process.call_count, int(not command_mode))
-                self.assertEqual(read.call_args.args[0], "cups> " if command_mode else
-                                 "Recovery required — inspect robot, then type reset + Enter (q to quit): "
-                                 if recovery_required else "Press Enter to process cups (q + Enter to quit): ")
+                self.assertEqual(create_session.call_args.kwargs["home_after_cup"],
+                                 command_mode or "--home-after-cup" in flags)
+                self.assertEqual(read.call_args.args, ("cups> ",) if command_mode else ())
+                if not command_mode:
+                    self.assertIn(app.terminal_prompt(self.session), self.output.getvalue())
                 if recovery_required:
                     self.assertIn(f"Recovery record: {recovery_path}", self.output.getvalue())
         self.assertIn("without another confirmation", self.output.getvalue())
