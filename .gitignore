@@ -19,3 +19,4 @@ capture_and_detect/data
 .DS_Store
 /output/
 /capture_and_detect/.placing_grid*.json.lock
+/capture_and_detect/.placing_grid*.json.controller.lock

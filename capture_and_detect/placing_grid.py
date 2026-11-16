@@ -10,10 +10,10 @@ The original picker also sees reservations as occupied slots.
 """
 
 import copy
-import fcntl
 import hashlib
 import json
 import re
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +22,8 @@ from cup_inventory import SelectionError, _motion_flange_problem, atomic_json, f
 
 
 PLACE_ABOVE = 80
+# Multiple store instances can share a grid inside the single dashboard process.
+_GRID_UPDATES = threading.RLock()
 
 
 def validate_place(location):
@@ -80,9 +82,8 @@ def _fingerprint(value):
 class PlacingGrid:
     """Read/update the existing JSON grid without creating or resetting slots.
 
-    All cooperating custom controllers use a separate advisory lock file so an
-    atomic replacement of the JSON does not replace the locked inode. Other
-    programs that ignore this lock must not run concurrently with this controller.
+    Updates are synchronized across threads in this process. The single-user
+    application does not create lock files or claim cross-process exclusivity.
     """
 
     def __init__(self, path):
@@ -90,14 +91,9 @@ class PlacingGrid:
 
     @contextmanager
     def _locked(self):
-        lock_path = self.path.with_name("." + self.path.name + ".lock")
         try:
-            with lock_path.open("a", encoding="utf-8") as stream:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            with _GRID_UPDATES:
+                yield
         except OSError as error:
             raise SelectionError(f"Cannot access placement grid {self.path}: {error}") from error
 

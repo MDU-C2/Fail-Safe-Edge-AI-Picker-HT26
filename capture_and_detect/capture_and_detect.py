@@ -345,10 +345,14 @@ class CaptureStore:
 
 class CaptureService:
     def __init__(self, camera, detector, store, weights, *, placing_grid=None,
-                 grid_table_z=0.0, grid_cell_size=80.0, table_reference_path=None, depth_frames=1):
+                 grid_table_z=0.0, grid_cell_size=80.0, table_reference_path=None, depth_frames=1,
+                 scan_observations=SCAN_FRAMES):
         if type(depth_frames) is not int or not 1 <= depth_frames <= 9:
             raise ValueError("depth_frames must be an integer from 1 to 9")
         self.depth_frames = depth_frames
+        if type(scan_observations) is not int or scan_observations not in (1, SCAN_FRAMES):
+            raise ValueError("scan_observations must be 1 or 3")
+        self.scan_observations = scan_observations
         self.camera, self.detector, self.store = camera, detector, store
         self.weights = Path(weights)
         self.placing_grid = placing_grid
@@ -435,7 +439,7 @@ class CaptureService:
             except SelectionError as error:
                 grid_error = str(error)
         observations, sequences, inference_results = [], [], []
-        count = SCAN_FRAMES if purpose == "scan" and snapshot is not None else 1
+        count = self.scan_observations if purpose == "scan" and snapshot is not None else 1
         completed, restarts = 0, 0
         generation = getattr(self.detector, "generation", None)
         while completed < count:
@@ -477,7 +481,11 @@ class CaptureService:
         if observations:
             self.placement_vision.exclude_placed_cups(inventory["cups"], snapshot["locations"])
             if purpose == "scan":
-                observation = self.placement_vision.combine(snapshot, observations, sequences)
+                if self.scan_observations == 1:
+                    from placement_records import combine
+                    observation = combine(snapshot, observations, sequences)
+                else:
+                    observation = self.placement_vision.combine(snapshot, observations, sequences)
             else:
                 observation = {"frame_count": 1, "slots": observations[-1], "applied": False,
                                "released_ids": [], "message": "Verification image only; placement status unchanged."}
@@ -719,7 +727,11 @@ def main(argv=None):
             log(f"Local model setup failed: {error}")
             return 1
     detector = None
+    execution_lock = None
     try:
+        from device_agent import ExecutionLock
+        grid_path = Path(args.placing_grid)
+        execution_lock = ExecutionLock(grid_path.with_name("." + grid_path.name + ".controller.lock"))
         headers = {"Authorization": f"Bearer {load_token()}"}
         api = args.gateway.rstrip("/") + "/api/v1"
         camera = CameraClient(api, headers)
@@ -745,6 +757,8 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, CameraError, RobotCommandError) as error:
         if detector is not None and callable(getattr(detector, "close", None)):
             detector.close()
+        if execution_lock is not None:
+            execution_lock.close()
         log(f"Startup failed: {error}")
         return 1
     log(f"Ready. Saving to: {store.folder}")
@@ -776,6 +790,7 @@ def main(argv=None):
         terminal.close(interrupt=interrupted)
         if callable(getattr(detector, "close", None)):
             detector.close()
+        execution_lock.close()
     return 0
 
 

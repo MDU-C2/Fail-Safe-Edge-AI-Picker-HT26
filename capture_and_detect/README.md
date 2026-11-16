@@ -64,8 +64,9 @@ The established overlapping handover and return sequence is preserved, including
 the corrected right-arm return and completion checks. No automatic movement is
 performed merely by launching the app.
 
-Natural-language input is available with `--llm`; see **Local language commands**
-below. It uses an offline Ollama model on the Mac and the same cup-selection checks.
+The direct MacBook dashboard uses GPT-6 Astra, configured in **Settings**;
+see [Assistant setup](ASSISTANT.md). YOLO still detects cups. The legacy terminal
+interface retains its optional `--llm` Ollama integration, described below.
 
 ## Dishwasher tray: offline height preview
 
@@ -225,8 +226,9 @@ next job on that arm starts. Explicit handover dependencies allow the two arms
 to overlap only after the required clearance/grip steps complete. An explicit
 `--speed` value sets normal speed (1–1500 mm/s) and caps
 sequence home speed at the lower of that value and 200 mm/s; loaded picking
-and turning use the lower of that setting and 100 mm/s. **Apply speed** in the web panel applies the
-same caps. For example, applying 75 mm/s sets normal, loaded-pick, turning and
+and turning default to the lower of that setting and 100 mm/s. **Settings → Movement speeds**
+also allows separate pick/lift, right handover, flip and placement settings.
+The overall speed caps every stage. For example, applying 75 mm/s sets normal, loaded-pick, turning and
 sequence-home speeds to 75 mm/s. Actual speed
 also depends on the robot controller. Both arms share one control lease and
 renewal loop, with at most one outstanding request per arm, an initial right-arm
@@ -360,7 +362,7 @@ placement area are excluded from picking and pick-all batches.
 Unknown observations preserve occupancy and set `vision_blocked: true`, preventing
 selection even when the previous file status was free. A later clear scan removes
 that block. Every update checks that the grid has not changed during capture and
-uses the same atomic file lock as reservations. Camera checks never clear reserved
+uses the same in-process synchronization as reservations. Camera checks never clear reserved
 locations or robot recovery. During recovery, and in dry-run mode, observations
 are previews only and do not change the saved grid. Motion verification captures
 also draw the overlay but do not release locations.
@@ -672,7 +674,7 @@ Stop the current dashboard while it is idle, then start the outside-tray layout:
 
 ```sh
 python capture_and_detect.py --web --gateway http://192.168.125.20:8000 \
-  --live --llm --llm-model qwen3-vl:4b-instruct --port 8086 \
+  --live --port 8086 \
   --placing-grid placing_grid_outside_tray.json --grid-cell-size 90
 ```
 
@@ -721,8 +723,9 @@ again. To recover just one **reserved** slot manually, stop controllers while th
 placement area, remove any cup from that slot, then set its `occupied` to `false`
 and remove its `reserved` and `reservation_id` fields. Preserve its ID and coordinates.
 Restart and scan afterward; the camera must confirm its visibility before selection.
-Do not edit the grid during a sequence. Run only one robot controller at a time;
-file locking does not coordinate independent robot clients.
+Do not edit the grid during a sequence. This single-operator version uses no OS
+file locks and has no runtime dependency on `fcntl`. Threads within one app still
+serialize grid and saved-cup updates; device handoff and recovery checks remain.
 
 ## Coordinates and workspace
 
@@ -785,7 +788,7 @@ Its final accepted coordinates are used for the pick; there is no second camera 
 ready. Other cups' IDs in verification images never change the user's selection.
 
 Image age is checked before starting, approaching, descending and gripping.
-The default deadline is **15 seconds**;
+The default deadline is **30 seconds in the MacBook dashboard** and **15 seconds in the terminal controller**;
 `--max-result-age` changes it. Capture, inference, saving and movement time all
 count toward that deadline. If homing, the ready move or the approach exceeds it,
 the next approach, descent or grip is blocked without taking another image.
@@ -858,23 +861,30 @@ cup 2, choose **Pick & transfer**, then **Preview cup 2**. You can also type
 `pick cup two`. This is an interface and planning preview, not a physics simulator
 or a simulation of all checks during movement.
 
-For real camera detections and your local Ollama model, use the terminal where
-`GATEWAY_TOKEN` is already set and keep Ollama running:
+For real camera detections, use the terminal where `GATEWAY_TOKEN` is already set:
 
 ```sh
-python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --llm --dry-run
+python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --dry-run
 ```
 
 This mode performs camera verification and previews the plan but sends no robot
 commands. As with the terminal dry-run, checks that normally run between physical
-steps are not executed. Without `--llm`, Scan and the explicit cup buttons still
-work; typed natural language requires `--llm`.
+steps are not executed. Scan and explicit cup buttons need no language API key.
+For flexible requests and real saved-cup matching, configure GPT-6 Astra in
+**Settings** and use **Assistant**. The dashboard no longer accepts `--llm`,
+`--llm-model` or `--ollama-url`, and makes no Ollama calls or local-model fallback
+requests. See [Assistant setup](ASSISTANT.md) for credentials, privacy and API usage.
+These Assistant features require the MacBook picker: either the direct dashboard
+or the combined `--device-config` dashboard with an in-process `backend: "local"`
+Mac entry. Pi/Lynx selections and older separate Mac HTTP services disable Assistant.
+Scene-dependent requests automatically take one photo when the current image is
+missing, unusable or over 30 seconds old; picking still needs one explicit confirmation.
 
 To enable the physical robot, stop the web server while the robot is idle and
 start it with the explicit **`--live`** flag:
 
 ```sh
-python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --llm --live
+python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --live
 ```
 
 Omitting `--dry-run` alone does **not** enable movement in the web app. The page
@@ -892,7 +902,8 @@ an unfinished physical sequence from being silently forgotten. The app prevents
 another web process from opening the same output folder, but you must still close
 other terminal/robot clients yourself.
 
-The app listens on `127.0.0.1` only. Gateway credentials remain in Python; the browser
+The app listens on `127.0.0.1` by default. For paired access from a phone on the same
+trusted Wi-Fi network, see [Phone access](PHONE_ACCESS.md). Gateway credentials remain in Python; the browser
 gets a limited scene summary, the active scan image and saved cup thumbnails. Host/origin and request-token
 checks reject requests from unrelated websites. There are no remote assets or
 external UI dependencies. Use `--port 8081` if port 8080 is already occupied.
@@ -939,14 +950,18 @@ The dashboard does not use it as a substitute for those actions.
 
 Controls available according to the connected gateway:
 
-- **Movement speed** sets normal speed for future cup plans, from 1 to 1500 mm/s,
-  and caps sequence homes at `min(selected speed, 200)` mm/s. Cup flips remain
-  capped at 100 mm/s. Without an override, startup speeds are normal 250,
-  sequence home 200, and cup flip 100 mm/s; all three are shown in the panel
-  and cup confirmation. Applying the current normal speed still updates the
-  home cap when needed. It cancels pending selections and lasts until the app
-  restarts. It does not change a movement already running or the FlexPendant
-  speed override.
+- **Movement speeds** sets an overall limit (1–1500 mm/s) and separate pick/lift,
+  right-handover travel, cup-turning and placement speeds. Defaults remain overall
+  250, pick/lift 100, flip 100, with handover and placement following the overall
+  limit. Pick/lift includes the loaded left-arm transfer. Blank handover/placement
+  inputs follow the overall limit. Sequence Home remains capped at 200 mm/s,
+  adjusted receiving poses at 25 mm/s, and turning acceleration at 30%. The panel
+  shows effective applied speeds. Changes cancel pending previews, apply only to
+  future plans and do not change the FlexPendant override. Older remote services
+  show only their supported overall-speed control. Managed handoffs transfer custom
+  stage settings only to updated services; restore defaults to switch to an older
+  service. Existing settings are restored on service restart according to that
+  service's saved motion configuration.
 - **Home left / right / Right, then left home** reviews a home request without needing a scan.
   Both runs right first, then left, only after the first arm's completion and
   measured home joints are confirmed. Manual home speed is capped at
@@ -1025,37 +1040,28 @@ For a Pi Docker deployment see
 [`gateway/README_START.md`](../gateway/README_START.md#deploy-to-the-raspberry-pi).
 Do not update/restart either gateway or dashboard during robot movement.
 
-## Local language commands
+## Saved cups
 
-The language interface accepts typed sentences in the terminal or web dashboard.
-Voice recording, speech recognition, and spoken replies are not implemented. The architecture is:
-
-```text
-Operator sentence -> local Ollama model -> validated action + cup selector
-                  -> displayed proposal -> operator confirms exact proposal
-                  -> existing CupSession camera checks -> existing robot sequence
-```
-
-The default model is `qwen3-vl:4b-instruct`. This vision-language model also accepts
-text-only requests, so it replaces the separate text model for command interpretation.
-Ordinary language commands send text and scene metadata. Saved-cup requests also
-send the saved reference photo and current raw cup crops to the local model.
-Actual RAM use varies with context; performance must be checked on the M4 MacBook.
-Both use a 4096-token context. Visual matching sends one labelled comparison
-image containing the reference and every candidate, reducing local inference time.
-Both disable thinking output.
-[Model details](https://ollama.com/library/qwen3-vl:4b-instruct).
+The direct MacBook dashboard uses the configured GPT-6 Astra client for language
+and real saved-cup visual matching. It sends reference and candidate photos to
+OpenAI when finding and verifying a named cup. YOLO detection and the existing
+motion checks remain local. The terminal's optional Ollama path is separate and
+described under **Local language commands (terminal only)** below.
 
 ### Save a cup and request it by name
 
-Run camera mode with `--llm --llm-model qwen3-vl:4b-instruct`. In the web app,
-scan, select a cup, enter a name such as **Kasun mug**, and choose **Save cup**.
-The **Saved cups** panel keeps the reference photo across scans and app restarts.
-**Find & preview pick** takes a new scan and compares its cup crops with the
-reference using the local VLM. Review the saved photo and highlighted current cup,
-then confirm the existing pick/handover/place/home sequence.
+Start the dashboard directly with `--web --gateway ...` and configure Astra in
+**Settings**. Scan, then send `Remember cup 2 as Kasun's cup` in **Assistant** and
+click **Save cup reference**. Saving a reference sends no API request or movement.
+The **Saved cup references** panel keeps the reference photo across scans and app
+restarts. Request `Pick Kasun's cup` to take a new scan and compare its cup crops
+with the reference through Astra. Review the saved photo, matched cup and grid
+destination inside **Assistant**, then confirm the existing pick/handover/place/home
+sequence there once. There is no second confirmation in Pick cups. See [Assistant setup](ASSISTANT.md) for the full
+workflow. In terminal camera mode, saved-cup matching still requires the legacy
+`--llm --llm-model qwen3-vl:4b-instruct` options and a local Ollama server.
 
-The same commands work in the web command box and terminal:
+These fixed commands remain available in the web command box and terminal:
 
 ```text
 scan
@@ -1073,9 +1079,12 @@ Duplicate names are rejected; forget the old entry before saving a replacement.
 References live in `Data/Detections/saved_cups.json` under the configured `--output`
 directory. Each contains a cropped raw RGB photo and capture metadata, not robot
 coordinates. There are at most 32 references, with names up to 48 characters
-(letters, digits, spaces, underscores and hyphens; start with a letter). Use the
-same output directory after restart to access the same library. The demo does
-not create references; use camera dry-run mode to try the real image workflow.
+(letters, digits, spaces, apostrophes, underscores and hyphens; start with a letter).
+Straight and curly apostrophes are treated as the same spelling. Use the same
+output directory after restart to access the same library. The demo supports named
+references using explicit synthetic identities in an isolated temporary library;
+it does not perform real visual recognition. Use camera dry-run mode to try real
+reference photos and Astra matching.
 
 The model compares up to 12 full-CUP detections, including blocked ones. It
 cannot select a different reachable cup when the matching one is blocked. Missing,
@@ -1102,7 +1111,27 @@ processing counts toward the existing 15-second image-age limit; a slow visual
 check blocks rather than using stale coordinates. Stop remains independent of
 model processing. Numeric picks and the robot sequence are unchanged.
 
-Images are sent only to the configured local Ollama endpoint using its
+## Local language commands (terminal only)
+
+The following Ollama instructions apply only to `capture_and_detect.py` without
+`--web`. The dashboard uses Astra and does not start or contact this local model.
+Voice recording, speech recognition and spoken replies are not implemented.
+
+```text
+Operator sentence -> local Ollama model -> validated action + cup selector
+                  -> displayed proposal -> operator confirms exact proposal
+                  -> existing CupSession camera checks -> existing robot sequence
+```
+
+The default terminal model is `qwen3-vl:4b-instruct`. This vision-language model
+accepts text-only requests for command interpretation. Ordinary language commands
+send text and scene metadata; saved-cup requests also send the reference photo and
+current raw cup crops. Both use a 4096-token context and disable thinking output.
+Visual matching sends one labelled comparison image containing the reference and
+every candidate. Actual RAM use and performance must be checked on the MacBook.
+[Model details](https://ollama.com/library/qwen3-vl:4b-instruct).
+
+In this terminal mode, images are sent only to the configured local Ollama endpoint using its
 [vision API](https://docs.ollama.com/capabilities/vision) and
 [structured output](https://docs.ollama.com/capabilities/structured-outputs).
 
@@ -1223,8 +1252,8 @@ For HTTP route coverage, install the optional test dependency too:
 python3 -m pip install -r requirements-web.txt httpx
 ```
 
-Web tests use a fake camera, fake robot or isolated demo and never contact hardware
-or Ollama. HTTP tests skip if FastAPI/httpx are not installed.
+Web tests use a fake camera, fake robot or isolated demo and never contact hardware,
+OpenAI or Ollama. HTTP tests skip if FastAPI/httpx are not installed.
 
 From the repository root:
 

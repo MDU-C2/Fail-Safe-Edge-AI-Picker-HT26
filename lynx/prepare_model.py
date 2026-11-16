@@ -27,7 +27,7 @@ def main():
     parser.add_argument("model_dir", type=Path)
     parser.add_argument("--input-size", type=int, choices=(320, 640), required=True)
     parser.add_argument("--classes-file", type=Path, required=True, help="One class per line in export index order")
-    parser.add_argument("--precision", choices=("fp32", "int8"), default="fp32")
+    parser.add_argument("--precision", choices=("fp32", "fp16", "int8"), default="fp32")
     args = parser.parse_args()
     model = prepare(args.model_dir, args.input_size, args.classes_file.read_text().splitlines(), args.precision)
     print(f"Prepared {model.input_size}px {model.precision} model; checksum {model.sha256}")

@@ -28,7 +28,9 @@ def copy_file(source: Path, target: Path, manifest: dict[str, str], output: Path
     manifest[str(target.relative_to(output))] = hashlib.sha256(target.read_bytes()).hexdigest()
 
 
-def stage(repo: Path, model: Path, output: Path) -> dict[str, str]:
+def stage(repo: Path, model: Path, output: Path, *, profile="combined") -> dict[str, str]:
+    if profile not in ("combined", "cli"):
+        raise ValueError("Profile must be combined or cli")
     repo, model, output = repo.resolve(), model.resolve(), output.resolve()
     if output.exists():
         raise ValueError(f"Output already exists; choose a new context directory: {output}")
@@ -45,33 +47,50 @@ def stage(repo: Path, model: Path, output: Path) -> dict[str, str]:
     def add(source: Path, relative: Path | str) -> None:
         copy_file(source, output / relative, manifest, output)
 
-    gateway = repo / "gateway"
-    for source in sorted(gateway.glob("*.py")):
-        if not source.name.startswith("test_"):
-            add(source, Path("app/gateway") / source.name)
-    for package in GATEWAY_PACKAGES:
-        for source in sorted((gateway / package).rglob("*.py")):
-            if "tests" not in source.parts and not source.name.startswith("test_"):
-                add(source, Path("app/gateway") / source.relative_to(gateway))
+    if profile == "cli":
+        # Explicit runtime allowlist: no gateway, browser UI, camera SDK,
+        # training/export packages or Python image-processing modules.
+        for name in (
+            "camera_client", "cup_commands", "cup_inventory", "handover_plan",
+            "placing_grid", "recovery_journal", "robot_client", "robot_controls",
+            "controller_status", "gateway_capabilities", "terminal_controller",
+            "terminal_commands", "operator_commands", "language_commands", "local_llm",
+            "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
+        ):
+            add(repo / "capture_and_detect" / (name + ".py"), "app/capture_and_detect/" + name + ".py")
+        for name in ("__init__", "picker", "capture", "raw_images", "model", "resources",
+                     "placement_records", "native_transport", "native_perception", "runtime"):
+            add(repo / "lynx" / (name + ".py"), "app/lynx/" + name + ".py")
+    else:
+        gateway = repo / "gateway"
+        for source in sorted(gateway.glob("*.py")):
+            if not source.name.startswith("test_"):
+                add(source, Path("app/gateway") / source.name)
+        for package in GATEWAY_PACKAGES:
+            for source in sorted((gateway / package).rglob("*.py")):
+                if "tests" not in source.parts and not source.name.startswith("test_"):
+                    add(source, Path("app/gateway") / source.relative_to(gateway))
 
-    capture = repo / "capture_and_detect"
-    for source in sorted(capture.glob("*.py")):
-        if not source.name.startswith(("test_", "check_")):
-            add(source, Path("app/capture_and_detect") / source.name)
-    for source in sorted((capture / "web_static").iterdir()):
-        if source.suffix in {".html", ".css", ".js"}:
-            add(source, Path("app/capture_and_detect/web_static") / source.name)
-    for source in sorted((repo / "lynx").glob("*.py")):
-        if not source.name.startswith("test_"):
-            add(source, Path("app/lynx") / source.name)
+        capture = repo / "capture_and_detect"
+        for source in sorted(capture.glob("*.py")):
+            if not source.name.startswith(("test_", "check_")):
+                add(source, Path("app/capture_and_detect") / source.name)
+        for source in sorted((capture / "web_static").iterdir()):
+            if source.suffix in {".html", ".css", ".js"}:
+                add(source, Path("app/capture_and_detect/web_static") / source.name)
+        for source in sorted((repo / "lynx").glob("*.py")):
+            if not source.name.startswith("test_"):
+                add(source, Path("app/lynx") / source.name)
     for source in sorted((repo / "lynx/native").rglob("*")):
-        if source.is_file() and (source.suffix in {".h", ".hpp", ".c", ".cpp", ".cmake"} or source.name == "CMakeLists.txt"):
+        if source.is_file() and (source.suffix in {".h", ".hpp", ".c", ".cpp", ".cmake"} or source.name in {"CMakeLists.txt", "LICENSE.MIT", "README.md"}):
             add(source, Path("native") / source.relative_to(repo / "lynx/native"))
     for name in MODEL_REQUIRED + MODEL_OPTIONAL:
         if (model / name).exists():
             add(model / name, Path("model") / name)
     for name in ("Dockerfile", "start.sh", "requirements-arm64.lock", "measure_resources.py"):
-        add(repo / "lynx/deploy" / name, name)
+        source = {"Dockerfile": "Dockerfile.cli", "start.sh": "start-cli.sh",
+                  "requirements-arm64.lock": "requirements-cli-arm64.lock"}.get(name, name) if profile == "cli" else name
+        add(repo / "lynx/deploy" / source, name)
     (output / "source-manifest.json").write_text(json.dumps({"sha256": manifest}, indent=2) + "\n")
     return manifest
 
@@ -81,8 +100,9 @@ def main() -> None:
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--profile", choices=("combined", "cli"), default="combined")
     args = parser.parse_args()
-    files = stage(args.repo, args.model_dir, args.output)
+    files = stage(args.repo, args.model_dir, args.output, profile=args.profile)
     print(f"Staged {len(files)} files in {args.output.resolve()}")
     print("No credentials, calibration, captures or existing robot state were included.")
 

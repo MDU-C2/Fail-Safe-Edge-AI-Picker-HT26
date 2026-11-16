@@ -13,7 +13,8 @@ import uuid
 
 from cup_inventory import SelectionError, hover_moves
 from handover_plan import (CAMERA_Z_FLOOR, CAMERA_Z_OFFSET, FLIP_ACCELERATION, FLIP_SPEED, handover_jobs,
-                           normalize_handover_offset, pick_position_problem)
+                           normalize_handover_offset, pick_position_problem,
+                           normalize_phase_speeds, effective_phase_speeds)
 from operator_commands import COMMAND_HELP, START_COMMANDS, STOP_COMMANDS
 from robot_controls import RobotControls, control_plan, valid_speed
 
@@ -32,12 +33,13 @@ class WebController:
     no scan or proposal. The existing persistent robot recovery journal survives.
     """
 
-    def __init__(self, factory, *, mode="demo", model="qwen3-vl:4b-instruct", llm_enabled=True):
+    def __init__(self, factory, *, mode="demo", model="gpt-6-astra", llm_enabled=True):
         if mode not in ("demo", "dry_run", "live"):
             raise ValueError("Invalid mode")
         self.factory = factory
         self.session = self.language = None
         self.controls = None
+        self._astra_client = self._astra_settings = None
         self.mode = mode
         self._lock = threading.RLock()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cup-controller")
@@ -50,6 +52,7 @@ class WebController:
         self._images = {}
         self._resources = []
         self._proposal_deadline = None
+        self._assistant_proposal_source = None
         self._control_deadline = None
         self._execution_capture = None
         self._execution_totals = {}
@@ -69,8 +72,16 @@ class WebController:
 
     def _update(self, **fields):
         with self._lock:
+            if "proposal" in fields and fields["proposal"] is None:
+                self._clear_assistant_source()
             self._state.update(copy.deepcopy(fields))
             self._state["revision"] += 1
+
+    def _clear_assistant_source(self):
+        """Caller holds the controller lock; source never authorizes movement."""
+        self._assistant_proposal_source = None
+        if self._state["proposal"] is not None:
+            self._state["proposal"].pop("assistant_request_id", None)
 
     def attach_resource(self, resource):
         """Register bounded workers even if later initialization fails."""
@@ -79,6 +90,13 @@ class WebController:
                 resource.close()
                 raise WebError("Controller is closed.")
             self._resources.append(resource)
+
+    def configure_astra(self, client, settings):
+        """Bind one Mac-side client before startup; UI edits share its settings."""
+        with self._lock:
+            if self._started or self._closed:
+                raise WebError("Configure the Assistant before starting the MacBook controller.")
+            self._astra_client, self._astra_settings = client, settings
 
     def publish_inference(self, snapshot):
         # Worker callbacks publish only cached data. Polling the dashboard never
@@ -138,11 +156,13 @@ class WebController:
     def _initialize(self):
         try:
             self.session, self.language = self.factory(self)
+            if self._astra_client is not None and self.mode != "demo":
+                self.language.cup_matcher = self._astra_client
             if bool(self.session.robot.dry_run) != (self.mode != "live"):
                 raise ValueError("Controller mode and robot mode disagree; startup refused.")
             self.controls = RobotControls(self.session)
             self.publish_session()
-            message = ("Demo ready. Sample cups and scripted language; no hardware or model connection."
+            message = ("Demo ready. Sample cups; no camera or robot connection."
                        if self.mode == "demo" else "Ready. Scan the table to begin.")
             self._update(ready=True, message=message)
             self.event(message)
@@ -164,7 +184,15 @@ class WebController:
 
     def state(self):
         with self._lock:
+            if (self._assistant_proposal_source is not None and self._proposal_deadline is not None
+                    and self._proposal_deadline <= time.monotonic()):
+                self._clear_assistant_source()
+                self._state["revision"] += 1
             result = copy.deepcopy(self._state)
+            if self._astra_settings is not None and self.mode != "demo":
+                result["saved_cups"]["matcher_enabled"] = bool(
+                    result["saved_cups"]["enabled"] and self._astra_settings.status()["configured"])
+                result["saved_cups"]["matcher_model"] = "gpt-6-astra"
             if result["proposal"] is not None:
                 result["proposal"]["expires_in"] = max(0, self._proposal_deadline - time.monotonic())
             if result["robot_controls"]["proposal"] is not None:
@@ -204,11 +232,16 @@ class WebController:
                     saved["thumbnail_url"] = f"/api/saved-image/{saved['id']}"
             except (OSError, ValueError) as error:
                 saved_cups["error"] = str(error)
+        settings = session.motion_settings()
+        phases = settings["effective_phase_speeds"]
         motion = {"speed": session.speed, "home_speed": session.home_speed,
                   "camera_z": session.camera_z,
-                  "flip_speed": min(session.speed, FLIP_SPEED),
+                  "flip_speed": phases["flip"],
+                  "phase_speeds_supported": True,
+                  "phase_speed_defaults": normalize_phase_speeds(),
+                  "phase_speed_settings": settings["phase_speeds"], "phase_speeds": phases,
                   "acceleration": 100, "flip_acceleration": FLIP_ACCELERATION,
-                  "handover": session.motion_settings()["handover"]}
+                  "handover": settings["handover"]}
         grid = None
         if session.placing_grid is not None:
             try:
@@ -230,7 +263,9 @@ class WebController:
                 visible.update(pick_available=bool(cup.get("selectable")) and reason is None,
                                blocked_reason=reason,
                                can_save=(cup.get("cup_detection_id") is not None
-                                         and bool(inventory.get("images", {}).get("rgb"))))
+                                         and (bool(inventory.get("images", {}).get("rgb"))
+                                              or (self.mode == "demo" and cup.get("demo_identity")
+                                                  in ("teal", "white", "orange")))))
                 cups.append(visible)
                 execution = cup.get("execution")
                 if execution:
@@ -292,6 +327,8 @@ class WebController:
                         "home_speed": record.get("home_speed", session.home_speed),
                         "camera_z": record.get("motion_settings", {}).get("camera_z", session.camera_z),
                         "flip_speed": record.get("flip_speed", min(session.speed, FLIP_SPEED)),
+                        "phase_speeds": copy.deepcopy(record.get("phase_speeds") or effective_phase_speeds(
+                            record.get("speed", session.speed), record.get("motion_settings", {}).get("phase_speeds"))),
                         "handover": copy.deepcopy(record.get("handover")),
                         "description": record.get("description") or (
                             "Pick with the left arm, transfer to the right, place, and return both arms home."
@@ -314,6 +351,12 @@ class WebController:
                 proposal = None
                 deadline = None
                 controls["proposal"] = None
+            source = self._assistant_proposal_source
+            if (proposal is not None and proposal["expires_in"] > 0 and source is not None
+                    and proposal["token"] == source[0]):
+                proposal["assistant_request_id"] = source[1]
+            else:
+                self._clear_assistant_source()
             self._control_deadline = (time.monotonic() + controls["proposal"]["expires_in"]
                                       if controls["proposal"] else None)
             self._images = images
@@ -353,7 +396,7 @@ class WebController:
             totals = {cup_id: len(handover_jobs(cups[cup_id], place=place,
                       tag_offset=self.session.tag_offset, speed=self.session.speed,
                       home_speed=self.session.home_speed, handover_offset=self.session.handover_offset,
-                      camera_z=self.session.camera_z))
+                      camera_z=self.session.camera_z, phase_speeds=self.session.phase_speeds))
                       for cup_id, place in zip(ids, places)}
         self._execution_capture = record["capture_id"]
         self._execution_totals = totals
@@ -364,11 +407,14 @@ class WebController:
                   "select": {"capture_id", "cup_id", "action"}, "batch": {"capture_id"},
                   "confirm": {"capture_id", "cup_id", "action", "token"},
                   "cancel": set(), "recovery": {"acknowledged"}, "robot_status": set(), "speed": {"speed"},
+                  "phase_speeds": {"pick_lift", "handover", "flip", "placement"},
                   "control_preview": {"action", "arm"}, "control_confirm": {"token", "acknowledged"},
                   "control_cancel": set(), "handover_offset": {"x", "y", "z"},
                   "release_locations": {"fingerprint", "acknowledged"},
                   "save_cup": {"capture_id", "cup_id", "name"},
                   "pick_saved": {"id"}, "forget_cup": {"id"}}
+        if operation == "cancel" and isinstance(payload, dict) and "token" in payload:
+            fields["cancel"].add("token")
         if operation not in fields or not isinstance(payload, dict) or set(payload) != fields[operation] | {"request_id"}:
             raise WebError("Invalid request fields.", 422)
         rid = payload["request_id"]
@@ -382,10 +428,13 @@ class WebController:
                     or not re.fullmatch(r"[A-Za-z0-9_-]{1,150}", payload["capture_id"])):
                 raise WebError("Choose a cup and action from the current scan.", 422)
         if operation == "save_cup":
-            if (type(payload["cup_id"]) is not int or payload["cup_id"] < 1
-                    or not isinstance(payload["name"], str)
-                    or not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,47}", payload["name"].strip())):
-                raise WebError("Choose a cup and a name of 1–48 letters, digits, spaces, underscores or hyphens, starting with a letter.", 422)
+            from named_cups import _name
+            if type(payload["cup_id"]) is not int or payload["cup_id"] < 1:
+                raise WebError("Choose a cup from the current scan.", 422)
+            try:
+                _name(payload["name"])
+            except ValueError as error:
+                raise WebError(str(error), 422) from None
         if operation in ("pick_saved", "forget_cup") and (not isinstance(payload["id"], str)
                 or not re.fullmatch(r"[0-9a-f]{32}", payload["id"])):
             raise WebError("Choose a saved cup from this library.", 422)
@@ -399,6 +448,9 @@ class WebController:
         if operation == "confirm" and (not isinstance(payload["token"], str)
                 or not re.fullmatch(r"[0-9a-f]{8}", payload["token"])):
             raise WebError("Invalid confirmation code.", 422)
+        if operation == "cancel" and "token" in payload and (not isinstance(payload["token"], str)
+                or not re.fullmatch(r"[0-9a-f]{8}", payload["token"])):
+            raise WebError("Invalid preview token.", 422)
         if operation == "recovery" and payload["acknowledged"] is not True:
             raise WebError("Inspect the robot and explicitly acknowledge recovery first.", 422)
         if operation == "release_locations" and (payload["acknowledged"] is not True
@@ -418,13 +470,27 @@ class WebController:
                 normalize_handover_offset(tuple(payload[a] for a in "xyz"))
             except (ValueError, TypeError, OverflowError) as error:
                 raise WebError(str(error), 422) from error
+        if operation == "phase_speeds":
+            try:
+                normalize_phase_speeds({key: payload[key] for key in ("pick_lift", "handover", "flip", "placement")})
+            except (ValueError, TypeError, OverflowError) as error:
+                raise WebError(str(error), 422) from error
         if operation == "control_confirm" and (payload["acknowledged"] is not True
                 or not isinstance(payload["token"], str)
                 or not re.fullmatch(r"[0-9a-f]{16}", payload["token"])):
             raise WebError("Review the action and explicitly acknowledge inspection before confirming.", 422)
 
-    def submit(self, operation, payload):
+    def submit(self, operation, payload, *, assistant_request_id=None, assistant_camera=False):
         self._validate(operation, payload)
+        if type(assistant_camera) is not bool or (assistant_camera and operation != "scan"):
+            raise WebError("Invalid assistant camera request.", 422)
+        # This keyword is supplied only by RobotAssistant after validating its
+        # server-side draft. HTTP payloads cannot set it or bypass confirmation.
+        if assistant_request_id is not None and (
+                operation not in ("select", "batch", "pick_saved")
+                or not isinstance(assistant_request_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", assistant_request_id)):
+            raise WebError("Invalid assistant preview source.", 422)
         if operation == "command":
             direct = re.sub(r"\s+", " ", payload["text"].strip().lower())
             if direct in STOP_COMMANDS:
@@ -461,11 +527,24 @@ class WebController:
                 return {"accepted": True}
             if self._state["busy"]:
                 raise WebError("The controller is busy. No extra action was queued.")
+            if assistant_camera and (self._state["stop_requested"] or self._state["recovery_required"]
+                    or self.session.stop_requested or self.session.motion_uncertain
+                    or self.language.pending is not None
+                    or self._state["robot_controls"]["proposal"] is not None):
+                raise WebError("Finish the current preview or recovery before the Assistant takes a new scan.")
+            if operation == "cancel" and "token" in payload:
+                # The idle worker cannot replace pending after this check: the
+                # same lock marks this request busy before another can submit.
+                pending = self.language.pending
+                if pending is None or payload["token"] != pending["token"]:
+                    raise WebError("This preview changed. Nothing was cancelled.")
             if self._state["stop_requested"] and operation not in ("recovery", "cancel", "robot_status", "control_cancel", "release_locations"):
                 raise WebError("Software stop is latched. Inspect the robot and acknowledge recovery before a new action.")
             if len(self._request_ids) >= 10000:
                 raise WebError("Request limit reached. Restart the app when the robot is idle.")
             self._request_ids.add(request_id)
+            if operation != "robot_status":
+                self._clear_assistant_source()
             self._normal_busy, self._normal_operation = True, operation
             self._publish_busy()
             self._update(error=None,
@@ -475,16 +554,20 @@ class WebController:
                                   "batch": "Checking cups and available placement locations…",
                                   "cancel": "Cancelling the proposal…", "recovery": "Recording your acknowledgement…",
                                   "robot_status": "Reading controller status…", "speed": "Updating future movement speed…",
+                                  "phase_speeds": "Updating future movement phase speeds…",
                                   "handover_offset": "Updating future handover alignment…",
                                   "release_locations": "Releasing inspected placement locations…",
                                   "save_cup": "Saving a local cup reference…",
-                                  "pick_saved": "Scanning the table and comparing the saved cup with the local vision model…",
+                                  "pick_saved": "Scanning the table and comparing the saved cup with GPT-6 Astra…",
                                   "forget_cup": "Removing the saved reference…",
                                   "control_preview": "Preparing robot control preview…",
                                   "control_confirm": "Executing the reviewed robot control action…",
                                   "control_cancel": "Cancelling robot control preview…"}[operation])
-            self._worker.submit(self._run, operation, copy.deepcopy(payload), self._generation)
-        return {"accepted": True}
+            self._worker.submit(self._run, operation, copy.deepcopy(payload), self._generation, assistant_request_id)
+        result = {"accepted": True}
+        if assistant_request_id is not None:
+            result["assistant_request_id"] = assistant_request_id
+        return result
 
     def _run_stop(self):
         """Independent of the movement/model worker and its language lock."""
@@ -541,16 +624,16 @@ class WebController:
         if named is not None:
             return named
         if not self._state["llm_enabled"]:
-            raise SelectionError("Language is disabled. Use Scan and the cup selection buttons, or restart with --llm.")
+            raise SelectionError("Free-form language is disabled in this command box. Use the Assistant tab for GPT-6 Astra.")
         return self.language.propose(text)
 
-    def _run(self, operation, payload, generation):
+    def _run(self, operation, payload, generation, assistant_request_id=None):
         try:
             self._check_generation(generation)
             result = None
             if operation not in ("control_confirm", "robot_status"):
                 self.controls.cancel()
-            if operation in ("speed", "handover_offset", "control_preview", "control_confirm", "release_locations"):
+            if operation in ("speed", "phase_speeds", "handover_offset", "control_preview", "control_confirm", "release_locations"):
                 self.language.cancel()
             if operation == "start":
                 result = self.language.start()
@@ -598,6 +681,9 @@ class WebController:
                 result = self.controls.refresh_status()
             elif operation == "speed":
                 result = self.controls.set_speed(payload["speed"])
+            elif operation == "phase_speeds":
+                result = self.session.set_phase_speeds({key: payload[key] for key in
+                    ("pick_lift", "handover", "flip", "placement")})
             elif operation == "handover_offset":
                 result = self.controls.set_handover_offset(tuple(payload[a] for a in "xyz"))
             elif operation == "release_locations":
@@ -633,6 +719,10 @@ class WebController:
                            if result["action"] in ("goto", "goto_all") else "Robot reported hover complete. Scan again.")
             with self._lock:
                 self._check_generation(generation)
+                if (assistant_request_id is not None and (result or {}).get("kind") == "proposal"
+                        and self.language.pending is not None
+                        and result.get("token") == self.language.pending["token"]):
+                    self._assistant_proposal_source = (self.language.pending["token"], assistant_request_id)
                 self._update(message=message or "Done.")
                 self.event(message or "Done.")
         except BaseException as error:
@@ -644,6 +734,7 @@ class WebController:
             except BaseException:
                 pass
             with self._lock:
+                self._clear_assistant_source()
                 if generation == self._generation:
                     self._update(error=str(error), message=f"Blocked: {error}")
                 self.event(f"Blocked: {error}", "error")

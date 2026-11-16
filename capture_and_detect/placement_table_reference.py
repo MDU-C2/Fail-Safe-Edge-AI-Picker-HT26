@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from cup_inventory import SelectionError, finite_number
+from table_reference_contract import (_fail, _source, _identity, _check_plane, validate_reference)
 
 
 SCHEMA_VERSION = 1
@@ -32,93 +33,10 @@ XY_BIN_MM = 2.0
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}\Z")
 
 
-def _fail(message):
-    raise SelectionError("Table reference: " + message)
 
 
-def _source(value):
-    if not isinstance(value, dict):
-        _fail("source provenance must be an object.")
-    capture, digest, sequences = (value.get(key) for key in
-                                  ("capture", "depth_sha256", "frame_sequences"))
-    if (not isinstance(capture, str) or not capture.strip() or len(capture) > 256
-            or not isinstance(digest, str) or not _SHA256.fullmatch(digest)
-            or not isinstance(sequences, list) or len(sequences) != 3
-            or any(type(item) is not int or item < 0 for item in sequences)
-            or any(a >= b for a, b in zip(sequences, sequences[1:]))):
-        _fail("source requires a capture, depth SHA256 and three advancing frame sequences.")
-    try:
-        encoded = json.dumps(value, allow_nan=False, sort_keys=True)
-    except (TypeError, ValueError):
-        _fail("source provenance must contain finite JSON values.")
-    if len(encoded) > 16384:
-        _fail("source provenance is too large.")
-    return json.loads(encoded)
 
 
-def _identity(calibration, intrinsics, locations, cell_size, table_z):
-    if (not finite_number(cell_size) or not 20 <= cell_size <= 200
-            or not finite_number(table_z)
-            or not isinstance(locations, (list, tuple))
-            or not 1 <= len(locations) <= MAX_LOCATIONS
-            or not isinstance(intrinsics, dict)):
-        _fail("invalid grid geometry or intrinsics.")
-    digest = getattr(calibration, "digest", None)
-    if not isinstance(digest, str) or not _SHA256.fullmatch(digest):
-        _fail("calibration must have a SHA256 identity.")
-    scale = getattr(calibration, "scale", None)
-    if not finite_number(scale) or scale <= 0:
-        _fail("invalid calibration scale.")
-    try:
-        rotation = np.asarray(calibration.R, dtype=float)
-        translation = np.asarray(calibration.t, dtype=float)
-        offset = np.asarray(calibration.offset, dtype=float)
-    except (AttributeError, TypeError, ValueError):
-        _fail("invalid calibration transform.")
-    if (rotation.shape != (3, 3) or translation.shape != (3,) or offset.shape != (3,)
-            or not np.isfinite(rotation).all() or not np.isfinite(translation).all()
-            or not np.isfinite(offset).all()):
-        _fail("invalid calibration transform.")
-    with np.errstate(over="ignore", invalid="ignore"):
-        transform = float(scale) * rotation
-        origin = translation + offset
-        determinant = np.linalg.det(transform)
-    if (not np.isfinite(transform).all() or not np.isfinite(origin).all()
-            or not math.isfinite(float(determinant)) or abs(determinant) < 1e-9):
-        _fail("invalid calibration transform.")
-    camera = {}
-    for key in ("width", "height"):
-        item = intrinsics.get(key)
-        if type(item) is not int or item <= 0:
-            _fail("invalid camera dimensions.")
-        camera[key] = item
-    if camera["width"] * camera["height"] > MAX_FRAME_PIXELS:
-        _fail("camera frame exceeds the reference resource limit.")
-    for key in ("fx", "fy", "cx", "cy"):
-        item = intrinsics.get(key)
-        if not finite_number(item) or (key in ("fx", "fy") and item <= 0):
-            _fail("invalid camera intrinsics.")
-        camera[key] = float(item)
-    places, seen = [], set()
-    for location in locations:
-        if not isinstance(location, dict):
-            _fail("grid locations must be objects.")
-        identifier = location.get("id")
-        if type(identifier) is not int or identifier <= 0 or identifier in seen:
-            _fail("grid location IDs must be unique positive integers.")
-        if not all(finite_number(location.get(axis)) for axis in ("x", "y")):
-            _fail("grid coordinates must be finite.")
-        seen.add(identifier)
-        place = {"id": identifier, "x": float(location["x"]), "y": float(location["y"])}
-        if "z" in location:
-            if not finite_number(location["z"]):
-                _fail("grid coordinates must be finite.")
-            place["z"] = float(location["z"])
-        places.append(place)
-    return {"calibration_sha256": digest.lower(), "scale": float(scale),
-            "rotation": rotation.tolist(), "translation": translation.tolist(),
-            "tag_offset_mm": offset.tolist(), "intrinsics": camera,
-            "locations": places, "cell_size_mm": float(cell_size), "table_z_mm": float(table_z)}
 
 
 def _corners(identity):
@@ -128,19 +46,6 @@ def _corners(identity):
                      for dx, dy in ((-half, -half), (half, -half), (half, half), (-half, half))])
 
 
-def _check_plane(coefficients, identity):
-    if (not isinstance(coefficients, (list, tuple)) or len(coefficients) != 3
-            or not all(finite_number(value) for value in coefficients)):
-        _fail("plane coefficients must be three finite numbers.")
-    coefficients = np.asarray(coefficients, dtype=float)
-    slope = math.degrees(math.atan(float(np.hypot(*coefficients[:2]))))
-    if slope > MAX_SLOPE_DEGREES:
-        _fail("fitted table slope exceeds the allowed bound.")
-    predicted = _corners(identity) @ coefficients[:2] + coefficients[2]
-    if (not np.isfinite(predicted).all()
-            or np.any(np.abs(predicted - identity["table_z_mm"]) > MAX_REFERENCE_OFFSET_MM)):
-        _fail("fitted table differs too far from the nominal table plane.")
-    return coefficients
 
 
 class TableReference:
@@ -153,25 +58,8 @@ class TableReference:
 
     @classmethod
     def from_dict(cls, value, *, calibration, intrinsics, locations, cell_size, table_z=0.0):
-        identity = _identity(calibration, intrinsics, locations, cell_size, table_z)
-        if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
-                or type(value.get("schema_version")) is not int
-                or value.get("kind") != "placement_table_reference" or value.get("units") != "mm"):
-            _fail("unsupported artifact format.")
-        if value.get("identity") != identity:
-            _fail("calibration, camera or grid geometry changed; rebuild the reference from an empty table.")
-        _source(value.get("source"))
-        _check_plane(value.get("plane_z_mm"), identity)
-        fit = value.get("fit")
-        if (not isinstance(fit, dict)
-                or any(type(fit.get(key)) is not int for key in
-                       ("sample_count", "bin_count", "inlier_bin_count"))
-                or not MIN_FIT_BINS <= fit["inlier_bin_count"] <= fit["bin_count"] <= fit["sample_count"] <= MAX_FIT_PIXELS
-                or fit["inlier_bin_count"] < 0.8 * fit["bin_count"]
-                or not finite_number(fit.get("rms_mm")) or not 0 <= fit["rms_mm"] <= MAX_FIT_RMS_MM
-                or not finite_number(fit.get("max_cell_residual_p99_mm"))
-                or not 0 <= fit["max_cell_residual_p99_mm"] <= MAX_CELL_RESIDUAL_P99_MM):
-            _fail("invalid or insufficient reference fit quality.")
+        validate_reference(value, calibration=calibration, intrinsics=intrinsics,
+                           locations=locations, cell_size=cell_size, table_z=table_z)
         return cls(value)
 
     def expected_height(self, x, y):

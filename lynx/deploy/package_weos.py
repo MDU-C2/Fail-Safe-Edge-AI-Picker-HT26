@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--image", required=True, help="Locally built image, preferably an immutable image ID")
     parser.add_argument("--output", type=Path, required=True, help="New .wmopkg output filename")
     parser.add_argument("--version", default="0.1.0")
+    parser.add_argument("--description", default="Lynx cup picker: gateway, coordinator and NCNN worker")
     parser.add_argument("--signing-key", type=Path)
     parser.add_argument("--container-tools", action="store_true", help="Run Linux packaging tools in an isolated Docker container")
     args = parser.parse_args()
@@ -70,7 +71,7 @@ def main() -> None:
                 command = [sys.executable, str(generator), "-i", str(rootfs)]
             command.extend(["-t", "rootfs",
                 "-n", "lynx-picker", "-v", args.version,
-                "-d", "Lynx cup picker: gateway, coordinator and NCNN worker",
+                "-d", args.description,
             ])
             if args.signing_key:
                 command.extend(["-k", "/keys/signing.key" if args.container_tools else str(args.signing_key.resolve())])

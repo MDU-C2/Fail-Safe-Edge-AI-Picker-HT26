@@ -112,8 +112,11 @@ def create_robot(args, api, headers):
         control = robot._get_object("/control")
         if control.get("session_required") is not True or control.get("watchdog_enabled") is not True:
             raise RobotCommandError("Live fallback requires the updated gateway with GATEWAY_CONTROL_REQUIRE_SESSION=true. Dry-run remains available.")
-    if getattr(args, "controller_profile", None) is not None:
-        robot.configure_operator_controls(args.controller_profile)
+    profile = getattr(args, "controller_profile", None)
+    # Managed picker services publish controls immediately. Unflagged library
+    # callers retain their existing explicit/discovery-on-demand behavior.
+    if profile is not None or getattr(args, "discover_operator_controls", False):
+        robot.configure_operator_controls(profile)
     return robot
 
 

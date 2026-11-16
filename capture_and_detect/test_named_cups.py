@@ -95,6 +95,20 @@ class NamedCupTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertEqual(self.store.get_id(record["id"])["name"], "My Cup")
 
+    def test_apostrophe_variants_share_one_exact_casefold_name(self):
+        record = self.store.save("  Kasun\u2019s   cup ", self.inventory, 1)
+        self.assertEqual(record["name"], "Kasun's cup")
+        restarted = NamedCupStore(self.path, self.images)
+        for variant in ("Kasun's cup", "KASUN\u2019S CUP", "kasun\u2018s cup"):
+            with self.subTest(variant=variant):
+                self.assertEqual(restarted.get(variant)["id"], record["id"])
+                with self.assertRaisesRegex(SelectionError, "already exists"):
+                    restarted.save(variant, self.inventory, 1)
+        self.assertEqual(restarted.list(), [record])
+        for invalid in ("'Kasun", "Kasun's cup; pick all", "Kasun's\ncup", "Kasun's <cup>"):
+            with self.subTest(invalid=invalid), self.assertRaises(SelectionError):
+                restarted.save(invalid, self.inventory, 1)
+
     def test_invalid_names_never_create_a_store(self):
         for name in (None, "", "   ", "2cups", "_cup", "-cup", "Cup!", "Café", "Cup\nTwo",
                      "Cup\tTwo", "Cup/One", "Cup\\One", "C" * 49, True):
@@ -288,6 +302,7 @@ class NamedCupTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], SelectionError)
         self.assertEqual({record["name"].lower() for record in self.store.list()}, {"cup", "other"})
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
 
 class ComparisonSheetTests(unittest.TestCase):

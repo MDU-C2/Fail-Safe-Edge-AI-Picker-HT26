@@ -1,7 +1,12 @@
 #include "geometry.hpp"
 #include "protocol.hpp"
+#include "object_depth.hpp"
+#include "placement.hpp"
 
 #include <net.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <opencv2/core.hpp>
 #include <opencv2/core/version.hpp>
 #include <opencv2/imgproc.hpp>
@@ -19,7 +24,15 @@
 
 namespace {
 
-constexpr char kVersion[] = "1.0.0";
+constexpr char kVersion[] = "2.0.0";
+
+void release_unused_heap() {
+#if defined(__GLIBC__)
+    // Inference and grid scratch have different allocation shapes. Return
+    // freed inference pages before allocating placement geometry on Lynx.
+    malloc_trim(0);
+#endif
+}
 
 struct Options {
     std::string param, bin;
@@ -242,7 +255,8 @@ public:
             }
             auto mask = lynx::original_mask(logits, prototypes.w, prototypes.h, box, request.width, request.height);
             if (std::none_of(mask.values.begin(), mask.values.end(), [](unsigned char x) { return x != 0; })) continue;
-            if (mask.values.size() > lynx::kMaxMaskBytes - result.masks.size())
+            const std::size_t mask_limit = request.perception ? 8 * 1024 * 1024 : lynx::kMaxMaskBytes;
+            if (mask.values.size() > mask_limit - result.masks.size())
                 throw std::runtime_error("Cropped masks exceed response memory budget");
             if (!first) json << ',';
             first = false;
@@ -295,7 +309,7 @@ int main(int argc, char** argv) {
             (void)segmenter.infer(warmup);
         }
         lynx::write_response(std::cout, 0, 0,
-            "{\"ready\":true,\"protocol_version\":1,\"version\":\"" + std::string(kVersion) +
+            "{\"ready\":true,\"protocol_version\":1,\"perception_version\":2,\"version\":\"" + std::string(kVersion) +
             "\",\"ncnn_version\":\"" + NCNN_VERSION_STRING + "\",\"opencv_version\":\"" + CV_VERSION +
             "\",\"postprocess\":\"ultralytics-8.4.166-retina\",\"input_size\":" + std::to_string(options.side) +
             ",\"classes_count\":" + std::to_string(options.classes) + ",\"max_detections\":" +
@@ -303,14 +317,47 @@ int main(int argc, char** argv) {
         lynx::Request request;
         while (lynx::read_request(std::cin, request)) {
             try {
-                const auto result = segmenter.infer(request);
-                lynx::write_response(std::cout, request.id, 0, result.json, result.masks);
+                auto result = segmenter.infer(request);
+                if (request.perception) {
+                    release_unused_heap();
+                    const auto config = nlohmann::json::parse(request.config_json);
+                    const auto detections = nlohmann::json::parse(result.json);
+                    if (!config.is_object() || !config.contains("intrinsics") ||
+                        config.at("intrinsics").at("width") != request.width ||
+                        config.at("intrinsics").at("height") != request.height ||
+                        config.at("names").size() != static_cast<std::size_t>(options.classes))
+                        throw std::runtime_error("Perception configuration does not match this frame/model");
+                    std::vector<cv::Mat> depths;
+                    for (auto& sample : request.depth_bytes)
+                        depths.emplace_back(request.height, request.width, CV_16UC1, sample.data());
+                    // Segmentation no longer needs the full RGB frame. Free
+                    // it before depth geometry allocates its working buffers.
+                    std::vector<unsigned char>().swap(request.bgr);
+                    const auto objects = lynx::describe_objects(detections, result.masks, depths, config);
+                    std::vector<unsigned char>().swap(result.masks);
+                    // Grid evidence is exclusively the newest raw frame.
+                    // Older frames affect object coordinates only.
+                    depths.erase(depths.begin(), depths.end() - 1);
+                    for (std::size_t i = 0; i + 1 < request.depth_bytes.size(); ++i)
+                        std::vector<unsigned char>().swap(request.depth_bytes[i]);
+                    release_unused_heap();
+                    const auto slots = lynx::assess_placement(depths.back(), objects, config);
+                    nlohmann::json response = {{"width", request.width}, {"height", request.height},
+                        {"inference_ms", detections.at("inference_ms")},
+                        {"objects", objects}, {"slots", slots}, {"perception_version", 2}};
+                    lynx::write_response(std::cout, request.id, 0, response.dump(), {},
+                                         lynx::kMaxPerceptionJsonBytes);
+                } else {
+                    lynx::write_response(std::cout, request.id, 0, result.json, result.masks);
+                }
             } catch (const std::bad_alloc&) {
                 throw;  // Allocation failures terminate; do not reuse uncertain state.
             } catch (const std::exception& error) {
                 lynx::write_response(std::cout, request.id, 1,
                     "{\"error\":" + lynx::json_string(error.what()) + '}');
             }
+            request = lynx::Request{};
+            release_unused_heap();
         }
         return 0;
     } catch (const std::exception& error) {

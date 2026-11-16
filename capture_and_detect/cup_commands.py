@@ -8,7 +8,8 @@ import time
 
 from cup_inventory import GRIPPER_TCP_Z, SelectionError, hover_moves, match_observation, selected_cup
 from handover_plan import (handover_jobs, left_only_jobs, handover_settings, motion_speeds,
-                           normalize_handover_offset, pick_position_problem)
+                           normalize_handover_offset, pick_position_problem,
+                           normalize_phase_speeds, effective_phase_speeds)
 
 
 class _VerificationPrefetch:
@@ -48,13 +49,16 @@ class CupSession:
     def __init__(self, capture, save, robot, calibration_id, *, max_result_age=15.0,
                  match_mm=20.0, match_px=40.0, tag_offset=(0, 0, 0), speed=None,
                  clock=time.monotonic, recovery=None, placing_grid=None, handover_offset=(0, 0, 0),
-                 left_only=False, verification_frames=1, camera_z=False):
+                 left_only=False, verification_frames=1, camera_z=False,
+                 strict_single_verification=False, phase_speeds=None):
         if type(left_only) is not bool:
             raise ValueError("left_only must be a boolean")
         if type(camera_z) is not bool:
             raise ValueError("camera_z must be a boolean")
         if type(verification_frames) is not int or verification_frames not in (1, 3):
             raise ValueError("verification_frames must be 1 or 3")
+        if type(strict_single_verification) is not bool or (strict_single_verification and verification_frames != 1):
+            raise ValueError("strict_single_verification requires a boolean and verification_frames=1")
         for name, value in (("max_result_age", max_result_age), ("match_mm", match_mm), ("match_px", match_px)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a positive finite number")
@@ -68,6 +72,7 @@ class CupSession:
         self.clock = clock
         self.tag_offset = tuple(tag_offset)
         self.speed, self.home_speed = motion_speeds(speed)
+        self.phase_speeds = normalize_phase_speeds(phase_speeds)
         self.handover_offset = normalize_handover_offset(handover_offset)
         self.inventory = None
         self.scan_usable = False
@@ -76,6 +81,7 @@ class CupSession:
         self.left_only = left_only
         self._camera_z = camera_z
         self.verification_frames = verification_frames
+        self.strict_single_verification = strict_single_verification
         self.batch_progress = None
         self.motion_uncertain = recovery.required() if recovery is not None else False
         self._stop_event = threading.Event()
@@ -217,7 +223,8 @@ class CupSession:
                     observation["applied"] = True
                     free = sum(not slot["occupied"] and not slot.get("vision_blocked", False)
                                for slot in after["locations"])
-                    observation["message"] = (f"Placement grid checked using three fresh frames: {free} available. "
+                    views = "one fresh observation" if observation.get("frame_count") == 1 else "three fresh frames"
+                    observation["message"] = (f"Placement grid checked using {views}: {free} available. "
                                               "Remove a cup and scan again to release its location.")
             self.save(inventory)
         self._check_stop()
@@ -243,13 +250,14 @@ class CupSession:
             raise SelectionError("Choose goto or hover.")
         if self.left_only:
             left_only_jobs(cup, tag_offset=self.tag_offset, speed=self.speed,
-                           home_speed=self.home_speed, camera_z=self.camera_z)
+                           home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds)
             return {"cup_ids": [cup_id], "placement": None}
         if self.placing_grid is None:
             raise SelectionError("No placement grid configured. Restart with --placing-grid.")
         placement = self.placing_grid.preview(1)
         handover_jobs(cup, place=placement["locations"][0], tag_offset=self.tag_offset, speed=self.speed,
-                      home_speed=self.home_speed, handover_offset=self.handover_offset, camera_z=self.camera_z)
+                      home_speed=self.home_speed, handover_offset=self.handover_offset,
+                      camera_z=self.camera_z, phase_speeds=self.phase_speeds)
         return {"cup_ids": [cup_id], "placement": placement}
 
     def preview_batch(self, *, capture_id):
@@ -264,7 +272,7 @@ class CupSession:
         if self.left_only:
             for cup in candidates:
                 left_only_jobs(cup, tag_offset=self.tag_offset, speed=self.speed,
-                               home_speed=self.home_speed, camera_z=self.camera_z)
+                               home_speed=self.home_speed, camera_z=self.camera_z, phase_speeds=self.phase_speeds)
             return {"cup_ids": [cup["id"] for cup in candidates], "placement": None,
                     "excluded_cup_ids": []}
         available = sum(not place["occupied"] and not place.get("vision_blocked", False)
@@ -275,7 +283,8 @@ class CupSession:
         placement = self.placing_grid.preview(len(chosen))
         for cup, place in zip(chosen, placement["locations"]):
             handover_jobs(cup, place=place, tag_offset=self.tag_offset, speed=self.speed,
-                          home_speed=self.home_speed, handover_offset=self.handover_offset, camera_z=self.camera_z)
+                          home_speed=self.home_speed, handover_offset=self.handover_offset,
+                          camera_z=self.camera_z, phase_speeds=self.phase_speeds)
         return {"cup_ids": [cup["id"] for cup in chosen], "placement": placement,
                 "excluded_cup_ids": [cup["id"] for cup in candidates[len(chosen):]]}
 
@@ -403,15 +412,17 @@ class CupSession:
         place = (context["placement"]["locations"][context["index"]]
                  if action == "goto" and not self.left_only else None)
         multi_frame = self.verification_frames == 3 and place is not None
+        strict_single = self.strict_single_verification
 
         def plan(target):
             if action == "goto":
                 if self.left_only:
                     return left_only_jobs(target, tag_offset=self.tag_offset, speed=self.speed,
-                                          home_speed=self.home_speed, camera_z=self.camera_z)
+                                          home_speed=self.home_speed, camera_z=self.camera_z,
+                                          phase_speeds=self.phase_speeds)
                 return handover_jobs(target, place=place, tag_offset=self.tag_offset, speed=self.speed,
                                      home_speed=self.home_speed, handover_offset=self.handover_offset,
-                                     camera_z=self.camera_z)
+                                     camera_z=self.camera_z, phase_speeds=self.phase_speeds)
             return [{"name": name, "endpoint": "/robot/rws/move", "body": body}
                     for name, body in zip(("left_ready", "approach_cup"),
                                           hover_moves(target, tag_offset=self.tag_offset, speed=self.speed))]
@@ -568,6 +579,10 @@ class CupSession:
                 self._check_stop()
 
             try:
+                if strict_single and place is not None:
+                    scan_observation = self.inventory.get("placement_observation")
+                    expected_identity = destination_identity(scan_observation, destination(scan_observation))
+                    audit["single_observation"] = {"max_observations": 1, "max_result_age_s": self.max_result_age}
                 if multi_frame:
                     scan_observation = self.inventory.get("placement_observation")
                     expected_identity = destination_identity(scan_observation, destination(scan_observation))
@@ -581,7 +596,7 @@ class CupSession:
                                          "home_completed_at": context["home_completed_at"]}
                 # Three-frame mode tolerates only bounded depth uncertainty;
                 # the legacy mode retains its one-clear / three-recheck policy.
-                for attempt in range(len(prefetched) + 6 if multi_frame else 4):
+                for attempt in range(1 if strict_single else len(prefetched) + 6 if multi_frame else 4):
                     self._check_stop()
                     was_prefetched = attempt < len(prefetched)
                     if was_prefetched:
@@ -617,7 +632,7 @@ class CupSession:
                     if (fresh.get("calibration_sha256") != self.calibration_id
                             or not isinstance(offset, (list, tuple)) or tuple(offset) != self.tag_offset):
                         raise SelectionError("Calibration changed. Restart with the intended calibration and scan again.")
-                    if multi_frame:
+                    if multi_frame or strict_single:
                         model, scanned_model = fresh.get("model"), self.inventory.get("model")
                         if (fresh.get("gateway") != self.inventory.get("gateway")
                                 or not isinstance(model, dict) or not isinstance(scanned_model, dict)
@@ -637,7 +652,16 @@ class CupSession:
                     sequence = new_sequence
                     context["sequence"] = sequence
                     if checking_place:
-                        if multi_frame:
+                        if strict_single:
+                            # A single fresh observation retains the strict evidence
+                            # contract. Unclear destinations fail without more captures.
+                            if destination_identity(observation, slot) != expected_identity:
+                                raise SelectionError("Placement geometry or table reference changed during verification; scan again.")
+                            validate_visual_schema(slot, fresh.get("cups"))
+                            if (slot.get("state") != "clear" or slot.get("reason_code") != "clear"
+                                    or not unobstructed(slot, clear=True)):
+                                raise blocked_destination(slot)
+                        elif multi_frame:
                             if destination_identity(observation, slot) != expected_identity:
                                 raise SelectionError("Placement geometry or table reference changed during verification; scan again.")
                             validate_visual_schema(slot, fresh.get("cups"))
@@ -724,6 +748,8 @@ class CupSession:
                     if multi_frame and (was_prefetched or (context["home_completed_at"] is not None
                                                            and started < context["home_completed_at"])):
                         raise SelectionError("Final verification must begin after both arms have confirmed home; scan again.")
+                    if strict_single and context["home_completed_at"] is not None and started < context["home_completed_at"]:
+                        raise SelectionError("Final verification must begin after both arms have confirmed home; scan again.")
                     if rechecking:
                         audit["stationary_recheck"]["clear_count"] = attempt
                         if attempt < 3:
@@ -744,7 +770,7 @@ class CupSession:
                     return jobs, started
             except Exception as error:
                 audit.update(state="failed", error=str(error))
-                if rechecking or multi_frame:
+                if rechecking or multi_frame or strict_single:
                     self.save(self.inventory)
                 raise
 
@@ -899,9 +925,27 @@ class CupSession:
         return jobs
 
     def motion_settings(self):
+        phases = effective_phase_speeds(self.speed, self.phase_speeds)
         return {"speed": self.speed, "home_speed": self.home_speed,
                 "left_only": self.left_only, "camera_z": self.camera_z,
-                "handover": handover_settings(self.handover_offset, self.speed)}
+                "phase_speeds": normalize_phase_speeds(self.phase_speeds),
+                "effective_phase_speeds": phases,
+                "handover": handover_settings(self.handover_offset, phases["handover"])}
+
+    def set_phase_speeds(self, settings):
+        """Change only future plans under the same admission lock as execution."""
+        settings = normalize_phase_speeds(settings)
+        if not self._activity_lock.acquire(blocking=False):
+            raise SelectionError("Wait for the active operation before changing movement speeds.")
+        try:
+            self._check_stop()
+            if self.motion_uncertain:
+                raise SelectionError("Inspect and acknowledge recovery before changing movement speeds.")
+            self.phase_speeds = settings
+            self.batch_progress = None
+            return {"message": "Future movement speeds updated. Review a new pick preview before confirming."}
+        finally:
+            self._activity_lock.release()
 
     def release_locations(self, *, fingerprint, acknowledged):
         """Release inspected placement records only, without robot or recovery actions."""

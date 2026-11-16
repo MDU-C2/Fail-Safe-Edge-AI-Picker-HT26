@@ -40,6 +40,32 @@ FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
 HANDOVER_OFFSET_LIMIT = 20
 ALIGNMENT_SPEED = 25
+DEFAULT_PHASE_SPEEDS = {"pick_lift": PICK_SPEED, "handover": None,
+                        "flip": FLIP_SPEED, "placement": None}
+
+
+def normalize_phase_speeds(value=None):
+    """Requested phase limits; null travel/placement follows the overall cap.
+
+    The numeric range is the existing controller command range, not a promise
+    of collision clearance or cup retention at the selected speed.
+    """
+    if value is None:
+        return dict(DEFAULT_PHASE_SPEEDS)
+    if not isinstance(value, dict) or set(value) != set(DEFAULT_PHASE_SPEEDS):
+        raise SelectionError("Specify pick_lift, handover, flip and placement speeds together.")
+    for key, speed in value.items():
+        if speed is None and key in ("handover", "placement"):
+            continue
+        if not finite_number(speed) or not 1 <= speed <= 1500:
+            raise SelectionError(f"{key} speed must be a finite number from 1 to 1500 mm/s.")
+    return dict(value)
+
+
+def effective_phase_speeds(speed=None, settings=None):
+    speed, _ = motion_speeds(speed)
+    return {key: speed if value is None else min(speed, value)
+            for key, value in normalize_phase_speeds(settings).items()}
 
 
 def motion_speeds(speed=None, home_speed=None):
@@ -129,8 +155,9 @@ def _pick_geometry(cup, tag_offset, *, camera_z=False):
 class _Plan:
     """Build validated jobs only; no dispatch, inferred reachability, or retries."""
 
-    def __init__(self, speed, home_speed, *, dependencies=False):
+    def __init__(self, speed, home_speed, *, dependencies=False, phase_speeds=None):
         self.speed, self.home_speed = motion_speeds(speed, home_speed)
+        self.phase_speeds = effective_phase_speeds(self.speed, phase_speeds)
         self.jobs = []
         self.dependencies = dependencies
         self.previous = {}
@@ -171,9 +198,9 @@ class _Plan:
             position = round(min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25), 1)
             self.grip("left_open", "left", "move", position=position)
         self.move("descend_to_cup", "left", pick, rotation,
-                  move_speed=min(self.speed, PICK_SPEED), pick=True)
+                  move_speed=self.phase_speeds["pick_lift"], pick=True)
         self.grip("grip_cup", "left", "grip")
-        self.move("lift_cup", "left", above, rotation, move_speed=min(self.speed, PICK_SPEED))
+        self.move("lift_cup", "left", above, rotation, move_speed=self.phase_speeds["pick_lift"])
         return above, pick, rotation
 
     def return_home(self, arm, last, rotation, *, after=()):
@@ -195,7 +222,7 @@ class _Plan:
 
 
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
-                  home_speed=None, handover_offset=(0, 0, 0), camera_z=False):
+                  home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None):
     """Build one guarded transfer with per-arm order and cross-arm dependencies.
 
     The accepted observation supplies the cup's yaw and aperture. Only cup
@@ -205,8 +232,9 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     length. Tag-offset Z is not added again. Placement is already a flange target.
 
     Defaults are 250 mm/s travel and 200 mm/s home. Picking, loaded lift and
-    left handover are capped at 100; the two turnover moves also use 100 and
-    30% acceleration. Selected lower speeds cap all those movements. Adjusted
+    left handover default to 100; the two turnover moves default to 100 and
+    retain 30% acceleration. Explicit phase settings adjust future plans only,
+    always capped by the overall speed. Adjusted
     receiving poses retain the 25 mm/s, 20% acceleration, 10% ramp limits.
 
     Empty grippers travel closed. Opening happens above the cup or beside the
@@ -220,13 +248,13 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     The right arm homes from its raised placement position without a mandatory
     600 mm move. There is no retry or fallback after any unconfirmed movement.
     """
-    plan = _Plan(speed, home_speed, dependencies=True)
-    alignment = handover_settings(handover_offset, plan.speed)
+    plan = _Plan(speed, home_speed, dependencies=True, phase_speeds=phase_speeds)
+    alignment = handover_settings(handover_offset, plan.phase_speeds["handover"])
     take = tuple(alignment["receive_mm"][axis] for axis in "xyz")
     below = (take[0], take[1], take[2] - 35)
     beside = (below[0], below[1] - 120, below[2])
     approach = ({"move_speed": alignment["approach_speed"], "acceleration": 20, "ramp": 10}
-                if alignment["adjusted"] else {})
+                if alignment["adjusted"] else {"move_speed": plan.phase_speeds["handover"]})
     place = validate_place(place)
     spot = tuple(place[axis] for axis in ("x", "y", "z"))
     place_above = (spot[0], spot[1], spot[2] + PLACE_ABOVE)
@@ -236,8 +264,9 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     plan.home("right_home_start", "right")
     plan.pick(cup, tag_offset, after=("right_home_start",), camera_z=camera_z)
     plan.move("left_handover", "left", HANDOVER_L, LEFT_DOWN,
-              move_speed=min(plan.speed, PICK_SPEED))
-    plan.move("right_via", "right", R_VIA, RIGHT_UP, after=("lift_cup",))
+              move_speed=plan.phase_speeds["pick_lift"])
+    plan.move("right_via", "right", R_VIA, RIGHT_UP, after=("lift_cup",),
+              move_speed=plan.phase_speeds["handover"])
     plan.move("right_beside", "right", beside, RIGHT_UP, **approach)
     plan.grip("right_open", "right", "open", after=("left_handover",))
     plan.move("right_below", "right", below, RIGHT_UP, **approach)
@@ -248,24 +277,24 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     plan.move("left_clear", "left", left_clear, LEFT_DOWN)
     plan.move("right_lower", "right", below, RIGHT_UP, after=("left_clear",), **approach)
     plan.move("right_turn_half", "right", turn_half, RIGHT_SIDE,
-              move_speed=min(plan.speed, FLIP_SPEED), acceleration=FLIP_ACCELERATION)
+              move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
     plan.move("right_retreat", "right", place_above, RIGHT_DOWN,
-              move_speed=min(plan.speed, FLIP_SPEED), acceleration=FLIP_ACCELERATION)
+              move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
     plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
-    plan.move("right_place", "right", spot, RIGHT_DOWN, pick=True)
+    plan.move("right_place", "right", spot, RIGHT_DOWN, pick=True, move_speed=plan.phase_speeds["placement"])
     plan.grip("right_release", "right", "open")
-    plan.move("right_clear", "right", place_above, RIGHT_DOWN)
+    plan.move("right_clear", "right", place_above, RIGHT_DOWN, move_speed=plan.phase_speeds["placement"])
     plan.return_home("right", place_above, RIGHT_DOWN)
     return plan.jobs
 
 
-def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False):
+def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False, phase_speeds=None):
     """Pick, lift and replace the verified cup, then return only the left arm."""
-    plan = _Plan(speed, home_speed)
+    plan = _Plan(speed, home_speed, phase_speeds=phase_speeds)
     above, pick, rotation = plan.pick(cup, tag_offset, camera_z=camera_z)
     plan.move("replace_cup", "left", pick, rotation,
-              move_speed=min(plan.speed, PICK_SPEED), pick=True)
+              move_speed=min(plan.phase_speeds["pick_lift"], plan.phase_speeds["placement"]), pick=True)
     plan.grip("left_release", "left", "open")
-    plan.move("left_clear", "left", above, rotation)
+    plan.move("left_clear", "left", above, rotation, move_speed=plan.phase_speeds["placement"])
     plan.return_home("left", above, rotation)
     return plan.jobs

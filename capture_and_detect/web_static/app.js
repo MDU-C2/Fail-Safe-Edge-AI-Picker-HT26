@@ -18,6 +18,9 @@
   let cardsKey = "";
   let eventsKey = "";
   let inferenceEventsKey = "";
+  let deviceChoice = "";
+  let deviceSelectionKey = "";
+  let deviceOptionsKey = "";
   let placementsKey = "";
   let savedCupsKey = "";
   let saveSelectionKey = "";
@@ -26,6 +29,7 @@
   let proposalDeadline = 0;
   let controlDeadline = 0;
   let speedDirty = false;
+  let phaseSpeedDirty = false;
   let handoverDirty = false;
   let releaseReview = null;
   let releaseMessage = "";
@@ -35,10 +39,10 @@
   const hide = (id, hidden) => { dom[id].hidden = hidden; };
   const cups = () => Array.isArray(state?.inventory?.cups) ? state.inventory.cups : [];
   const currentCup = () => selectedCapture === state?.inventory?.capture ? cups().find((cup) => cup.id === selectedId) : null;
-  const idle = () => connected && Boolean(state?.ready) && !state?.busy && !posting && !stopPosting;
+  const idle = () => connected && Boolean(state?.ready) && !state?.busy && !state?.devices?.switching && !posting && !stopPosting;
   const actionable = () => idle() && !localStopInhibit && !state?.stop_requested;
   const controlActionable = () => actionable() && !state?.recovery_required;
-  const canStop = () => connected && Boolean(state?.ready) && !stopPosting && !state?.stop_in_flight;
+  const canStop = () => connected && Boolean(state?.ready || state?.devices?.active_id) && !stopPosting && !state?.stop_in_flight;
   const isStop = (value) => ["stop", "halt", "stop robot", "stop the robot"].includes(value.trim().toLowerCase().replace(/\s+/g, " "));
   const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !state?.recovery_required && !localStopInhibit && !state?.stop_requested);
   const pickableCups = () => cups().filter((cup) => cup.selectable && cup.pick_available);
@@ -48,7 +52,7 @@
   const availableLocations = () => placementLocations().filter(placementAvailable);
   const gridReady = () => Boolean(state?.placement_grid && !state.placement_grid.error && Array.isArray(state.placement_grid.locations));
   const releaseActionable = () => idle() && !state?.stop_in_flight && gridReady() && placementLocations().length > 0 && typeof state.placement_grid.fingerprint === "string" && state.placement_grid.fingerprint.length > 0;
-  const releaseContext = (snapshot) => JSON.stringify([snapshot?.instance_id, snapshot?.placement_grid?.fingerprint, snapshot?.stop_requested, snapshot?.recovery_required, snapshot?.stop]);
+  const releaseContext = (snapshot) => JSON.stringify([snapshot?.instance_id, snapshot?.device_epoch, snapshot?.placement_grid?.fingerprint, snapshot?.stop_requested, snapshot?.recovery_required, snapshot?.stop]);
   const selectedIds = () => state?.proposal?.action === "goto_all" ? (state.proposal.cup_ids || []) : [state?.proposal?.cup_id ?? selectedId];
   const speedText = (value) => Number.isFinite(value) ? `${value} mm/s` : "unavailable";
   const accelerationText = (value) => Number.isFinite(value) ? `${value}% acceleration` : "acceleration unavailable";
@@ -81,6 +85,70 @@
     else image.removeAttribute("src");
   }
 
+  // Workspace navigation changes only the local view, never controller state.
+  const workspaceTabs = ["pick", "assistant", "robot", "settings"];
+  let activeWorkspaceTab = "pick";
+  const navigationProposalKeys = { pick: null, robot: null };
+
+  function activateWorkspaceTab(tab, focus = false) {
+    if (!workspaceTabs.includes(tab)) return;
+    activeWorkspaceTab = tab;
+    workspaceTabs.forEach((id) => {
+      const button = dom[`nav-${id}`];
+      const panel = dom[`view-${id}`];
+      const selected = id === tab;
+      if (button) {
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      }
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) dom[`nav-${tab}`]?.focus({ preventScroll: true });
+  }
+
+  function renderNavigation() {
+    let proposalTab = null;
+    for (const [tab, proposal] of [["pick", state?.proposal], ["robot", state?.robot_controls?.proposal]]) {
+      if (state?.busy) continue; // Wait until preparation has published the complete review.
+      if (typeof proposal?.token !== "string" || !proposal.token) continue;
+      const key = JSON.stringify([state?.instance_id, state?.device_epoch, proposal.token]);
+      if (navigationProposalKeys[tab] !== key) {
+        navigationProposalKeys[tab] = key;
+        if (connected && !localStopInhibit && !state?.stop_requested) {
+          proposalTab = tab === "pick" && proposal.assistant_request_id ? "assistant" : tab;
+        }
+      }
+    }
+    // Repeated polls, cleared proposals and ordinary mode changes preserve a
+    // user's tab choice. Only a newly observed preview draws attention to its tab.
+    activateWorkspaceTab(proposalTab || activeWorkspaceTab, Boolean(proposalTab && proposalTab !== activeWorkspaceTab));
+    if (proposalTab) {
+      const panel = dom[proposalTab === "pick" ? "proposal-panel" : proposalTab === "assistant" ? "view-assistant" : "robot-control-proposal"];
+      if (panel && !panel.hidden) panel.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start",
+      });
+    }
+  }
+
+  function initializeNavigation() {
+    workspaceTabs.forEach((tab, index) => {
+      const button = dom[`nav-${tab}`];
+      if (!button) return;
+      button.addEventListener("click", () => activateWorkspaceTab(tab, true));
+      button.addEventListener("keydown", (event) => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const next = event.key === "Home" ? 0 : event.key === "End" ? workspaceTabs.length - 1
+          : ["ArrowRight", "ArrowDown"].includes(event.key) ? (index + 1) % workspaceTabs.length
+          : ["ArrowLeft", "ArrowUp"].includes(event.key) ? (index + workspaceTabs.length - 1) % workspaceTabs.length : null;
+        if (next === null) return;
+        event.preventDefault();
+        activateWorkspaceTab(workspaceTabs[next], true);
+      });
+    });
+    renderNavigation();
+  }
+  // End workspace navigation.
+
   function renderMode() {
     const mode = state?.mode;
     const labels = {
@@ -107,6 +175,82 @@
     hide("error-banner", !error);
   }
 
+  // Device ownership is server-confirmed; a dropdown choice is only a draft.
+  const deviceSnapshot = () => state?.devices && typeof state.devices === "object" && !Array.isArray(state.devices) ? state.devices : null;
+  const deviceEntries = () => Array.isArray(deviceSnapshot()?.entries)
+    ? deviceSnapshot().entries.filter((entry) => entry && ["mac", "pi", "lynx"].includes(entry.id)) : [];
+  const deviceLabel = (entry) => typeof entry?.label === "string" && entry.label.trim() ? entry.label : ({ mac: "PC (this Mac)", pi: "Raspberry Pi", lynx: "Lynx" })[entry?.id] || "Unknown device";
+  const deviceNeedsInspection = (entry) => typeof entry?.status === "string" && entry.status.trim().toLowerCase().replaceAll("_", " ") === "needs inspection";
+  const deviceStartupStatus = (entry) => typeof entry?.status === "string" && ["starting", "startup failed"].includes(entry.status.trim().toLowerCase())
+    ? entry.status.trim().toLowerCase() : null;
+  const deviceSwitchReady = () => connected && Boolean(deviceSnapshot()) && state.devices.can_switch === true
+    && !state.devices.switching && !state.busy && !state.stop_in_flight && !posting && !stopPosting
+    && typeof state.device_epoch === "string" && state.device_epoch.length > 0;
+  const deviceSwitchAllowed = (id) => deviceSwitchReady() && id !== state.devices.active_id
+    && deviceEntries().some((entry) => entry.id === id && entry.available === true);
+
+  function renderDevices() {
+    const devices = deviceSnapshot();
+    hide("device-panel", !devices);
+    hide("inference-panel", Boolean(devices) || state?.mode === "demo" || state?.inference?.enabled !== true || state?.inference?.state === "local_only");
+    if (!devices) {
+      deviceChoice = "";
+      deviceSelectionKey = "";
+      return;
+    }
+    const entries = deviceEntries();
+    const selectionKey = JSON.stringify([state.instance_id, state.device_epoch, devices.selected_id]);
+    if (selectionKey !== deviceSelectionKey) {
+      deviceSelectionKey = selectionKey;
+      deviceChoice = entries.some((entry) => entry.id === devices.selected_id) ? devices.selected_id : "";
+    }
+    const optionsKey = JSON.stringify(entries);
+    if (optionsKey !== deviceOptionsKey) {
+      deviceOptionsKey = optionsKey;
+      dom["device-select"].replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose a device";
+      placeholder.disabled = true;
+      dom["device-select"].append(placeholder);
+      entries.forEach((entry) => {
+        const option = document.createElement("option");
+        option.value = entry.id;
+        option.disabled = entry.available !== true;
+        option.textContent = `${deviceLabel(entry)}${deviceNeedsInspection(entry) ? " — needs inspection" : option.disabled ? " — unavailable" : ""}`;
+        option.title = typeof entry.reason === "string" ? entry.reason : "";
+        dom["device-select"].append(option);
+      });
+    }
+    dom["device-select"].value = deviceChoice;
+    dom["device-select"].disabled = !deviceSwitchReady();
+    dom["device-use-button"].disabled = !deviceSwitchAllowed(deviceChoice);
+    text("device-use-button", devices.switching ? "Switching…" : "Use device");
+    const active = entries.find((entry) => entry.id === devices.active_id);
+    const choice = entries.find((entry) => entry.id === deviceChoice);
+    text("device-active", active ? `${deviceLabel(active)}${devices.switching ? " · handoff pending" : ""}` : "None confirmed");
+    text("device-model", active && typeof active.model === "string" && active.model.trim() ? active.model : "Not available");
+    text("device-status", active && typeof active.status === "string" && active.status.trim() ? deviceNeedsInspection(active) ? "Needs inspection" : active.status.replaceAll("_", " ") : "Not available");
+    text("device-badge", !connected ? "LAST KNOWN STATE" : devices.switching ? "SWITCHING" : active ? deviceStartupStatus(active)?.toUpperCase()
+      || (active.available === true ? state.ready ? "READY" : "SELECTED · NOT READY" : "ACTIVE · UNAVAILABLE") : "NO ACTIVE DEVICE");
+    text("device-selection-note", choice && (choice.available !== true || deviceNeedsInspection(choice) || deviceStartupStatus(choice)) ? choice.reason || "This device is not ready."
+      : choice && choice.id !== devices.active_id ? `${deviceLabel(choice)} is selected in this menu. Use device to activate it.`
+      : active && state.assistant_available === true && devices.active_id === "mac" ? "This Mac runs detection and picking. The Assistant can take a fresh photo when needed."
+      : active ? "The active device runs detection and picking. This is not confirmation of a new scan."
+      : "Choose an available device, then select Use device.");
+    text("device-message", !connected ? "Connection lost. Device status is the last received snapshot; switching is disabled."
+      : typeof devices.message === "string" ? devices.message : "");
+    hide("device-message", !dom["device-message"].textContent);
+    const blockedDevices = entries.filter((entry) => (entry.available !== true || deviceNeedsInspection(entry) || deviceStartupStatus(entry) === "startup failed") && typeof entry.reason === "string" && entry.reason.trim());
+    dom["device-blocked-reasons"].replaceChildren();
+    blockedDevices.forEach((entry) => {
+      const item = document.createElement("li");
+      item.textContent = `${deviceLabel(entry)}${deviceNeedsInspection(entry) ? " · Needs inspection" : ""}: ${entry.reason}`;
+      dom["device-blocked-reasons"].append(item);
+    });
+    hide("device-blocked-reasons", !blockedDevices.length);
+  }
+
   // Provider evidence comes only from the controller, never from probes or browser counters.
   const inferenceObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
   const inferenceString = (value, fallback = "") => typeof value === "string" && value.trim() ? value : fallback;
@@ -115,9 +259,11 @@
   const inferenceTime = (value) => typeof value === "string" && value.trim() ? clockText(value) : "";
 
   function renderInference() {
+    if (inferenceObject(state?.devices)) return;
     const snapshot = inferenceObject(state?.inference);
     const demo = state?.mode === "demo";
     const enabled = !demo && snapshot?.enabled === true && snapshot.state !== "local_only";
+    hide("inference-panel", !enabled);
     const localProvider = ["pi", "local"].includes(snapshot?.local_provider) ? snapshot.local_provider
       : snapshot?.selected_provider === "local" ? "local" : "pi";
     const permittedProviders = enabled ? ["mac", localProvider] : [localProvider];
@@ -330,16 +476,38 @@
       card.classList.toggle("selected", selected);
       card.setAttribute("aria-pressed", String(selected));
     });
-    const cup = currentCup();
-    hide("selection-tools", !cup || Boolean(state?.proposal));
-    if (cup) {
-      text("selected-label", `Cup ${cup.id} selected`);
-      text("selected-status", !state.scan_usable ? "New scan required" : cup.selectable ? "Review an action" : "Movement blocked");
-      const reason = cup.blocked_reason || (!cup.pick_available && cup.selectable ? "Pick is unavailable for this detection. Hover may still be available." : "");
-      text("selected-reason", reason);
-      hide("selected-reason", !reason);
-    }
+    renderSelectedActions();
     renderOverlay();
+  }
+
+  function selectedActionAllowed(action) {
+    const cup = currentCup();
+    if (!actionable() || state?.proposal || !safeScan() || !cup?.selectable) return false;
+    return action === "hover" || (action === "pick" && Boolean(cup.pick_available) && gridReady() && availableLocations().length > 0);
+  }
+
+  function renderSelectedActions() {
+    const cup = currentCup();
+    hide("selection-tools", false);
+    text("selected-label", cup ? `Cup ${cup.id} selected` : "Pick one selected cup");
+    text("selected-status", !state?.scan_usable ? "Fresh scan needed" : !cup ? "No cup selected" : selectedActionAllowed("pick") ? "Ready to preview" : "Check below");
+    const reason = !connected ? "Reconnect to the dashboard before selecting a cup."
+      : !state?.ready ? "Wait for the selected controller to become ready."
+      : state?.devices?.switching ? "Wait for the device switch, then scan and select a cup."
+      : state?.busy || posting || stopPosting ? "Wait for the current operation to finish before selecting an action."
+      : state?.recovery_required ? "Inspect the robot and acknowledge app recovery, then scan again and select a cup."
+      : localStopInhibit || state?.stop_requested ? "Stop is latched. Complete app recovery, then scan again and select a cup."
+      : state?.proposal ? "Review or cancel the current preview before choosing another action."
+      : !safeScan() ? "Scan workspace, then select a cup in the image or the detected cups list."
+      : !cup ? "Select one cup in the image or the detected cups list. Picking it opens a preview for your confirmation."
+      : !cup.selectable ? cup.blocked_reason || "This cup cannot be selected for movement. Scan again after checking the scene."
+      : !cup.pick_available ? cup.blocked_reason || "Picking is unavailable for this detection. Hover may still be available."
+      : !gridReady() ? "A valid placement grid is required to pick this cup. Hover may still be available."
+      : !availableLocations().length ? "No placement location is available. Inspect the saved placement records and camera blocks before picking. Hover may still be available."
+      : "Only this cup will be picked. Review its destination and confirm before movement.";
+    text("selected-reason", reason);
+    hide("selected-reason", false);
+    ["hover", "pick"].forEach((action) => { dom[`${action}-button`].disabled = !selectedActionAllowed(action); });
   }
 
   function renderOverlay() {
@@ -349,6 +517,7 @@
     const image = dom["camera-image"];
     overlay.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
     overlay.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    if (state?.inventory?.image_overlay === "native") renderNativeOverlay(overlay, image);
     const targets = selectedIds();
     cups().filter((item) => targets.includes(item.id)).forEach((cup) => {
       const box = cup.bbox_xyxy;
@@ -369,6 +538,36 @@
         circle.classList.add("selection-dot");
         overlay.append(circle);
       }
+    });
+  }
+
+  function renderNativeOverlay(overlay, image) {
+    const validPoint = (point) => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)
+      && Math.abs(point[0]) <= image.naturalWidth * 4 && Math.abs(point[1]) <= image.naturalHeight * 4;
+    const node = (tag, attributes, content) => {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+      if (content !== undefined) element.textContent = content;
+      overlay.append(element);
+    };
+    const slots = state.inventory.placement_observation?.slots;
+    (Array.isArray(slots) ? slots.slice(0, 128) : []).forEach((slot) => {
+      const points = slot?.polygon_px;
+      if (!Number.isSafeInteger(slot?.id) || slot.id <= 0 || !Array.isArray(points) || points.length < 3 || points.length > 16 || !points.every(validPoint)) return;
+      const status = ["clear", "occupied", "unknown"].includes(slot.state) ? slot.state : "unknown";
+      node("polygon", { points: points.map((point) => point.join(",")).join(" "), class: `native-grid native-grid-${status}` });
+      const x = points.reduce((total, point) => total + point[0], 0) / points.length;
+      const y = points.reduce((total, point) => total + point[1], 0) / points.length;
+      node("text", { x, y, class: `native-label native-slot-label native-label-${status}`, "text-anchor": "middle" }, `P${slot.id}`);
+    });
+    cups().slice(0, 128).forEach((cup) => {
+      if (!Number.isSafeInteger(cup.id) || cup.id <= 0) return;
+      const box = cup.bbox_xyxy;
+      const validBox = Array.isArray(box) && box.length === 4 && validPoint(box.slice(0, 2)) && validPoint(box.slice(2)) && box[2] > box[0] && box[3] > box[1];
+      const point = validBox ? [box[0], box[1]] : [cup.pixel?.u, cup.pixel?.v];
+      if (!validPoint(point)) return;
+      if (validBox) node("rect", { x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1], class: "native-cup-box" });
+      node("text", { x: Math.max(0, Math.min(image.naturalWidth - 80, point[0])), y: Math.max(32, Math.min(image.naturalHeight - 4, point[1] - 10)), class: "native-label native-cup-label" }, `Cup ${cup.id}`);
     });
   }
 
@@ -456,8 +655,8 @@
 
   function renderProposal() {
     const proposal = state?.proposal;
-    hide("proposal-panel", !proposal || localStopInhibit || state?.stop_requested);
-    if (!proposal) return;
+    hide("proposal-panel", !proposal || Boolean(proposal.assistant_request_id) || state?.busy || localStopInhibit || state?.stop_requested);
+    if (!proposal || proposal.assistant_request_id) return;
     const batch = proposal.action === "goto_all";
     const ids = batch && Array.isArray(proposal.cup_ids) ? proposal.cup_ids : [proposal.cup_id];
     const cupCount = `${ids.length} cup${ids.length === 1 ? "" : "s"}`;
@@ -478,10 +677,13 @@
     hide("proposal-excluded", !excluded.length);
     text("proposal-excluded", `Not included because no destination slots remain: ${excluded.map((id) => `cup ${id}`).join(", ")}.`);
     const motion = state?.motion;
-    const normal = `Normal: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(motion?.acceleration)}`;
+    const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(motion?.acceleration)}`;
     const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
     const home = `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`;
-    text("proposal-motion", proposal.action === "hover" ? normal : `${normal}. ${flip}. ${home}.`);
+    const phases = proposal.phase_speeds;
+    const phaseReview = phases && ["pick_lift", "handover", "flip", "placement"].every((key) => Number.isFinite(phases[key]))
+      ? `Pick & lift: ${speedText(phases.pick_lift)}. Right handover: ${speedText(phases.handover)}. Cup flip: ${speedText(phases.flip)}, ${accelerationText(motion?.flip_acceleration)}. Place & clear: ${speedText(phases.placement)}.` : `${flip}.`;
+    text("proposal-motion", proposal.action === "hover" ? normal : `${normal}. ${phaseReview} ${home}.`);
     const transfer = ["goto", "goto_all"].includes(proposal.action);
     const handover = proposal.handover;
     hide("proposal-handover", !transfer);
@@ -579,6 +781,7 @@
   }
 
   const robotActionSupported = (action) => robotCapability(action)?.supported === true;
+  const robotActionVisible = (action) => robotActionSupported(action) || robotCapability(action)?.advertised === true;
   const robotStatusAvailable = () => robotCapability("robot_status")?.supported !== false;
   const capabilityText = (action, field, fallback = "") => {
     const value = robotCapability(action)?.[field];
@@ -586,10 +789,58 @@
   };
 
   function robotRequestSupported(path, payload) {
+    if (path === "/api/phase_speeds") return state?.motion?.phase_speeds_supported === true;
     if (path === "/api/control_preview") return robotActionSupported(payload.action);
     if (path === "/api/control_confirm") return robotActionSupported(state?.robot_controls?.proposal?.action);
     if (path === "/api/robot_status") return robotStatusAvailable();
     return true; // Stop remains a best-effort request; local settings need no gateway action.
+  }
+
+  const phaseSpeedKeys = ["pick_lift", "handover", "flip", "placement"];
+  const phaseSpeedNullable = (key) => ["handover", "placement"].includes(key);
+  const enteredPhaseSpeeds = () => Object.fromEntries(phaseSpeedKeys.map((key) => {
+    const value = dom[`phase-speed-${key}`].value.trim();
+    return [key, value === "" && phaseSpeedNullable(key) ? null : value === "" ? NaN : Number(value)];
+  }));
+  const validPhaseSpeeds = (values) => phaseSpeedKeys.every((key) => values?.[key] === null && phaseSpeedNullable(key)
+    || Number.isFinite(values?.[key]) && values[key] >= 1 && values[key] <= 1500);
+
+  function renderPhaseSpeedControls() {
+    const motion = state?.motion;
+    const supported = motion?.phase_speeds_supported === true;
+    const settings = motion?.phase_speed_settings;
+    const defaults = motion?.phase_speed_defaults;
+    const enabled = supported && controlActionable() && validPhaseSpeeds(settings);
+    hide("robot-phase-speeds", !supported);
+    text("robot-speed-policy", supported
+      ? "Overall speed is the ceiling for every stage. Sequence home is limited to 200 mm/s and manual Home to 100 mm/s. Changes cancel pending previews and apply to future actions."
+      : "Apply sets normal speed and caps sequence home at this speed, up to 200 mm/s. Applies until restart and cancels pending previews. Loaded pick and cup flip stay capped at 100 mm/s.");
+    phaseSpeedKeys.forEach((key) => {
+      const input = dom[`phase-speed-${key}`];
+      if (!supported || !phaseSpeedDirty) {
+        input.value = Number.isFinite(settings?.[key]) ? String(settings[key]) : "";
+      }
+      input.disabled = !enabled;
+      const effective = motion?.phase_speeds?.[key];
+      const approach = motion?.handover?.approach_speed;
+      text(`phase-speed-${key}-current`, `Applied: ${speedText(effective)}${key === "handover" && Number.isFinite(approach) && approach !== effective ? ` · Receiving: ${speedText(approach)}` : ""}`);
+      const defaultValue = defaults?.[key];
+      text(`phase-speed-${key}-default`, Number.isFinite(defaultValue) ? `Default: ${speedText(defaultValue)}`
+        : defaultValue === null && phaseSpeedNullable(key) ? "Default: follow overall" : "Default unavailable");
+    });
+    if (!supported) phaseSpeedDirty = false;
+    const entered = enteredPhaseSpeeds();
+    const changed = phaseSpeedKeys.some((key) => entered[key] !== settings?.[key]);
+    dom["robot-phase-speed-apply"].disabled = !enabled || !validPhaseSpeeds(entered) || !changed;
+    dom["robot-phase-speed-defaults"].disabled = !enabled || !validPhaseSpeeds(defaults)
+      || phaseSpeedKeys.every((key) => entered[key] === defaults[key]);
+    text("robot-phase-speed-status", !supported ? "" : !enabled ? "Wait until the controller is idle and ready to change speeds."
+      : !validPhaseSpeeds(entered) ? "Enter a speed from 1 to 1500 mm/s. Right receiving and placement may be left blank to follow overall."
+      : changed ? "Changes have not been applied. Review the values, then apply stage speeds." : "These settings are applied. No movement is started by changing a speed.");
+    const aligned = state?.motion?.handover?.adjusted === true;
+    text("robot-phase-speed-cap", aligned
+      ? "Each applied speed is limited by overall speed. The adjusted handover alignment also limits the right receiving approach to 25 mm/s. Blank right receiving or placement follows overall speed."
+      : "Each applied speed is limited by overall speed. Blank right receiving or placement follows overall speed. The cup flip keeps its reduced acceleration.");
   }
 
   function renderRobotControls() {
@@ -604,7 +855,8 @@
     const speedChanged = enteredSpeed !== currentSpeed || Math.min(enteredSpeed, 200) !== state?.motion?.home_speed;
     dom["robot-speed-input"].disabled = !enabled;
     dom["robot-speed-button"].disabled = !enabled || !validSpeed || !speedChanged;
-    text("robot-speed-current", `Normal ${speedText(currentSpeed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · Sequence home ${speedText(state?.motion?.home_speed)}.`);
+    text("robot-speed-current", `Applied overall ${speedText(currentSpeed)} · Sequence home ${speedText(state?.motion?.home_speed)}.`);
+    renderPhaseSpeedControls();
     renderHandoverControls();
     renderReleaseLocations();
     text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
@@ -615,19 +867,27 @@
     actionButtons.forEach((button) => {
       const action = button.dataset.robotAction;
       const supported = robotActionSupported(action);
-      button.hidden = !supported;
+      button.hidden = !robotActionVisible(action);
       button.disabled = !enabled || !supported;
       button.dataset.defaultLabel ||= button.textContent;
       if (!button.dataset.arm) button.textContent = capabilityText(action, "label", button.dataset.defaultLabel);
-      button.title = capabilityText(action, "description", capabilityText(action, "reason"));
+      button.title = supported ? capabilityText(action, "description", capabilityText(action, "reason")) : capabilityText(action, "reason", "This control is not ready.");
     });
-    hide("robot-home-tool", !robotActionSupported("home"));
-    hide("robot-gripper-tool", !robotActionSupported("open") && !robotActionSupported("grip"));
-    const capabilityMap = controls?.capabilities;
-    const knownCapabilities = capabilityMap && typeof capabilityMap === "object" && !Array.isArray(capabilityMap);
+    hide("robot-home-tool", !robotActionVisible("home"));
+    hide("robot-gripper-tool", !robotActionVisible("open") && !robotActionVisible("grip"));
+    const blockedReasons = (actions) => [...new Set(actions.filter((action) => robotActionVisible(action) && !robotActionSupported(action))
+      .map((action) => capabilityText(action, "reason", "This control is not ready.")))].join(" ");
+    for (const [id, actions] of [["robot-home-reason", ["home"]], ["robot-gripper-reason", ["open", "grip"]]]) {
+      const reason = blockedReasons(actions);
+      text(id, reason);
+      hide(id, !reason);
+    }
+    const knownCapabilities = typeof robotCapability("robot_status")?.supported === "boolean";
     const supportedActions = actionButtons.some((button) => !button.hidden);
+    const blocked = blockedReasons([...new Set(actionButtons.map((button) => button.dataset.robotAction))]);
     text("robot-capability-notice", !knownCapabilities
-      ? "Gateway controls have not been confirmed. Refresh robot status to check which actions are available. Local settings remain available."
+      ? `Robot controls have not been verified. ${capabilityText("robot_status", "reason", "Refresh robot status to check Home and gripper support.")} Refresh reads status and sends no movement command.`
+      : blocked ? `Disabled controls are advertised by this gateway but cannot be used yet. ${blocked}`
       : !supportedActions ? "No robot actions are available from this gateway. Local settings and app recovery remain available."
       : "Only controls supported by this gateway are shown. Each robot action still needs a reviewed confirmation.");
     dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
@@ -790,7 +1050,6 @@
   function renderControls() {
     const canAct = actionable();
     const pending = Boolean(state?.proposal);
-    const cup = currentCup();
     dom["start-button"].disabled = !canAct || pending || Boolean(state?.recovery_required);
     dom["stop-button"].disabled = !canStop();
     dom["status-button"].disabled = !connected || quickPosting;
@@ -802,8 +1061,7 @@
     dom["command-input"].disabled = !connected || !state?.ready;
     dom["command-button"].disabled = isStop(command) ? !canStop() : readOnly ? !connected || quickPosting : !canAct || pending || Boolean(state?.recovery_required) || !command;
     document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = !canAct || pending || (!state?.llm_enabled && !button.dataset.direct) || Boolean(state?.recovery_required); });
-    dom["hover-button"].disabled = !canAct || pending || !safeScan() || !cup?.selectable;
-    dom["pick-button"].disabled = !canAct || pending || !safeScan() || !cup?.pick_available || !gridReady() || !availableLocations().length;
+    renderSelectedActions();
     const pickable = pickableCups();
     const capacity = availableLocations().length;
     hide("batch-tools", !pickable.length);
@@ -814,7 +1072,7 @@
     dom["recovery-button"].disabled = !idle() || !dom["recovery-ack"].checked || !state?.recovery_required;
     dom["recovery-ack"].disabled = !idle();
     document.querySelectorAll(".cup-card").forEach((card) => { card.disabled = !connected || Boolean(state?.busy) || posting || pending; });
-    text("model-label", state?.llm_enabled ? `${state.model || "Local model"} · local` : "Terminal commands enabled");
+    text("model-label", state?.mode === "demo" ? "Sample commands · demo" : "Commands · use Assistant for Astra");
     text("command-hint", "Start prepares a batch. Stop, status and help also work while the controller is busy. Every movement requires confirmation.");
     dom["command-input"].placeholder = state?.llm_enabled ? "Pick cup two…" : "Try goto 2 or hover 2…";
     updateCountdown();
@@ -825,6 +1083,7 @@
   function render() {
     renderMode();
     renderConnection();
+    renderDevices();
     renderInference();
     renderStop();
     renderInventory();
@@ -834,6 +1093,7 @@
     hide("recovery-panel", !state?.recovery_required || Boolean(state?.busy));
     renderActivity();
     renderControls();
+    renderNavigation();
   }
 
   async function readState() {
@@ -851,16 +1111,34 @@
       if (releaseReview && (!incoming.ready || incoming.busy || incoming.stop_in_flight || releaseReview.context !== releaseContext(incoming))) {
         cancelReleaseReview("The controller or placement status changed. Review the locations again before clearing them.");
       }
-      if (state && incoming.instance_id !== state.instance_id) {
+      if (state && (incoming.instance_id !== state.instance_id || incoming.device_epoch !== state.device_epoch)) {
+        const expectedDeviceTransition = Boolean(state.devices && incoming.devices
+          && incoming.device_epoch !== state.device_epoch
+          && (state.devices.switching || incoming.devices.switching
+            || state.devices.active_id !== incoming.devices.active_id));
         selectedId = null;
         selectedCapture = null;
+        imageCapture = null;
+        imageLoaded = false;
+        cardsKey = "";
+        placementsKey = "";
+        savedCupsKey = "";
+        saveSelectionKey = "";
+        quickGeneration += 1;
+        hide("quick-panel", true);
+        dom["selection-overlay"].replaceChildren();
+        dom["camera-image"].removeAttribute("src");
+        hide("image-stage", true);
         proposalDeadline = 0;
         controlDeadline = 0;
         speedDirty = false;
+        phaseSpeedDirty = false;
         handoverDirty = false;
         dom["recovery-ack"].checked = false;
         dom["robot-control-ack"].checked = false;
-        transientError = "The controller restarted. Review its current state and scan again before selecting a cup.";
+        transientError = expectedDeviceTransition ? "" : incoming.instance_id !== state.instance_id
+          ? "The controller restarted. Review its current state and scan again before selecting a cup."
+          : "The active device changed. Scan again before selecting a cup.";
       }
       if (state?.recovery_required !== incoming.recovery_required) dom["recovery-ack"].checked = false;
       if (state?.robot_controls?.proposal?.token !== incoming.robot_controls?.proposal?.token) {
@@ -877,6 +1155,7 @@
       proposalDeadline = state.proposal && Number.isFinite(state.proposal.expires_in) ? performance.now() + Math.max(0, state.proposal.expires_in) * 1000 : 0;
       controlDeadline = state.robot_controls?.proposal && Number.isFinite(state.robot_controls.proposal.expires_in) ? performance.now() + Math.max(0, state.robot_controls.proposal.expires_in) * 1000 : 0;
       render();
+      window.dispatchEvent?.(new CustomEvent("assistant-state", { detail: state }));
     } catch (error) {
       if (number < appliedPoll) return;
       appliedPoll = number;
@@ -884,16 +1163,35 @@
       if (releaseReview) cancelReleaseReview("Connection lost. Review the current placement locations after reconnecting.");
       if (!state) transientError = "Could not reach the local controller. Keep the web app process running and this page will reconnect.";
       render();
+      window.dispatchEvent?.(new CustomEvent("assistant-disconnected"));
     } finally {
       clearTimeout(timeout);
     }
   }
 
   async function post(path, payload = {}) {
+    // randomUUID is HTTPS-only in browsers. getRandomValues is also available
+    // on an ordinary Wi-Fi HTTP origin, so request deduplication works there.
+    function requestId() {
+      if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
     const stopping = path === "/api/stop";
-    const adminMutation = ["/api/speed", "/api/handover_offset", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
-    const permitted = stopping ? canStop() : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
+    const adminMutation = ["/api/speed", "/api/phase_speeds", "/api/handover_offset", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
+    const permitted = stopping ? canStop() : path === "/api/device_select" ? deviceSwitchAllowed(payload.device_id) : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
     if (!permitted || !state?.csrf_token || !robotRequestSupported(path, payload)) return;
+    const deviceEpoch = state.device_epoch;
+    const ownerContext = state.devices ? { _device_id: state.devices.active_id, _device_epoch: deviceEpoch } : {};
+    if (state.devices && (typeof deviceEpoch !== "string" || !deviceEpoch)) {
+      transientError = "Device ownership is unavailable. Refresh controller status before sending a request.";
+      render();
+      return;
+    }
+    const csrfToken = state.csrf_token;
     if (releaseReview) cancelReleaseReview();
     const instance = state.instance_id;
     quickGeneration += 1;
@@ -901,6 +1199,7 @@
     if (stopping) {
       stopPosting = true;
       localStopInhibit = true;
+      window.dispatchEvent?.(new CustomEvent("assistant-local-stop"));
       proposalDeadline = 0;
       controlDeadline = 0;
       dom["robot-control-ack"].checked = false;
@@ -913,8 +1212,8 @@
       const response = await fetch(path, {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf_token },
-        body: JSON.stringify({ ...payload, request_id: crypto.randomUUID() }),
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ ...payload, ...ownerContext, request_id: requestId() }),
         signal: controller.signal,
       });
       let result;
@@ -925,9 +1224,11 @@
       }
       if (!response.ok || !result.accepted) throw new Error(asMessage(result.detail || result.error) || `Request rejected (${response.status}).`);
       if (path === "/api/speed") speedDirty = false;
+      if (path === "/api/phase_speeds") phaseSpeedDirty = false;
       if (path === "/api/handover_offset") handoverDirty = false;
       await readState();
-      if (state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
+      if (path !== "/api/device_select" && state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
+      else if (path !== "/api/device_select" && state?.device_epoch !== deviceEpoch) transientError = "Device ownership changed during this request. Check the current state; the request was not retried.";
     } catch (error) {
       transientError = ["AbortError", "UnknownOutcomeError"].includes(error.name) || error instanceof TypeError ? "Request outcome unknown: the connection was interrupted or its response was unreadable. Check the controller before continuing. The request was not retried." : error.message;
       await readState();
@@ -972,6 +1273,9 @@
     }
   }
 
+  initializeNavigation();
+  dom["device-select"].addEventListener("change", () => { deviceChoice = dom["device-select"].value; renderDevices(); });
+  dom["device-use-button"].addEventListener("click", () => post("/api/device_select", { device_id: deviceChoice }));
   dom["start-button"].addEventListener("click", () => post("/api/start"));
   dom["stop-button"].addEventListener("click", () => post("/api/stop"));
   dom["status-button"].addEventListener("click", () => showQuick("status"));
@@ -1003,7 +1307,7 @@
   }));
   ["hover", "pick"].forEach((action) => dom[`${action}-button`].addEventListener("click", () => {
     const cup = currentCup();
-    if (!cup || dom[`${action}-button`].disabled) return;
+    if (!cup || dom[`${action}-button`].disabled || !selectedActionAllowed(action)) return;
     post("/api/select", { capture_id: selectedCapture, cup_id: cup.id, action: action === "pick" ? "goto" : "hover" });
   }));
   dom["save-cup-name"].addEventListener("input", renderSavedCups);
@@ -1053,6 +1357,19 @@
     event.preventDefault();
     if (!dom["robot-speed-button"].disabled) post("/api/speed", { speed: Number(dom["robot-speed-input"].value) });
   });
+  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener("input", () => { phaseSpeedDirty = true; renderPhaseSpeedControls(); }));
+  dom["robot-phase-speed-form"].addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = enteredPhaseSpeeds();
+    if (!dom["robot-phase-speed-apply"].disabled && validPhaseSpeeds(values)) post("/api/phase_speeds", values);
+  });
+  dom["robot-phase-speed-defaults"].addEventListener("click", () => {
+    const defaults = state?.motion?.phase_speed_defaults;
+    if (dom["robot-phase-speed-defaults"].disabled || !validPhaseSpeeds(defaults)) return;
+    phaseSpeedKeys.forEach((key) => { dom[`phase-speed-${key}`].value = defaults[key] === null ? "" : String(defaults[key]); });
+    phaseSpeedDirty = true;
+    renderPhaseSpeedControls();
+  });
   handoverAxes.forEach((axis) => dom[`robot-handover-${axis}`].addEventListener("input", () => { handoverDirty = true; renderHandoverControls(); }));
   dom["robot-handover-form"].addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1100,6 +1417,9 @@
     const y = (event.clientY - rect.top - (rect.height - image.naturalHeight * scale) / 2) / scale;
     const hits = cups().filter((cup) => Array.isArray(cup.bbox_xyxy) && x >= cup.bbox_xyxy[0] && x <= cup.bbox_xyxy[2] && y >= cup.bbox_xyxy[1] && y <= cup.bbox_xyxy[3]);
     if (hits.length === 1) chooseCup(hits[0].id);
+  });
+  window.addEventListener("assistant-preview-ready", () => {
+    readState();
   });
   setInterval(updateCountdown, 250);
   setInterval(updateControlCountdown, 250);

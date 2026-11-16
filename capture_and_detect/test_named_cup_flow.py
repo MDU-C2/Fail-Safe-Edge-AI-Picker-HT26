@@ -464,6 +464,23 @@ class NamedCupFlowTests(unittest.TestCase):
         self.matcher.match.assert_not_called()
         self.assert_no_motion()
 
+    def test_apostrophes_are_name_spelling_variants_not_extra_command_syntax(self):
+        self.fixture.save_reference("Kasun\u2019s cup")
+        for command in ("pick Kasun's cup", "pick up KASUN\u2019S CUP", "pick saved Kasun\u2018s cup"):
+            with self.subTest(command=command):
+                proposal = self.language.named_command(command)
+                self.assertEqual(proposal["kind"], "proposal")
+                self.assertEqual(self.language.pending["record"]["saved_cup"]["name"], "Kasun's cup")
+                self.assert_no_motion()
+                self.language.cancel()
+        self.fixture.interpreter.interpret.assert_not_called()
+        for command in ("don't pick Kasun's cup", "pick Kasun's", "pick Kasun's cup tomorrow",
+                        "pick Kasun's cup and all others", "pick Kasun's cup; confirm"):
+            with self.subTest(command=command):
+                self.assertIsNone(self.language.named_command(command))
+                self.assertIsNone(self.language.pending)
+        self.assert_no_motion()
+
 
 if __name__ == "__main__":
     unittest.main()

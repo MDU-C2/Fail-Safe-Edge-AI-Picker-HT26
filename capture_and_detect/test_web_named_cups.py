@@ -192,7 +192,7 @@ class WebNamedCupTests(unittest.TestCase):
         self.assertFalse(state["saved_cups"]["matcher_enabled"])
         self.assertEqual(state["saved_cups"]["cups"][0]["id"], saved["id"])
         state = self.post("pick_saved", id=saved["id"])
-        self.assertIn("--llm", state["error"])
+        self.assertIn("Configure Astra", state["error"])
         self.assertEqual(self.fixture.robot.jobs, [])
 
     def test_stop_during_visual_inference_blocks_late_proposal_and_does_not_queue_delete(self):

@@ -46,6 +46,28 @@ void test_protocol() {
         rejects([&] { std::istringstream stream(invalid); lynx::read_request(stream, request); },
                 "Malformed or unbounded input must be rejected before allocation");
     }
+    // v2 framing carries bounded configuration, raw depth burst, then planar BGR.
+    auto perception_header = [](std::uint32_t samples, std::uint32_t config_size, std::uint32_t reserved = 0) {
+        auto text = request_bytes(7, 2, 1, 6, samples);
+        text[3] = 'P';
+        std::vector<unsigned char> extra;
+        lynx::append_u32(extra, config_size);
+        lynx::append_u32(extra, reserved);
+        text.append(extra.begin(), extra.end());
+        return text;
+    };
+    const std::string depths("\1\0\2\0", 4);
+    const std::string planar("\12\13\24\25\36\37", 6);
+    std::istringstream perception(perception_header(2, 2) + "{}" + depths + depths + planar);
+    check(lynx::read_request(perception, request) && request.perception && request.config_json == "{}" &&
+          request.depth_bytes.size() == 2 && request.depth_bytes[1][2] == 2 &&
+          request.bgr == std::vector<unsigned char>({10,20,30,11,21,31}), "Perception raw layout and conversion");
+    for (const auto& invalid : {perception_header(0,2), perception_header(10,2),
+                               perception_header(1,0), perception_header(1,65537),
+                               perception_header(1,2,1), perception_header(1,2)+"{}"+depths+"short"}) {
+        rejects([&] { std::istringstream stream(invalid); lynx::read_request(stream, request); },
+                "Malformed perception framing must fail closed");
+    }
     std::ostringstream response;
     lynx::write_response(response, 17, 0, "{}", {0, 1, 1});
     const auto wire = response.str();

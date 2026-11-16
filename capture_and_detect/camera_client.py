@@ -9,7 +9,6 @@ import math
 import re
 import time
 
-import numpy as np
 import requests
 
 
@@ -34,7 +33,8 @@ def _integer(value, name, *, positive=False):
 
 
 class CameraClient:
-    def __init__(self, api, headers, session=None):
+    def __init__(self, api, headers, session=None, *, max_dimensions=None):
+        self.max_dimensions = max_dimensions
         self.api = api.rstrip("/")
         self.headers = dict(headers)
         # Injection keeps tests offline; construction never makes a request.
@@ -126,7 +126,7 @@ class CameraClient:
             )
         return payload
 
-    def capture(self, timeout_s=10):
+    def capture_raw(self, timeout_s=10):
         """Return ``(bgr_image, uint16_depth_mm, metadata)`` for one new frame.
 
         Both streamed GETs are opened before either body is downloaded. This
@@ -165,6 +165,8 @@ class CameraClient:
                 rgb_sequence, width, height, timestamp = self._frame_headers(rgb_response, "BGR888p")
                 depth_sequence, depth_width, depth_height, depth_timestamp = self._frame_headers(depth_response, "RAW16")
 
+                if self.max_dimensions is not None and (width > self.max_dimensions[0] or height > self.max_dimensions[1]):
+                    raise CameraError("Camera frame exceeds this runtime's configured dimension limit")
                 if rgb_sequence != depth_sequence:
                     raise _TransientCameraError("RGB and depth frame sequences did not match")
                 if rgb_sequence <= baseline:
@@ -176,10 +178,9 @@ class CameraClient:
 
                 rgb_bytes = self._payload(rgb_response, width * height * 3, deadline)
                 depth_bytes = self._payload(depth_response, width * height * 2, deadline)
-                rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(3, height, width).transpose(1, 2, 0).copy()
-                depth = np.frombuffer(depth_bytes, dtype="<u2").reshape(height, width).astype(np.uint16, copy=True)
                 self._remaining(deadline)
-                return rgb, depth, {
+                return rgb_bytes, depth_bytes, {
+                    "width": width, "height": height,
                     "sequence": rgb_sequence,
                     "timestamp": timestamp,
                     "observed_at": observed_at,
@@ -198,3 +199,12 @@ class CameraClient:
                 time.sleep(min(0.05, remaining))
 
         raise CameraError(f"Could not capture a fresh matching RGB + depth pair: {last_error}")
+
+    def capture(self, timeout_s=10):
+        """Legacy NumPy adapter; raw clients never import the array runtime."""
+        import numpy as np
+        rgb_bytes, depth_bytes, frame = self.capture_raw(timeout_s)
+        width, height = frame.pop("width"), frame.pop("height")
+        rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(3, height, width).transpose(1, 2, 0).copy()
+        depth = np.frombuffer(depth_bytes, dtype="<u2").reshape(height, width).astype(np.uint16, copy=True)
+        return rgb, depth, frame

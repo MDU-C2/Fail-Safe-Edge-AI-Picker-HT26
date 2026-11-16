@@ -4,6 +4,7 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 import copy
 import io
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -152,6 +153,110 @@ class SessionClientTests(unittest.TestCase):
             robot = create_robot(args, "http://pi.invalid/api/v1", {})
             self.assertTrue(robot.dry_run)
             read.assert_not_called()
+
+
+class ManagedOperatorDiscoveryTests(unittest.TestCase):
+    """Startup discovers capabilities using GET only; never leases or moves."""
+
+    API = "http://offline.invalid:8000/api/v1"
+
+    def setUp(self):
+        from test_gateway_capabilities import schema_fixture
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.profile = Path(directory.name) / "controller-status.json"
+        self.specification = schema_fixture()
+        self.response = Mock(status_code=200, content=json.dumps(self.specification).encode())
+        self.response.json.return_value = self.specification
+
+        def get(url, **kwargs):
+            self.assertEqual(url, "http://offline.invalid:8000/openapi.json")
+            self.assertIs(kwargs.get("allow_redirects"), False)
+            return self.response
+
+        getter = patch("robot_client.requests.get", side_effect=get)
+        self.get = getter.start()
+        self.addCleanup(getter.stop)
+        poster = patch("robot_client.requests.post", side_effect=AssertionError("Startup sent a mutation"))
+        self.post = poster.start()
+        self.addCleanup(poster.stop)
+        configure = RobotClient.configure_operator_controls
+        discovery = patch.object(RobotClient, "configure_operator_controls", autospec=True, side_effect=configure)
+        self.configure = discovery.start()
+        self.addCleanup(discovery.stop)
+
+    def create(self, profile=None, *, managed=True, live=True):
+        return create_robot(SimpleNamespace(live=live, mac_inference_url=None,
+                            controller_profile=profile, discover_operator_controls=managed),
+                            self.API, {"Authorization": "Bearer offline-only"})
+
+    def test_managed_without_profile_discovers_once_without_motion_or_native_reads(self):
+        robot = self.create()
+        self.configure.assert_called_once_with(robot, None)
+        self.get.assert_called_once()
+        self.post.assert_not_called()
+        self.assertIsNotNone(robot.operator_capabilities)
+        self.assertTrue(robot.operator_capabilities["robot_status"]["supported"])
+        for name in ("home", "open", "grip", "collision_status", "rapid_reset", "rapid_start"):
+            self.assertFalse(robot.operator_capabilities[name]["supported"])
+        self.assertIsNone(robot._controller_status)
+
+    def test_missing_or_mismatched_profile_keeps_collision_dependent_controls_blocked(self):
+        for mismatch in (False, True):
+            with self.subTest(mismatched=mismatch):
+                if mismatch:
+                    self.profile.write_text(json.dumps({"schema_version": 1,
+                        "gateway_api": "http://another.invalid:8000/api/v1",
+                        "controller_url": "http://controller.invalid"}))
+                robot = self.create(self.profile)
+                self.assertIsNone(robot._controller_status)
+                self.assertFalse(robot.operator_capabilities["collision_status"]["supported"])
+                with self.assertRaises(RobotCommandError):
+                    robot.require_control_action("home")
+        self.assertEqual(self.configure.call_count, 2)
+        self.assertEqual(self.get.call_count, 2)
+        self.post.assert_not_called()
+
+    def test_matching_profile_propagates_without_reading_or_mutating_controller(self):
+        self.profile.write_text(json.dumps({"schema_version": 1, "gateway_api": self.API,
+                                           "controller_url": "http://controller.invalid"}))
+        robot = self.create(self.profile)
+        self.configure.assert_called_once_with(robot, self.profile)
+        self.get.assert_called_once()  # OpenAPI only; joint/collision reads remain pre-command checks.
+        self.assertEqual(robot._controller_status.controller_url, "http://controller.invalid")
+        self.assertEqual(robot.operator_capabilities["collision_status"]["protocol"], "native_read_only")
+        self.assertTrue(robot.operator_capabilities["home"]["supported"])
+        self.assertFalse(robot.operator_capabilities["rapid_reset"]["supported"])
+        self.assertFalse(robot.operator_capabilities["rapid_start"]["supported"])
+        self.post.assert_not_called()
+
+    def test_matching_malformed_profile_rejects_startup_before_any_http(self):
+        self.profile.write_text(json.dumps({"schema_version": 1, "gateway_api": self.API,
+                                           "controller_url": "not-an-origin"}))
+        with self.assertRaises(ValueError):
+            self.create(self.profile)
+        self.configure.assert_called_once()
+        self.get.assert_not_called()
+        self.post.assert_not_called()
+
+    def test_failed_discovery_never_enables_hardware_controls(self):
+        self.response.json.return_value = {}
+        robot = self.create()
+        self.assertIsNone(robot.operator_capabilities["robot_status"]["supported"])
+        for name in ("home", "open", "grip", "rapid_reset", "rapid_start"):
+            self.assertFalse(robot.operator_capabilities[name]["supported"])
+        self.get.assert_called_once()
+        self.post.assert_not_called()
+
+    def test_unmanaged_library_and_managed_dry_run_remain_network_free(self):
+        legacy = self.create(managed=False)
+        self.assertIsNone(legacy.operator_capabilities)
+        self.configure.assert_not_called()
+        dry_run = self.create(self.profile, live=False)
+        self.configure.assert_called_once_with(dry_run, self.profile)
+        self.assertTrue(all(item["supported"] for item in dry_run.operator_capabilities.values()))
+        self.get.assert_not_called()
+        self.post.assert_not_called()
 
 
 class PublishedInferenceTests(unittest.TestCase):

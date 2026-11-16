@@ -284,14 +284,12 @@ class WebAppTests(unittest.TestCase):
 
 
 class WebStartupTests(unittest.TestCase):
-    def test_process_lock_prevents_second_web_controller_and_releases_cleanly(self):
+    def test_process_context_allows_reentry_without_creating_lock_files(self):
         with tempfile.TemporaryDirectory() as directory:
-            with ProcessLock(directory):
-                with self.assertRaisesRegex(SystemExit, "Another cup web app"):
-                    with ProcessLock(directory):
-                        self.fail("Duplicate owner acquired the lock")
-            with ProcessLock(directory):
-                pass
+            missing = Path(directory) / "not-created"
+            with ProcessLock(missing) as first, ProcessLock(missing) as second:
+                self.assertIsNot(first, second)
+            self.assertFalse(missing.exists())
 
     def test_unsafe_mode_flags_and_nonfinite_values_fail_before_server_start(self):
         for flags in (["--live"], ["--demo", "--live"], ["--demo", "--gateway", "http://offline.invalid"],

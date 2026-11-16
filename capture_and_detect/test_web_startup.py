@@ -1,15 +1,17 @@
 """Startup diagnostics use fake camera/model services and never contact hardware."""
 
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import os
 import time
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from camera_client import CameraError
-from web_app import hardware_factory
+from web_app import hardware_factory, main
 from web_controller import WebController
 
 
@@ -18,7 +20,10 @@ class WebStartupTests(unittest.TestCase):
         network = patch("requests.Session.request", side_effect=AssertionError("Network forbidden"))
         self.request = network.start()
         self.addCleanup(network.stop)
-        self.args = SimpleNamespace(gateway="http://offline.invalid", calibration="unused.json")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.args = SimpleNamespace(gateway="http://offline.invalid", calibration="unused.json",
+                                    placing_grid=str(Path(directory.name) / "placing-grid.json"))
 
     def start(self, factory):
         controller = WebController(factory, mode="live")
@@ -52,7 +57,7 @@ class WebStartupTests(unittest.TestCase):
         self.assertEqual(output, f"Startup failed: {detail}\n")
         self.assertEqual([event["message"] for event in state["events"]], [
             "Loading gateway credentials and calibration…",
-            "Reading camera configuration from the Pi…",
+            "Reading camera configuration from the gateway…",
             f"Startup failed: {detail}",
         ])
         self.assertNotIn("private-gateway-token", output)
@@ -75,7 +80,7 @@ class WebStartupTests(unittest.TestCase):
         self.assertEqual(detector.call_args.args, (self.args, calibration, intrinsics))
         self.assertEqual([event["message"] for event in state["events"]], [
             "Loading gateway credentials and calibration…",
-            "Reading camera configuration from the Pi…",
+            "Reading camera configuration from the gateway…",
             "Loading detection model…",
             "Startup failed: Model not found: best.pt",
         ])
@@ -94,6 +99,29 @@ class WebStartupTests(unittest.TestCase):
         self.assertEqual(state["error"], expected)
         self.assertEqual(state["events"][-1]["message"], f"Startup failed: {expected}")
         self.assertEqual(output, f"Startup failed: {expected}\n")
+
+
+class ManagedStartupCleanupTests(unittest.TestCase):
+    def test_failure_before_or_during_server_start_closes_local_resources(self):
+        for stage in ("create_app", "process_lock", "server_start"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as temporary:
+                resource = Mock()
+                controller = SimpleNamespace(close=Mock(side_effect=resource.close))
+                process_lock = Mock()
+                process_lock.__enter__ = Mock(return_value=None)
+                process_lock.__exit__ = Mock(return_value=False)
+                if stage == "process_lock":
+                    process_lock.__enter__.side_effect = RuntimeError("startup rejected")
+                with patch("requests.Session.request", side_effect=AssertionError("Network forbidden")), \
+                        patch("device_dashboard.DeviceDashboard.from_config", return_value=controller), \
+                        patch("web_app.create_app", side_effect=RuntimeError("startup rejected") if stage == "create_app" else None), \
+                        patch("web_app.ProcessLock", return_value=process_lock), \
+                        patch("uvicorn.run", side_effect=RuntimeError("startup rejected")), \
+                        redirect_stdout(io.StringIO()):
+                    with self.assertRaisesRegex(RuntimeError, "startup rejected"):
+                        main(["--device-config", str(Path(temporary) / "devices.json"), "--live"])
+                controller.close.assert_called_once_with()
+                resource.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

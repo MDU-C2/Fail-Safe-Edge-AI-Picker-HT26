@@ -40,7 +40,7 @@ class Model:
             raise ValueError("Invalid model class names.")
         if len(set(names)) != len(names) or not {"CUP", "CUP BASE", "CUP HANDLE"}.issubset(names):
             raise ValueError("Model classes must include CUP, CUP BASE and CUP HANDLE exactly once.")
-        if manifest.get("precision") not in ("fp32", "int8"):
+        if manifest.get("precision") not in ("fp32", "fp16", "int8"):
             raise ValueError("Unsupported model precision.")
         for name in ("model.ncnn.param", "model.ncnn.bin"):
             path = directory / name

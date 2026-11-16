@@ -10,7 +10,7 @@ import time
 import uuid
 
 from cup_inventory import SelectionError, atomic_json, finite_number, selected_cup
-from handover_plan import FLIP_SPEED, pick_position_problem
+from handover_plan import pick_position_problem
 from local_llm import validate_intent
 from operator_commands import COMMAND_HELP
 
@@ -167,9 +167,14 @@ class LanguageController:
         match = re.fullmatch(r"pick(?: up)? (.+)", text, re.I)
         if (match and self.named_cups is not None
                 and not re.fullmatch(r"(?:cup )?[0-9]+|all(?: available)?(?: cups)?", match[1], re.I)):
-            names = {r["name"].casefold(): r for r in self.named_cups.list()}
-            if match[1].casefold() in names:
-                return self.propose_saved(names[match[1].casefold()]["id"])
+            from named_cups import name_key
+            try:
+                requested = name_key(match[1])
+            except SelectionError:
+                return None  # General requests keep the existing intent parser.
+            names = {name_key(r["name"]): r for r in self.named_cups.list()}
+            if requested in names:
+                return self.propose_saved(names[requested]["id"])
         return None
 
     @staticmethod
@@ -186,7 +191,7 @@ class LanguageController:
     def _visual_match(self, reference, inventory, *, audit=None, stage="proposal"):
         from named_cups import candidate_images
         if self.cup_matcher is None:
-            raise SelectionError("Visual cup matching requires --llm and a local vision model.")
+            raise SelectionError("Saved-cup visual matching is unavailable in this controller. Configure Astra in the MacBook dashboard.")
         before = inventory_fingerprint(inventory)
         capture_id = inventory["capture"]
         candidates = candidate_images(inventory, self.named_cups.image_root)
@@ -275,7 +280,7 @@ class LanguageController:
                 reference = self._require_library().get_id(saved_id)
                 record["requested_saved_cup"] = self._reference_binding(reference)
                 if self.cup_matcher is None:
-                    raise SelectionError("Restart with --llm to identify a saved cup using the local vision model.")
+                    raise SelectionError("Saved-cup visual matching is unavailable in this controller. Configure Astra in the MacBook dashboard.")
                 self.session._check_stop()
                 if self.session.motion_uncertain:
                     raise SelectionError("Inspect the robot and acknowledge recovery before requesting a saved cup.")
@@ -367,7 +372,8 @@ class LanguageController:
                         if excluded else "")
             record.update(state="proposed", action=action, cup_id=target["id"] if target else None,
                           cup_ids=cup_ids, placement=placement, excluded_cup_ids=excluded,
-                          speed=self.session.speed, flip_speed=min(self.session.speed, FLIP_SPEED),
+                          speed=self.session.speed, flip_speed=motion_settings["effective_phase_speeds"]["flip"],
+                          phase_speeds=motion_settings["effective_phase_speeds"],
                           home_speed=self.session.home_speed,
                           motion_settings=motion_settings,
                           handover=(motion_settings["handover"]
@@ -391,10 +397,15 @@ class LanguageController:
                           if "saved_cup" in record else "")
             home_text = (f"Automatic home: {record['home_speed']:g} mm/s.\n"
                          if action in ("goto", "goto_all") else "")
+            phases = record["phase_speeds"]
+            phase_text = (f"Pick/lift and left transfer: {phases['pick_lift']:g} mm/s; "
+                          f"right handover travel: {phases['handover']:g} mm/s; "
+                          f"placement: {phases['placement']:g} mm/s.\n"
+                          if action in ("goto", "goto_all") else "")
             return {"kind": "proposal", "token": token,
                     "message": f"{mode}: cup(s) {', '.join(map(str, cup_ids))} — {record['description']}\n"
                                f"Normal speed: {self.session.speed:g} mm/s; cup turning: {record['flip_speed']:g} mm/s, 30% acceleration.\n"
-                               f"{home_text}{alignment_text}{named_text}"
+                               f"{phase_text}{home_text}{alignment_text}{named_text}"
                                f"Scan: {scene['capture_id']}. Check its numbered image.\n"
                                f"Type confirm {token} within {self.proposal_ttl:g}s, or cancel."}
         except BaseException as error:

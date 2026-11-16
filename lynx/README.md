@@ -1,184 +1,256 @@
-# Run the cup picker and gateway on Lynx
+# Run the command-line cup picker on Lynx
 
-This deployment runs the existing robot gateway, picking coordinator and dashboard
-in **one Python process**, plus **one persistent native NCNN worker**. The gateway
-owns the OAK camera. All inference and picking decisions stay on Lynx. There is no
-remote model, failover service, Ollama, PyTorch or Ultralytics at runtime.
+The `cli` profile uses the **existing C++ gateway on port 8000** and adds a
+command-line picker. The gateway remains the sole OAK camera and robot connection
+owner. One persistent C++ process runs NCNN segmentation, object-depth geometry
+and placement-grid assessment. A small Python process retains the shared
+selection, motion sequencing, stop, confirmation, placement records and recovery
+logic; its only third-party Python dependency is `requests` and its dependencies.
 
-The initial profile uses the recovered **320×320 FP32 segmentation model**,
-**960×540 RGB and aligned depth at 2 FPS**, and one inference thread. It is a
-candidate configuration for hardware validation, not a claim that the full stack
-already fits the Lynx memory allowance.
+This profile has no browser UI, Python OpenCV, NumPy, DepthAI, PyTorch,
+Ultralytics, FastAPI or Ollama. Native OpenCV **core and imgproc** are still linked
+into the C++ worker. The Mac dashboard stays on the Mac; do not operate two live
+controllers against the robot concurrently.
 
-Version 0.1.0 has now been deployed on the 485 MiB Lynx and completed three
-synthetic-camera scans with the actual native model. Real OAK startup is blocked
-by camera availability; no physical picking was tested. See the
-[2026-11-06 deployment check](deploy/LIVE_CHECK_2026-11-06.md) for measured memory,
-timings and remaining checks.
+**Release status:** **0.2.5 is deployed and passed its single-observation camera
+check**. The scan completed in 23 seconds including startup and saving, reported
+three cup candidates as available, and sent no robot commands. Saved evidence
+confirms one observation; the five raw depth samples and 60-second age default
+were verified. Placement and recovery hashes were unchanged, the existing
+gateway remained healthy, and no picker or inference worker remained afterward.
+Physical picking was not tested. See the
+[2026-11-13 CLI validation report](deploy/CLI_CHECK_2026-11-13.md). The older combined
+Python gateway/dashboard profile remains available as `--profile combined`;
+its [2026-11-06 measurements](deploy/LIVE_CHECK_2026-11-06.md) concern that older
+profile, not this command-line runtime.
 
-## What reduces resource use
+## Prepare the model and persistent state
 
-| Change | Effect |
-| --- | --- |
-| Gateway and coordinator share one server on port 8080 | Removes a second Python/server process |
-| Native NCNN child, loaded once | Removes the PyTorch/Ultralytics runtime and repeated model loading |
-| 320 export instead of 640 | Reduces model activation and prototype sizes; weights remain FP32 |
-| 960×540 instead of 1920×1080 camera frames | RGB/depth payload per pair falls from 9.89 MiB to 2.47 MiB |
-| Direct access to the gateway's latest immutable pair | No internal camera HTTP polling, download buffers or extra depth copy |
-| Sequential inference and cropped binary masks | Bounded requests and mask storage; no Python full-frame float masks |
-| One Uvicorn worker, bounded numerical threads, no access log | Avoids duplicate services and unnecessary continuous work |
-| Captures on persistent storage, with a storage budget | Avoids filling WeOS's RAM-backed writable layer |
+Run preparation from the repository root on the development machine, using its
+existing image-processing environment. Those preparation dependencies are not
+installed in the command-line runtime. Build and packaging steps are in
+[deploy/README.md](deploy/README.md).
 
-The frame-payload figures are exact byte counts, **not total process memory**.
-DepthAI, NCNN activations, native libraries, camera reconnects and allocator caches
-still need measurement. A profiler is included for actual process/cgroup usage.
-The camera watchdog, robot lease renewal, control-session fencing, freshness,
-calibration, depth-quality, placement and recovery checks remain active.
-
-The 320 and 640 exports are not interchangeable for picking accuracy. In three
-saved full-resolution frames, 320 produced fewer CUP BASE detections and matched
-base centres shifted by up to 21.26 pixels compared with 640. Some extra 640
-detections overlap, so this is not a labeled recall result. Start with the 640
-export when validating continuity with the existing picker if memory permits;
-accept 320 only after checking actual cup associations, depth and robot XYZ.
-
-The server provides the gateway at `/api/v1` and the existing dashboard at `/`.
-The coordinator uses local HTTP for authenticated robot commands; camera data stays
-in process. WebSocket event streaming is disabled in this lean launcher; the
-dashboard uses its normal HTTP state polling. Language and named visual matching
-are disabled; cup selection and the existing pick/handover/place workflow remain.
-
-## Prepare deployment inputs
-
-Run these commands from the repository root with Python 3.11 or later. Build and
-package details, including ARM64 dependencies, are in [deploy/README.md](deploy/README.md).
-
-1. Choose the actual 320 NCNN export. It must contain `model.ncnn.param`,
-   `model.ncnn.bin`, `metadata.yaml` and `classes.txt` in export index order.
-   Generate its manifest once:
-
-   ```sh
-   python -m lynx.prepare_model "$MODEL_DIR" \
-     --input-size 320 --classes-file "$MODEL_DIR/classes.txt" --precision fp32
-   ```
-
-   The recovered local export already has this manifest. Startup checks file
-   hashes, graph resolution and native output shapes. Changing a 640 model's
-   input-size argument does not create a 320 export.
-
-2. Create a **new** state directory using the installed camera's real calibration
-   and the current placement grid. Preparation copies the files without resetting
-   occupied/reserved locations:
-
-   ```sh
-   python -m lynx.prepare_state --state-dir "$NEW_STATE_DIR" \
-     --calibration calibration/calibration.json \
-     --placing-grid capture_and_detect/placing_grid.json
-   ```
-
-   This creates distinct private gateway and dashboard credentials. A new
-   deployment begins with recovery required; inspect the robot and acknowledge
-   recovery through the existing dashboard before use. Reuse the same state
-   directory on every restart/update. Do not run the old coordinator concurrently.
-   Preparation refuses to overwrite an existing directory.
-
-3. Build the ARM64 image from an isolated context, then mount the prepared state
-   directory from persistent SD storage at `/state`. Real-camera startup on Linux
-   refuses a state path that is not a mount point. A `.wmopkg` does not configure
-   that mount or the application's network access automatically.
-
-## Start and validate
-
-The image's `/start.sh` supplies model, native worker and `/state` paths.
-
-- `/start.sh --mock`: synthetic camera plus the real native model; no hardware.
-- `/start.sh`: real OAK camera, with picking in dry-run mode. Gateway mutations
-  are blocked as well, even when a caller supplies a valid gateway token.
-- `/start.sh --live`: enables the existing confirmed robot workflow. This also
-  requires `GATEWAY_ROBOT_HOST` to be explicitly configured.
-
-Configure `GATEWAY_CAMERA_IP`, `GATEWAY_ROBOT_HOST` and the existing `GATEWAY_RWS_*`
-settings through deployment configuration. The launcher never reads the checkout's
-`gateway/.env`. It forces strict authentication and session-aware control.
-
-For a browser on the lab network, append:
+Select an actual NCNN export with `model.ncnn.param`, `model.ncnn.bin`,
+`metadata.yaml` and classes in their export index order. For a **640 INT8 export**
+that does not already have its validated manifest:
 
 ```sh
---host 0.0.0.0 --dashboard-origin http://LYNX_MANAGEMENT_IP:8080
+python -m lynx.prepare_model "$MODEL_DIR" \
+  --input-size 640 --classes-file "$MODEL_DIR/classes.txt" --precision int8
 ```
 
-Use the actual address. Sign in as `lynx` with the password stored in
-`/state/dashboard-token`. This password is separate from `/state/gateway-token`;
-the latter is private to the coordinator/API clients. Remote access retains exact
-Host/Origin and CSRF checks. Use HTTP credentials only on the trusted lab network,
-or place the dashboard behind a TLS proxy. Default binding is loopback only.
+Use the export's real resolution and precision. A manifest flag does not resize
+or quantize a model. Existing manifests and parameter/weight hashes are checked
+at startup; preparation refuses to overwrite an existing manifest.
 
-Before loading the model on Linux with the real camera, the source launcher
-requires **48 MiB of additional memory headroom** in every finite visible cgroup
-limit, including shared parents, and in host `MemAvailable`. Set
-`--model-headroom-mib` to 32..128 to choose another reserve. Insufficient or
-unverifiable headroom leaves the model stopped and displays a dashboard error;
-hidden parent limits and missing counters are not treated as free memory. The
-guard requires the visible cgroup-v2 hierarchy used by WeOS; legacy cgroup-v1
-ancestry cannot be verified and is refused. The
-check first attempts an optional glibc heap trim, then measures again without
-assuming any amount was freed. Charged cgroup cache remains counted. This is a
-startup check, not a memory reservation or proof that later scans/reconnects fit.
-Mock and non-Linux launches skip it. **The guard was added after the 0.1.1 package
-was built and requires a new build to reach Lynx.**
+The current placement profile contains seven 90 mm cells: **P2, P3, P4, P5,
+P8, P9 and P10**, outside the tray. It uses `calibration_grid.json` and its matching
+frozen empty-table reference. Keep those exact three artifacts together; the
+experimental `calibration.json` has a different Z offset and is not a substitute.
+The current reference is bound to the calibrated **1920×1080** intrinsics, layout,
+cell size, table height and calibration digest. Changing camera resolution or
+moving a cell requires a separately validated matching reference.
 
-Scan first in dry-run. Check RGB/depth alignment, valid cup-base depth, selected
-cup coordinates, placement evidence and the complete proposed sequence. Test
-camera reconnection and repeated scans. Use `lynx-measure-resources` as documented
-in the deployment guide to measure startup, reconnect, loaded idle and scan peaks
-against the actual hosting limit. Keep headroom for stop/control requests. Only
-then start the explicit live mode and validate picking with the operator present.
+Create a new state directory from the currently inspected deployment state:
 
-The default capture budget is 256 MiB on persistent storage. When the budget or
-free-space reserve is exhausted, new captures fail rather than deleting robot
-state. Archive old image/capture records while idle; preserve the recovery journal
-and placement grid. `--capture-budget-mib` changes the budget. `--camera-width`
-and `--camera-height` can select 640×360 later, after checking depth and picking
-accuracy at that resolution.
+```sh
+python -m lynx.prepare_state \
+  --state-dir "$NEW_STATE_DIR" \
+  --calibration calibration/calibration_grid.json \
+  --placing-grid capture_and_detect/placing_grid_outside_tray.json \
+  --table-reference capture_and_detect/placing_grid_outside_tray.table-reference.json \
+  --external-gateway-token-file "$PRIVATE_GATEWAY_TOKEN_FILE"
+```
 
-## Quantization
+The token file must contain the **existing gateway's token**, be a private regular
+file (for example mode 0600), and not be a symlink. Do not put the token in a command
+line, source file or image. Local preparation creates `gateway-token` with mode
+0600 on a POSIX filesystem; it does not create a second gateway registry or
+dashboard password. The actual Lynx `/state` SD filesystem is **VFAT**, which
+cannot enforce POSIX 0600 permissions. On that target, access follows the WeOS
+application/mount access configuration; `chmod` does not isolate the token from
+other applications with access to the same storage.
 
-INT8 execution is enabled in the NCNN build, but the current model is **not
-quantized**. Its weights are about 11 MB; quantizing them cannot reduce the entire
-camera/gateway/application footprint by four times. The first reductions therefore
-remove the heavy inference runtime, duplicate services and large frames.
+Preparation validates the reference before writing, copies calibration/grid and
+reference bytes unchanged, and preserves occupied/reserved placement records.
+A new state directory starts with recovery required. It does not certify that a
+previous host's movement finished. Preserve the old state and recovery history;
+after inspecting the robot, use the explicit recovery procedure. Reuse the same
+state directory for later restarts; preparation refuses an existing directory.
+Mount persistent SD storage at `/state`, with this deployment under
+`/state/cli-0.2.0`. The deployed 0.2.5 package reuses this path; a package update must not
+reinitialize or discard existing state. Keep captures, grid and recovery journal off the RAM-backed
+container filesystem.
 
-An INT8 candidate needs representative cup images for NCNN calibration and an
-offline comparison of cup-base masks, valid-depth rates and resulting robot XYZ,
-including difficult orientations and lighting. Use a new model directory and
-manifest (`--precision int8`) for that candidate. Keep the FP32 baseline available.
-No unvalidated INT8 export is silently substituted into the picking path.
+## Start and use the picker
 
-## Verification performed during implementation
+The next launch uses the installed 0.2.5 single-pass defaults. Do not
+replace or restart an application while an operator is using its live CLI.
 
-- Gateway regression tests and new camera, IPC, model, state, lifecycle and access
-  tests passed without robot hardware.
-- The native C++ worker compiled against NCNN 20260526 and minimal OpenCV on the
-  development Mac. Native core tests, sanitizer checks and actual 320/640 model
-  smoke checks passed. This Mac executable is not a Linux deployment binary.
-- On three recorded cup images, the 320 native worker matched Ultralytics
-  8.4.166 detection counts; minimum mask IoU was 0.9999604 and maximum centroid
-  difference was 0.00465 pixels. One 640 comparison had identical masks.
-  See [native/README.md](native/README.md) for reproducible checks. This validates
-  the port, not 320-versus-640 detection recall or physical grasp accuracy.
-- A combined gateway/dashboard/native-worker mock scan completed the existing
-  three-frame placement assessment without importing PyTorch or Ultralytics.
-  Reproduce it in a development environment with FastAPI/httpx installed:
+Connect to the configured Lynx application:
 
-  ```sh
-  python -m lynx.tests.runtime_smoke --model "$MODEL_DIR" --worker "$NATIVE_WORKER"
-  ```
-- The production Linux ARM64 image built successfully. A network-disabled,
-  read-only container completed a three-frame mock-camera scan with the actual
-  320 model; unauthenticated gateway access and dry-run mutations were rejected.
-  Native inference timing in Docker on the Mac is not a Lynx performance result.
+```sh
+ssh admin@192.168.125.20
+```
 
-The [target deployment check](deploy/LIVE_CHECK_2026-11-06.md) records successful
-synthetic-camera scans and their Lynx memory measurements. The combined real OAK
-pipeline and model, camera reconnection and physical cup picking still require
-validation on the target hardware.
+At the WeOS prompt, enter `app-hosting`, then `show app cuppicker`. If the app
+is stopped, run `start cuppicker`; then run `attach cuppicker`. The configured
+application stays idle until you start the picker below. Existing credentials
+and persistent state are already copied; no new token approval is pending.
+The WeOS configuration was saved with `copy run start`. The picker has autostart
+disabled and must be started manually; a device reboot has not been tested.
+
+Inside the prepared application container, `/start.sh` supplies the packaged
+model and worker. The gateway must already be running and reachable through the
+container's configured network; loopback only reaches it when that network
+arrangement exposes the gateway there.
+
+Camera/model/grid check, saving one single-observation scan and then exiting:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --scan-once
+```
+
+`--scan-once` sends no motion and **does not reconcile, release or reserve any
+placement records**. It saves capture/audit files. It cannot be combined with
+`--live` and does not acknowledge recovery.
+
+Interactive dry run:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0
+```
+
+Explicit live operation, after checking the saved images, coordinates and robot:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --live
+```
+
+Startup itself performs no robot movement. The current single-operator source
+does not acquire OS file locks. Device handoff and recovery guards still apply.
+It does not prevent a separate Mac
+controller from connecting, so close that controller before live use.
+
+| Command | Result |
+| --- | --- |
+| `scan` | Capture and assess the scene once; no movement |
+| Empty Enter | Ignore; no camera check or movement |
+| `list`, `show 2` | Inspect cups in the current capture |
+| `goto 2` | Recheck cup 2, then run the shared pick/handover/place sequence |
+| `goto all` | Preview the available batch; `confirm <code>` starts it |
+| `start` | Scan and preview a batch; still requires confirmation |
+| `hover 2` | Recheck and approach above cup 2 |
+| `status`, `robot status` | Application state, or refreshed gateway/controller state |
+| `home right`, `home left`, `home both` | Preview a supported Home action |
+| `confirm-home <code>` | Confirm the inspected return path and execute that Home proposal |
+| `stop` or `halt` | Latch the stop and request the gateway's software stop |
+| `cancel` | Discard a proposal; does not stop dispatched motion |
+| `reset` | Acknowledge recovery after inspection; sends no movement |
+| `quit` | Exit; active work receives a software-stop request, with no automatic home/resume |
+
+Home support is discovered from the gateway. Unsupported or unverifiable controls
+remain unavailable. `home both` returns the right arm first, then the left. A
+legacy gateway may need the existing read-only `--controller-profile` for the
+required status checks; adding that profile does not create missing gateway
+endpoints or weaken the guarded-restart fence. Software stop still depends on
+the gateway/controller; use the physical stop when immediate stopping is needed.
+
+## Preserved motion and camera checks
+
+The CLI uses the shared controller and plans, including their overlapping arm
+choreography, completion checks, reservations and recovery journal. Defaults are:
+
+| Setting | Value |
+| --- | --- |
+| Travel TCP height | 250 mm; the 159 mm gripper offset makes the flange target 409 mm |
+| Fixed picking TCP height | 70 mm |
+| Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
+| Ordinary travel speed | 250 mm/s |
+| Automatic Home speed | 200 mm/s, subject to an explicitly selected lower speed cap |
+| Camera-derived picking height | Off; `--camera-z` explicitly selects the existing measured-height policy |
+| Object-depth samples | Five fresh frames; `--depth-frames` accepts 1..9 |
+| Normal scan | One full YOLO/perception pass |
+| Placement verification | One mandatory fresh pass before each pick; no automatic depth-uncertainty retries |
+| Maximum verification age | 60 seconds; configurable with `--max-result-age` |
+
+`--speed` selects a different travel speed through the existing plan limits. An
+explicit setting previously used in the Mac UI is not automatically imported.
+With `--camera-z`, the pick TCP uses the existing base Z + 20 mm policy with a
+40 mm floor. Stable object cores may use the five-frame depth mean; placement
+evidence and saved depth always use the **latest raw aligned frame**, never a
+smoothed grid image. **Five raw depth samples do not mean five inference passes.**
+The one scan pass and the later mandatory verification pass are separate camera
+observations. An occupied, unknown or otherwise invalid verification blocks the
+pick without automatically capturing again. Batch verification begins after
+the previous cup's Home sequence completes.
+
+The 60-second age limit includes processing and pre-grip motion: its clock starts
+at the **start of the first raw-frame capture**, not when inference finishes.
+Age is checked throughout that sequence, including immediately before grip
+dispatch. For example, `--max-result-age 45` selects a
+45-second limit; it does not disable freshness checks. Missing/unstable depth,
+changes to calibration/reference/intrinsics, stale observations and interrupted
+motion still block dispatch. These defaults apply only to the lightweight Lynx
+CLI; the Mac's 15-second default and existing three-observation profile remain
+unchanged.
+
+Native grid assessment preserves cup-to-cell ownership, connected depth groups,
+cup-edge uncertainty, visibility and other-object checks. Oversized cup masks or
+group crops above 262,144 pixels, or aggregate decoded cup masks above 8,388,608
+pixels, fail the assessment before unbounded geometry allocation. They never
+silently clear a destination.
+
+On Linux, startup requires 128 MiB of additional verified headroom from the host
+and visible shared cgroup hierarchy before loading the model. A measured
+shortfall is rechecked for **up to five seconds**, at 0.2-second intervals; the
+128 MiB requirement is unchanged and no model starts during that wait. Unknown
+or unreadable memory accounting fails immediately. A passing snapshot does
+not reserve memory or prove that later camera/model peaks fit. Keep capture files
+on persistent storage and monitor available disk space; archive them only while
+idle, preserving placement and recovery records.
+
+The deployed 0.2.5 camera-only check took **23 s**, including startup and saving.
+Sampled shared usage reached **218.07 MiB** against a **242.50 MiB** limit; the
+picker application sampled peak was **155.60 MiB**. No memory-event counter
+increased. The unchanged 128 MiB startup guard passed at **128.8 MiB** visible
+shared headroom. These are one run's samples, not worst-case bounds or physical
+picking validation. The report retains the historical 0.2.4 three-observation
+43/41-second results separately; its second run restarted only the picker
+process inside the same container.
+
+## Model sensitivity and validation
+
+INT8 reduces model size and can reduce inference memory, but it does not shrink
+the gateway, raw camera frames or all application memory by the same factor.
+In the saved-frame Mac comparison, matched FP32/INT8 observations differed by up
+to **8.07 mm in Euclidean robot XYZ**. Small segmentation changes can select
+different depth pixels, so mask agreement alone does not prove grasp agreement.
+That comparison is not physical picking validation or a general accuracy bound.
+Keep the FP32 baseline and check the actual cup-base depths and proposed XYZ
+before adopting the INT8 candidate live.
+
+The native placement implementation matched every returned slot/evidence field
+on 266 saved full-resolution frames under the seven-cell profile. The final
+standalone Mac replay had a 0.164 s median and 47.61 MiB peak RSS. Synthetic
+placement tests and helper-level ownership/shared-pixel comparisons also passed.
+These measurements exclude the loaded NCNN model, Python controller and gateway;
+only combined target measurements can establish deployment headroom.
+
+## Dependencies and attribution
+
+The command-line image keeps the NCNN, OpenCV and nlohmann/json license texts in
+`/usr/share/licenses/lynx-picker/`; nlohmann/json 3.12.0 is vendored with its MIT
+license and [source/hash record](native/vendor/nlohmann/README.md). The Python
+HTTP dependencies retain their wheel metadata/licenses. Build inputs and runtime
+wheel hashes are recorded in the staged source manifest and lock file.
+
+The native postprocessing reference is Ultralytics 8.4.166, documented with source
+links in [native/README.md](native/README.md). Preserve the selected model's
+training/export provenance, license and attribution with the release. Dependency
+license files do not establish a license for model weights; the context preparer
+copies only the explicit model files listed in its manifest contract.

@@ -40,6 +40,7 @@ class PlacingGridTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in preview["locations"]], [2, 3])
         self.grid.validate_preview(preview)
         self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
         preview["locations"][0]["x"] = 0
         self.assertEqual(self.grid.snapshot()["locations"][1]["x"], 440)
 
@@ -405,6 +406,7 @@ class PlacingGridTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: reserve(), range(2)))
         self.assertEqual(sum(item is not None for item in results), 1)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
     def test_observation_and_reservation_cannot_both_apply_same_snapshot(self):
         snapshot = self.grid.snapshot()

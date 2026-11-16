@@ -15,6 +15,7 @@ constexpr std::uint32_t kProtocolVersion = 1;
 constexpr std::uint32_t kMaxWidth = 1920;
 constexpr std::uint32_t kMaxHeight = 1080;
 constexpr std::uint32_t kMaxJsonBytes = 65536;
+constexpr std::uint32_t kMaxPerceptionJsonBytes = 4 * 1024 * 1024;
 constexpr std::uint32_t kMaxMaskBytes = 64 * 1024 * 1024;
 
 inline std::uint32_t read_u32(const unsigned char* p) {
@@ -38,6 +39,9 @@ struct Request {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<unsigned char> bgr;
+    bool perception = false;
+    std::string config_json;
+    std::vector<std::vector<unsigned char>> depth_bytes;
 };
 
 // No allocation uses peer-provided lengths before dimensions and framing validate.
@@ -47,26 +51,57 @@ inline bool read_request(std::istream& input, Request& request) {
     if (input.gcount() == 0 && input.eof()) return false;
     if (input.gcount() != static_cast<std::streamsize>(header.size()))
         throw std::runtime_error("Truncated native header");
-    if (std::memcmp(header.data(), "LNXQ", 4) != 0)
+    request.perception = std::memcmp(header.data(), "LNXP", 4) == 0;
+    if (!request.perception && std::memcmp(header.data(), "LNXQ", 4) != 0)
         throw std::runtime_error("Unknown native protocol magic");
     request.id = read_u32(header.data() + 4);
     request.width = read_u32(header.data() + 8);
     request.height = read_u32(header.data() + 12);
     const auto bytes = read_u32(header.data() + 16);
-    if (!request.id || read_u32(header.data() + 20) != 0)
+    const auto samples = read_u32(header.data() + 20);
+    if (!request.id || (!request.perception && samples != 0))
         throw std::runtime_error("Invalid native request ID or reserved field");
     if (!request.width || !request.height || request.width > kMaxWidth || request.height > kMaxHeight)
         throw std::runtime_error("Native frame exceeds configured limits");
     const auto expected = std::uint64_t(request.width) * request.height * 3;
     if (bytes != expected) throw std::runtime_error("BGR length does not match frame dimensions");
+    request.config_json.clear();
+    request.depth_bytes.clear();
+    if (request.perception) {
+        std::array<unsigned char, 8> extension{};
+        read_exact(input, extension.data(), extension.size());
+        const auto config_size = read_u32(extension.data());
+        if (samples < 1 || samples > 9 || !config_size || config_size > kMaxJsonBytes ||
+            read_u32(extension.data() + 4) != 0)
+            throw std::runtime_error("Invalid perception framing");
+        request.config_json.resize(config_size);
+        read_exact(input, request.config_json.data(), config_size);
+        // Depth is streamed first so the coordinator can release each sample as
+        // it is sent, rather than retaining a second full copy of the burst.
+        for (std::uint32_t i = 0; i < samples; ++i) {
+            request.depth_bytes.emplace_back(std::size_t(request.width) * request.height * 2);
+            auto& data = request.depth_bytes.back();
+            read_exact(input, data.data(), data.size());
+        }
+    }
     request.bgr.resize(bytes);
     read_exact(input, request.bgr.data(), request.bgr.size());
+    if (request.perception) {
+        // Gateway wire format is planar BGR888p. Convert one image in place
+        // through a bounded additional buffer, outside the ML runtime.
+        std::vector<unsigned char> interleaved(bytes);
+        const auto pixels = std::size_t(request.width) * request.height;
+        for (std::size_t p = 0; p < pixels; ++p)
+            for (int c = 0; c < 3; ++c) interleaved[3*p+c] = request.bgr[c*pixels+p];
+        request.bgr.swap(interleaved);
+    }
     return true;
 }
 
 inline void write_response(std::ostream& output, std::uint32_t id, std::uint32_t status,
-                           const std::string& json, const std::vector<unsigned char>& masks = {}) {
-    if (json.size() > kMaxJsonBytes || masks.size() > kMaxMaskBytes)
+                           const std::string& json, const std::vector<unsigned char>& masks = {},
+                           std::uint32_t json_limit = kMaxJsonBytes) {
+    if (json.size() > json_limit || masks.size() > kMaxMaskBytes)
         throw std::runtime_error("Native response exceeds configured limits");
     std::vector<unsigned char> header{'L', 'N', 'X', 'R'};
     append_u32(header, id);

@@ -101,15 +101,20 @@ test("disconnect marks every displayed source snapshot stale while retaining evi
 test("demo and local-only sessions cannot claim active fallback", () => {
   const { render, dom } = dashboard();
   render(snapshot(), { mode: "demo" });
+  assert.equal(dom["inference-panel"].hidden, true);
   assert.equal(dom["inference-badge"].textContent, "DEMO · NO FALLBACK");
   assert.equal(dom["inference-provider"].textContent, "Sample scene");
   assert.equal(dom["inference-counters"].textContent, "Not applicable");
   render(snapshot({ enabled: false, local_provider: "local", selected_provider: "local", state: "local_only" }));
+  assert.equal(dom["inference-panel"].hidden, true);
   assert.equal(dom["inference-badge"].textContent, "LOCAL ONLY · NO FALLBACK");
   assert.equal(dom["inference-provider"].textContent, "No accepted result");
   assert.equal(dom["inference-selected"].textContent, "Local model");
   render(snapshot({ state: "local_only" }));
+  assert.equal(dom["inference-panel"].hidden, true);
   assert.equal(dom["inference-badge"].textContent, "LOCAL ONLY · NO FALLBACK");
+  render(snapshot());
+  assert.equal(dom["inference-panel"].hidden, false);
 });
 
 test("development fallback displays local evidence without claiming Raspberry Pi", () => {

@@ -1,0 +1,317 @@
+# Manual Mac / Pi / Lynx dashboard
+
+The dashboard stays on the Mac. **Processing device → Use device** selects where
+both the detection model and the cup-picking controller run. Mac and Pi use the
+Python perception runtime; Lynx uses the native C++ perception runtime and the
+shared Python motion controller. All three use the existing robot/camera gateway.
+This is separate from the older inference-only automatic failover feature.
+
+The generic commands below are setup examples. For the verified installation,
+see [the deployment check and startup commands](DEVICE_CHECK_2026-11-13.md). Replace
+the example repository, model and state paths and the `192.0.2.*` documentation
+addresses with the verified installation values.
+
+## Prepare matching persistent state
+
+Each service needs its own persistent state directory containing:
+
+- `calibration.json`: the validated grid calibration, copied from
+  `calibration/calibration_grid.json` for the current profile.
+- `placing-grid.json` and `placing-grid.table-reference.json`: the paired seven-cell
+  layout and frozen empty-table reference. Preserve occupied/reserved records.
+- `gateway-token`: the existing gateway credential; this is separate from the
+  device-service access token below.
+- `captures/`, including any existing `robot_recovery.json` and capture history.
+- `controller-status.json`, when the gateway needs the existing read-only ABB
+  status connection for Home and gripper controls. Its `gateway_api` must exactly
+  match this service's gateway API URL; its `controller_url` must identify the
+  same robot controller. The status reader checks both arms' joint positions
+  against the gateway before accepting collision status.
+
+Services load `STATE_DIR/controller-status.json` by default; use
+`--controller-profile /path/to/profile.json` to choose another file. A missing
+or unrelated profile never enables protected actions. Startup discovers gateway
+support without sending a robot command. If the gateway provides all required
+status routes itself, the extra profile is unnecessary.
+
+All devices must use the same physical robot and camera, the same `--robot-id`,
+matching calibration/reference bytes, and identical grid IDs, coordinates and
+cell size. The current profile uses P2–P5 and P8–P10 with 90 mm cells. Keep the
+reference bound to the actual camera intrinsics and resolution; do not substitute
+the experimental calibration or regenerate a reference from an occupied scene.
+
+Use the existing [state preparation procedure](../lynx/README.md) for a new
+directory. Preparation preserves the supplied grid and starts with recovery
+required. Inspect the robot and use the existing operator recovery workflow to
+resolve that state; do not edit recovery records to make a target available.
+An incoming handoff refuses a target with outstanding recovery, reservations or
+an interrupted state transfer. Do not reinitialize an existing deployment.
+
+Back up the existing state before first migration, while its controller is
+stopped. Keep the original state and journal. The selected source's occupancy,
+clean recovery record, normal/home speed, camera-height choice and handover
+offset transfer during a successful switch. The target saves its previous grid
+and journal in `device-state-before-handoff.json`. Captures and saved-cup libraries
+remain on their respective devices; scan again after every switch.
+
+## Private dashboard configuration
+
+Keep configuration, tokens and the dashboard ownership file outside the repository
+and deployment image. For example, create a private directory
+`$HOME/.config/cup-picker` on the Mac and save `devices.json` there:
+
+```json
+{
+  "schema_version": 1,
+  "initial_device": "lynx",
+  "state_file": "dashboard-owner.json",
+  "devices": {
+    "mac": {
+      "url": "http://127.0.0.1:8091",
+      "token_file": "mac-service.token"
+    },
+    "pi": {
+      "url": "http://192.0.2.50:8091",
+      "token_file": "pi-service.token"
+    },
+    "lynx": {
+      "url": "http://192.0.2.20:8091",
+      "token_file": "lynx-service.token"
+    }
+  }
+}
+```
+
+All three device entries are required. URLs are service origins: no embedded
+credentials, path, query or fragment. File paths are relative to `devices.json`
+unless absolute. Each service token file contains only its corresponding token
+and an optional final newline. Example **dummy content, never for deployment**:
+
+```text
+EXAMPLE_ONLY_REPLACE_WITH_A_UNIQUE_RANDOM_TOKEN
+```
+
+Use a different random token per service, 32–512 printable ASCII characters with
+no embedded whitespace. Securely place a matching copy on that device. On POSIX
+storage, use mode 0700 for the private directory and 0600 for token files; do not
+pass token values as command-line arguments. Lynx SD/VFAT storage cannot enforce
+POSIX file modes, so restrict access through the application and mount setup.
+The service uses bearer authentication; expose it only on the intended trusted
+network or through a protected tunnel. It does not provide a browser UI.
+
+`initial_device: "lynx"` bootstraps Lynx as the initial authority only when the
+dashboard has no ownership file. Later starts reconcile the persisted owner;
+changing this setting does not override that owner. Preserve
+`dashboard-owner.json`, each device's `device-owner.json`, and handoff files.
+Deleting them is not a way to unlock or reset the robot.
+
+## Combined dashboard with Astra on the Mac
+
+To keep the Assistant and saved-cup matching alongside the device selector,
+run the Mac picker inside the dashboard. Replace only the `mac` entry above:
+
+```json
+"mac": {
+  "backend": "local",
+  "state_dir": "/existing/private/mac-state",
+  "model": "/path/to/cup-model.pt",
+  "gateway": "http://192.0.2.20:8000",
+  "robot_id": "picker-lab-robot",
+  "controller_profile": "/path/to/robot_controller.json",
+  "max_result_age": 30,
+  "runtime_paths": {
+    "placing_grid": "/existing/capture_and_detect/placing_grid_outside_tray.json",
+    "output": "/existing/capture_and_detect/Data/Detections",
+    "calibration": "/existing/calibration/calibration_grid.json",
+    "table_reference": "/existing/capture_and_detect/placing_grid_outside_tray.table-reference.json"
+  }
+}
+```
+
+Keep the existing Pi/Lynx entries and `state_file`. The optional `runtime_paths`
+reuses an existing direct Mac dashboard's grid, captures, recovery journal and
+saved-cup library. Without it, the standard files in `state_dir` are used.
+The table-reference filename must correspond to the placement-grid filename.
+All devices still need matching geometry, calibration and table reference.
+The local Mac defaults to a 30-second verification-image limit; remote service
+settings are unchanged. `GATEWAY_TOKEN` supplies the local Mac credential when
+set; otherwise the existing state-directory token is used.
+
+Close the old direct dashboard and separate Mac service before starting this
+configuration. This single-operator version no longer acquires OS file locks;
+the shared JSON stores retain in-process thread synchronization. Use a separate dashboard
+`--output` directory; when omitted, managed mode uses `dashboard-cache` next to
+the configuration. The Pi and Lynx services continue to run separately.
+
+Pass `--assistant-settings /private/path/assistant-settings.json` to the dashboard
+to reuse Astra settings. Astra and its credentials remain in the Mac process.
+**Assistant** and saved-cup matching are enabled only while the local Mac picker
+owns control and is ready. Pi and Lynx retain their ordinary picking controls.
+Switching devices invalidates old Assistant responses and previews; returning to
+Mac preserves the saved-cup library. See [Assistant behavior](ASSISTANT.md) for
+automatic camera-only refresh and the single pick confirmation.
+
+On first attachment to existing Mac paths, an incoming handoff preserves occupied
+cells from both the selected source and the Mac records. A later standalone change
+to Mac occupancy triggers the same conservative merge. No occupied cell is freed
+by this adoption step. Recovery, reservations and geometry checks still apply;
+the original target state is backed up before installation. Resolve any retained
+occupied records through the normal inspected release workflow.
+
+For this installation, `private/cup-dashboard-phone/start-live.command` uses
+`devices-combined.json`, the existing ownership file and the canonical Mac paths.
+It keeps phone access on HTTP port 8087 and reuses the pairing and Astra settings.
+At user startup, `combined_startup.py` can gracefully close the older installation's
+dashboard and Mac service only after checking their exact process identities,
+ports and idle state. Busy, foreign or unreachable processes abort startup;
+the helper never force-kills a process or deletes state. It does not run on import.
+
+## Start the three services
+
+Stop the old terminal/controller before starting a service on the same state.
+File-lock checks have been removed for the single-operator setup, including the
+Unix-only `fcntl` dependency. Device ownership generations, gateway checks,
+reservations and recovery still govern switching and robot commands.
+
+Use the environment containing the working Python camera/model dependencies on
+Mac and Pi. From each device's checkout, adjust the following paths. The example
+gateway address refers to the same existing Lynx gateway for both devices.
+
+Mac service, accepting only the dashboard on this Mac:
+
+```sh
+cd "/path/to/Fail-Safe-Edge-AI-Picker-HT26/capture_and_detect"
+python device_service.py --device-id mac --backend python \
+  --state-dir "$HOME/.local/share/cup-picker/mac" \
+  --model "/path/to/cup-model.pt" \
+  --token-file "$HOME/.config/cup-picker/mac-service.token" \
+  --robot-id picker-lab-robot \
+  --gateway http://192.0.2.20:8000 \
+  --listen 127.0.0.1 --port 8091 --live
+```
+
+Pi service, reachable from the Mac on the intended network:
+
+```sh
+cd "/path/to/Fail-Safe-Edge-AI-Picker-HT26/capture_and_detect"
+python device_service.py --device-id pi --backend python \
+  --state-dir "$HOME/.local/share/cup-picker/pi" \
+  --model "/path/to/cup-model.pt" \
+  --token-file "$HOME/.config/cup-picker/pi-service.token" \
+  --robot-id picker-lab-robot \
+  --gateway http://192.0.2.20:8000 \
+  --listen 0.0.0.0 --port 8091 --live
+```
+
+Inside a Lynx CLI package that includes service support, `/start.sh --serve`
+supplies the native model and worker paths. `--serve` must be the first argument:
+
+```sh
+/start.sh --serve \
+  --state-dir /state/cli-0.2.0 \
+  --token-file /state/private/lynx-service.token \
+  --robot-id picker-lab-robot \
+  --gateway http://127.0.0.1:8000 \
+  --listen 0.0.0.0 --port 8091 --live
+```
+
+The Lynx network/mount configuration must expose that service port to the Mac
+and make the existing gateway reachable at the supplied address. Loopback works
+only when the configured container networking provides it. This command does
+not install or restart the gateway.
+
+Lynx package **0.2.8** releases cache for saved camera images and the packaged
+native worker/model before measuring startup memory. It also releases image
+cache after captures and image downloads. Saved files, placement records and
+recovery journals remain intact. The measured **128 MiB** startup requirement
+is unchanged; cleanup never treats file sizes as reclaimed memory. This fixes
+the observed refusal caused by accumulated camera-image cache when returning
+to Lynx. The Mac single-observation scan uses the common `placement_records`
+module and does not require the Lynx package on its Python import path.
+
+The 2026-11-16 camera-only rollout checked MacBook, Pi and Lynx scans and repeated
+device switches. Final 0.2.8 completed two native scans across separate
+activations; 150 one-second samples peaked at 237,088,768 bytes against the
+254,283,776-byte shared limit. Memory-limit events did not increase and OOM
+counts remained zero. These checks sent no robot motion and do not constitute
+physical-picking or long-duration validation.
+
+All services default to dry-run without `--live`. The dashboard and all configured
+services must agree on live/dry-run mode. For a dry-run installation, omit
+`--live` from all four commands. Activation loads the selected model; startup
+does not scan or move the robot. Service defaults are five raw depth samples per
+observation, one full verification observation and a 60-second result-age limit.
+Camera-derived pick height stays off unless explicitly enabled. Existing motion
+limits and per-action confirmation remain in force.
+
+## Start the Mac dashboard
+
+```sh
+cd "/path/to/Fail-Safe-Edge-AI-Picker-HT26/capture_and_detect"
+python web_app.py \
+  --device-config "$HOME/.config/cup-picker/devices.json" \
+  --output "$HOME/.local/share/cup-picker/dashboard" \
+  --live --port 8086
+```
+
+Open **http://localhost:8086**. The separate output directory keeps the dashboard's
+own process lock apart from a local service's capture directory. With
+`--device-config`, omit `--gateway`, `--demo` and inference-only routing flags;
+configure model, gateway and perception options on the services themselves.
+The HTTP services use the existing explicit commands and confirmation flow.
+Astra and saved-cup visual matching require the local Mac configuration above;
+they are unavailable on the remote services.
+
+The dashboard opens on **Pick cups**, with the camera, cup selection, preview
+and placement grid together. **Robot controls** contains Home, grippers,
+controller status and recovery. **Settings** contains speed, handover alignment,
+placement-record release and service diagnostics. The device selector remains
+above these tabs; **Stop robot** and current-task progress stay in the header
+while scrolling. The activity log is under Settings. Changing a
+tab only changes the browser view and sends no controller request.
+
+Home and gripper actions appear in the **Robot controls** tab. Advertised
+actions whose required status connection is missing remain visible but disabled,
+with the reason shown. **Refresh robot status** is read-only. Unsupported gateway
+routes remain hidden. To pick just one cup, use **Scan workspace**, select it in
+the image or cup list, then **Pick selected cup** and review its preview. The
+button remains visible with guidance when a fresh scan or selection is needed.
+New pick or manual-action previews open their corresponding tab; repeated status
+updates do not override a manually chosen tab. Optional command input, saved
+references, activity history and camera-check details use expandable sections.
+
+## Switching and interruptions
+
+**Device details** lists the actual reason a target needs inspection, including
+reserved placement IDs. A target reservation is reported separately from another
+dashboard owner; neither is silently cleared by a switch.
+
+Updated services support the four stage-speed controls under **Settings → Movement
+speeds**. Custom profiles transfer with ownership. Older services remain compatible
+with the original defaults; switching to one with a custom profile is rejected
+before releasing the current device, with instructions to restore defaults or
+update that service. No speed is changed automatically.
+
+1. Read **Active device**, **Active model** and **Service status**. Changing the
+   menu alone does not activate a device or prove that it supplied a new scan.
+2. Finish the current job. Resolve Stop/recovery and outstanding reservations.
+   Choose an available device and press **Use device**.
+3. The source rejects new work, confirms it is idle, cancels previews and invalidates
+   its scan, then durably releases ownership. Only after that acknowledgement can
+   the target receive state and activate. The live gateway must also confirm idle,
+   unleased robot control. An offline or incompatible target cannot be activated.
+4. Wait for activation and model startup, then scan and review the new scene.
+   No interrupted pick resumes automatically. Lynx raw images receive cup IDs and
+   grid outlines in the browser.
+
+**Connection loss does not trigger automatic fallback.** The dashboard blocks
+ordinary actions while ownership is uncertain and reconciles persisted handoff
+state on reconnect/restart. It never automatically retries a motion command.
+An already dispatched movement may continue; Stop is a best-effort request to the
+possible current owner, not a replacement for physical emergency controls.
+
+If model/runtime startup fails, read the service error, correct the cause and
+restart that same service using the same persistent state. Retrying **Use device**
+does not restart a failed runtime automatically. The dashboard then reconciles
+the new service instance; old requests and scan selections stay invalid. Preserve
+state and complete any required inspection before continuing.

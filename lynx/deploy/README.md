@@ -1,201 +1,245 @@
-# Lynx image and WeOS package
+# Build the Lynx command-line picker package
 
-This image runs the gateway and cup-picking coordinator in one Python process on
-port 8080, with a separate camera-free native NCNN worker. The gateway owns the
-OAK camera. The Python runtime has no PyTorch, Ultralytics, NCNN Python bindings,
-GUI libraries, or Uvicorn standard extras. NCNN uses baseline ARMv8-A instructions
-and a single execution thread, with INT8 support compiled in. Enabling that support
-does not quantize an FP32 model.
+Use **`--profile cli`** for the commands-only runtime. It connects to the existing
+C++ gateway on port 8000. One native C++ worker performs NCNN segmentation,
+five-frame object-depth calculations and placement-grid assessment. The Python
+process retains the shared motion/stop/recovery controller and uses only
+`requests` plus its HTTP dependencies. It contains no UI, Python OpenCV, NumPy,
+DepthAI, PyTorch, Ultralytics, FastAPI or Uvicorn. Native OpenCV core/imgproc are
+statically linked into the worker.
 
-The initial camera profile is 960x540 at 2 FPS. Use a properly exported 320 model;
-changing the input-size argument of the repository's 640 export is insufficient.
-640x360 camera output is an optional later reduction after checking RGB/depth
-alignment and grasp accuracy. Camera size and model input size are independent.
-Use `--camera-width`, `--camera-height` and `--camera-fps` launcher arguments to
-change that profile; these arguments take precedence over gateway environment
-settings in the combined application.
+The **0.2.5 single-pass package is deployed and passed its camera-only check**:
+one observation, five fresh raw depth samples, 23 seconds including startup and
+saving, and three candidates listed as available. No robot commands were sent;
+placement/recovery hashes were unchanged. Only `cuppicker` was reloaded, and the
+existing gateway remained healthy. No picker or inference worker remained after
+the check. Physical picking was not tested. See the
+[2026-11-13 CLI validation report](CLI_CHECK_2026-11-13.md) for the exact scope and
+memory measurements. The old combined gateway/dashboard build is still selected by
+`--profile combined` (also the preparer's default). Its historical
+[2026-11-06 report](LIVE_CHECK_2026-11-06.md) does not validate the CLI profile.
 
-## Prepare the model and a clean context
+## Select the model and stage an isolated context
 
-Run from the repository root, with Python 3.11 or later. Set `MODEL_DIR` to the
-directory containing the selected NCNN export, not a PyTorch checkpoint.
+Run from the repository root on the development machine. `MODEL_DIR` must name an
+actual prepared NCNN export, not a PyTorch checkpoint. For an unprepared 640 INT8
+export, generate the manifest once with the export's actual precision:
 
 ```sh
 python -m lynx.prepare_model "$MODEL_DIR" \
-  --input-size 320 --classes-file "$MODEL_DIR/classes.txt" --precision fp32
-python lynx/deploy/prepare_context.py \
-  --model-dir "$MODEL_DIR" --output /tmp/lynx-picker-context
+  --input-size 640 --classes-file "$MODEL_DIR/classes.txt" --precision int8
+python lynx/deploy/prepare_context.py --profile cli \
+  --model-dir "$MODEL_DIR" --output /tmp/lynx-cli-0.2.5-context
 ```
 
-The context must be a new directory. Only Python source, web assets, native source,
-the prepared model and build inputs are copied. Existing credentials, `.env`,
-camera calibration, placement/recovery state, captures and training checkpoints
-are excluded. `source-manifest.json` records the SHA-256 of every staged file.
+A manifest argument does not quantize or resize an export. Keep the FP32 baseline;
+the observed FP32/INT8 robot-XYZ difference reached 8.07 mm in a saved-frame Mac
+comparison and needs physical validation. See [the picker guide](../README.md).
 
-The local investigation recovered a 320 FP32 model from the existing
-`envoy-failsafeseg320fix-1.0.wmopkg`. Its binary SHA-256 is
-`408da3a087447cf2d768cf57c20ff9a9b91f7916896ba0c1092ee291f54d5821` and its parameter
-SHA-256 is `1d3462f0f84353ced7a9743b3dab96fcf8372ec8d38810f52558ceab71be2664`.
-These identify an available baseline, not a hardware-validated release.
+The output must be new. The CLI allowlist stages only the control/runtime modules,
+native source, vendored headers/licenses, selected model and build inputs. It
+excludes the gateway package, web assets, image-processing Python modules,
+credentials, `.env`, calibration, grid/recovery records and captures.
+`source-manifest.json` records every staged file's SHA-256. In this profile,
+`Dockerfile.cli`, `start-cli.sh` and `requirements-cli-arm64.lock` are staged as
+`Dockerfile`, `start.sh` and `requirements-arm64.lock` respectively.
 
-## Build on a machine with Docker
+## Build the ARM64 image
 
 ```sh
 docker buildx build --platform linux/arm64 --load \
-  --tag lynx-picker:0.1.0 /tmp/lynx-picker-context
+  --tag lynx-picker-cli:0.2.5 /tmp/lynx-cli-0.2.5-context
 ```
 
-An ARM64 Linux build host is fastest; Docker Desktop or buildx emulation can also
-build ARM64. The native build runs its dependency-free tests and the final image
-checks native/Python imports. No camera connection or robot command runs during
-the image build.
+Use the staged context, never the full checkout. An ARM64 Linux host or Docker
+Desktop/buildx emulation can build it. The build runs native tests and checks that
+the final Python runtime cannot import the excluded image/ML/camera/web packages.
+It does not contact the camera or robot.
 
-The NCNN source release is 20260526 with an archive checksum. All 23 runtime Python
-wheels are pinned and hash-checked in `requirements-arm64.lock`, including DepthAI
-3.1.0, NumPy 1.26.4 and OpenCV headless 4.11.0.86. Those ARM64 CPython 3.11 wheels
-were resolved and downloaded successfully. DepthAI's OAK pipeline still needs a
-real-camera test. The Debian packages and `python:3.11-slim-bookworm` base receive
-updates; freeze the tested image ID, and optionally supply `--build-arg
-PYTHON_IMAGE=python@sha256:...` when recording a release.
+`Dockerfile.cli` pins and checks the NCNN 20260526 and OpenCV 4.12.0 source archives.
+NCNN uses baseline ARMv8-A, INT8 support and one execution thread, without Vulkan
+or OpenMP. OpenCV builds only core/imgproc, without Python bindings, GUI, video I/O,
+image codecs or extra parallel backends. The final image contains the worker,
+Python runtime, five hash-pinned HTTP wheels, allowlisted application source and
+selected model. Compilers and build trees stay in builder stages.
 
-The builder includes CMake and compilers. The final image contains only the native
-binary with static OpenCV core/imgproc, Python runtime dependencies,
-application source and selected model. Native DepthAI is not linked into the
-worker, so the camera SDK runs in only one process.
+The Debian base packages can change; record the tested immutable image ID and
+optionally pin `PYTHON_IMAGE` to a validated digest for a release. Keep
+`source-manifest.json`, `requirements-arm64.lock`, the model manifest and package
+sidecar together. Dependency licenses are retained in
+`/usr/share/licenses/lynx-picker/`; model/export licensing and attribution must
+accompany the selected weights separately. The vendored nlohmann/json 3.12.0 MIT
+license and source hashes are included. The native numerical reference and its
+Ultralytics source attribution are documented in [native/README.md](../native/README.md).
 
-The native OpenCV 4.12.0 archive is checksum-pinned and built with GUI, video,
-OpenCL, BLAS, and additional thread backends disabled. Debian's prebuilt
-core/imgproc packages are deliberately avoided because they also install
-Mesa/X11/LLVM dependencies.
+## Prepare persistent state
 
-## Persistent state and startup
+Prepare state on the development machine with its existing calibration-validation
+dependencies, using the current seven-cell profile and matching reference:
 
-Follow the state preparation instructions in [the Lynx guide](../README.md). Use
-the real calibrated transform and consciously reconciled placement state; the
-image contains neither. Mount that prepared directory at `/state` from persistent
-SD storage. On WeOS, writes outside configured persistent mounts can consume the
-RAM-backed writable layer and disappear after restart. Keep logs bounded and do
-not retain captures there.
+```sh
+python -m lynx.prepare_state \
+  --state-dir "$NEW_STATE_DIR" \
+  --calibration calibration/calibration_grid.json \
+  --placing-grid capture_and_detect/placing_grid_outside_tray.json \
+  --table-reference capture_and_detect/placing_grid_outside_tray.table-reference.json \
+  --external-gateway-token-file "$PRIVATE_GATEWAY_TOKEN_FILE"
+```
 
-The startup command is `/start.sh`. It supplies `--state-dir /state`,
-`--model /opt/model` and `--worker /usr/local/bin/lynx-ncnn-worker` to the launcher.
-Additional arguments are forwarded unchanged:
+The credential is the existing gateway's token in a private regular file, not a
+newly generated gateway identity. Local preparation creates the copy with mode
+0600 on a POSIX filesystem; no second gateway registry or dashboard token is
+created. The target `/state` SD filesystem is VFAT and cannot enforce POSIX 0600.
+Token access there depends on WeOS application/mount access, not `chmod`; an
+application with access to the shared storage is not isolated by that mode.
+Never include the token in the build
+context or command line. Preparation copies occupied/reserved records unchanged
+and starts new deployments with recovery required. It refuses existing state
+directories. Preserve earlier state/journals; reuse the prepared directory on
+updates instead of reinitializing it.
 
-- `--mock` selects a hardware-free startup.
-- With no `--live`, robot movement is dry-run.
-- `--live` explicitly enables the real picking path; use only after calibration,
-  placement state and the dry-run target coordinates have been checked.
-- `--host` defaults to `127.0.0.1`; port defaults to 8080. A non-loopback bind also
-  needs `--dashboard-origin http://LYNX_MANAGEMENT_IP:8080` using the actual address.
+Mount persistent SD storage at `/state` and put the prepared directory at
+`/state/cli-0.2.0`. Keep this existing state path when updating to package 0.2.5;
+package version changes do not require reinitializing robot state. The CLI reference identity must match calibration, actual camera
+intrinsics, seven-cell geometry, 90 mm cell size and table height exactly. The
+current profile requires its calibrated 1920×1080 aligned frames; reducing camera
+resolution invalidates that reference. Do not substitute the experimental
+`calibration/calibration.json` for `calibration_grid.json`.
 
-Use the dashboard credentials prepared in `/state`, and the separate gateway
-credentials for `/api/v1`. Strict gateway authentication and lease-session checks
-are retained. Use a trusted lab network or an authenticated TLS proxy when exposing
-the HTTP dashboard; do not publish its port to the internet.
+## Package for WeOS
 
-`runtime.env.example` contains resource defaults without credentials. Network and
-robot credentials are deployment settings, not image content. The startup script
-repeats essential resource/path defaults because a WeOS rootfs package does not
-retain Docker environment or entrypoint metadata. It runs one server worker.
-
-The current source includes a real-camera model-start guard, added after package
-0.1.1. It attempts optional glibc heap trimming and then requires 48 MiB additional
-headroom from both host `MemAvailable` and all finite visible cgroup limits. The
-unlimited application leaf is acceptable when the shared `/apps` limit is visible;
-hidden ancestors or missing required measurements refuse model initialization.
-The guard requires cgroup v2; it refuses unverifiable legacy v1 ancestry.
-`--model-headroom-mib` accepts 32..128. The check does not subtract charged cache
-or assume it will be reclaimed, and does not reserve memory against later growth.
-Rebuild before relying on this guard; the measured packages do not contain it.
-
-## Create a .wmopkg on Linux or WSL
-
-Install Docker, `squashfs-tools`, `u-boot-tools`, `device-tree-compiler` and `file`, and make the built ARM64
-image available to that Docker daemon. Then run from this checkout:
+Use a Linux/WSL host with Docker, `squashfs-tools`, `u-boot-tools`,
+`device-tree-compiler` and `file`:
 
 ```sh
 python lynx/deploy/package_weos.py \
-  --image lynx-picker:0.1.0 --version 0.1.0 \
-  --output /tmp/lynx-picker-0.1.0.wmopkg
+  --image lynx-picker-cli:0.2.5 --version 0.2.5 \
+  --description "Lynx command-line picker with native perception and external gateway" \
+  --output /tmp/lynx-picker-0.2.5.wmopkg
 ```
 
-Add `--signing-key /path/to/key` when signing with the project's configured key.
-The helper checks the image architecture, creates a stopped container, exports its
-merged filesystem, and calls the existing Westermo generator in `rootfs` mode.
-It never starts the container. This avoids the old generator's incomplete OCI
-layer/manifest handling. A sidecar JSON records the immutable Docker image ID and
-startup/mount settings.
+On macOS/Windows with Docker Desktop, add `--container-tools`. Add
+`--signing-key /path/to/key` when using the project's configured signing key.
+Packaging exports a stopped ARM64 container and invokes the Westermo generator
+in rootfs mode; it never starts the application. The sidecar records the package
+hash and immutable source image ID. Containerized packaging has no network or
+Docker socket during compression.
 
-On macOS/Windows with Docker Desktop, add `--container-tools` to the same command.
-The helper builds a small Linux packaging image and mounts only the exported
-filesystem, vendor generator and optional signing key. Its packaging run has no
-network and no Docker socket. Compression uses two threads and at most 256 MiB
-of configured compression buffers. The production application container is still
-never started by packaging.
+A package does not configure WeOS mounts or networking. Configure the persistent
+`/state` mount and a network arrangement that can reach the already running
+gateway. Use loopback only when the containers' network arrangement actually
+exposes that gateway there. Do not start a second camera owner.
 
-Configure WeOS application hosting with command `/start.sh`, the `/state` SD mount,
-network access to the OAK and robot, and the required launcher arguments. A package
-file alone does not set up the persistent mount or application network settings.
-The initial command must omit `--live`.
+## Startup commands
 
-## Validation still needed on Lynx
+The installed 0.2.5 package supplies the single-pass defaults below. Exit any
+current live CLI before replacing or reloading its application. The WeOS app's
+cosmetic description still says 0.2.4; the verified package and installed-module
+hashes establish that the running image is 0.2.5.
 
-Version 0.1.0 was deployed on Lynx on 2026-11-06. Three synthetic-camera scans
-passed with the actual native model, while real OAK startup failed because the
-camera was unavailable. The [dated deployment check](LIVE_CHECK_2026-11-06.md)
-records the package identity, target limits, measured memory and timings. The
-combined real-camera/model memory peak and physical picking remain unvalidated.
+Connect with `ssh admin@192.168.125.20`. At the WeOS prompt:
 
-From a shell inside the running Lynx application container, record two minutes:
+```text
+app-hosting
+show app cuppicker
+```
+
+If stopped, use `start cuppicker`, then `attach cuppicker`. The configured app
+uses an idle container command; start the picker explicitly from its shell.
+The existing gateway and copied token are already configured. Do not recreate
+state or replace the gateway when updating the picker package.
+The active WeOS configuration was saved with `copy run start`. `cuppicker` has
+autostart disabled and must be started manually; a device reboot was not tested.
+
+`/start.sh` supplies `/opt/model`, the native executable and a default `/state`
+path; later command-line arguments select the deployment subdirectory.
+The initial check is camera/model/grid only:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --scan-once
+```
+
+This saves one single-observation scan and exits. It sends no motion, does not
+acknowledge recovery, and does not reconcile/release/reserve placement records.
+`--scan-once` rejects `--live`.
+
+Interactive dry run:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0
+```
+
+After validation, explicit live startup is:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --live
+```
+
+The default uses **one full inference pass per scan**, followed by **one mandatory
+fresh verification pass before each pick**, with no automatic depth-uncertainty
+retries. Each pass still collects five fresh raw depth samples for stable object
+coordinates; five samples do not mean five inference passes. Placement evidence
+uses the newest raw depth. The verification age limit is **60 seconds**, selectable
+with `--max-result-age`; it starts when the first raw-frame capture begins,
+includes inference and pre-grip motion, and is checked immediately before grip
+dispatch. A failed or stale
+check blocks the pick. The Mac's 15-second default and existing three-observation
+profile are unchanged.
+
+Camera-derived picking height remains off by default, with 250 mm travel TCP
+height and the existing diameter + 70 mm opening allowance. Shared library speed defaults remain
+250 mm/s travel and 200 mm/s Home; an explicit `--speed` uses the existing caps.
+The fixed pick TCP height is 70 mm. No Mac UI speed override is imported.
+
+Empty Enter is ignored; type `scan` to request a new camera check. The terminal
+offers scan/list/show, goto/hover, batch preview and confirmation,
+stop/status/reset, and supported Home proposals. `home right|left|both` previews
+an action; `confirm-home <code>` confirms the operator's inspection. Unsupported
+gateway capabilities remain unavailable. `home both` runs right then left. See
+[the picker guide](../README.md) for the complete command table and recovery rules.
+
+## Measure before live use
+
+Linux startup requires 128 MiB of additional verified host/shared-cgroup headroom
+before model loading. Only a measured shortfall is retried, for **up to five
+seconds** with 0.2-second polling; the model remains unstarted until a check
+passes. Unknown/hidden ancestry or unreadable counters fail immediately. The
+128 MiB requirement is never lowered. This is a snapshot, not a reservation:
+measure startup, loaded idle, repeated dry-run
+scans and reconnection using the actual gateway and model together.
+
+The included read-only profiler can run inside the application container:
 
 ```sh
 lynx-measure-resources --pid 1 --samples 120 --interval 1 \
-  --output /state/resources-dry-run-01.json
+  --output /state/cli-0.2.0/resources-dry-run-01.json
 ```
 
-PID 1 is the Python launcher when WeOS invokes `/start.sh` as the container
-entrypoint; use the actual launcher PID if a supervisor is present. Allow an idle
-baseline, perform repeated **dry-run scans** through the dashboard, and allow an
-idle tail. The profiler does not initiate scans or any robot actions. Run a second
-recording covering camera reconnection and compare it with the baseline. Samples
-are bounded (at most 3600); output files must be new, and Ctrl+C preserves samples
-already collected.
+Use the actual Python launcher PID if a supervisor is present. It records the
+process tree and cgroup counters, not tokens, command lines or environment
+variables, and never starts a scan or robot action. Compare shared parent
+`memory.current`/`memory.peak` with its real limit; summing process RSS does not
+capture charged cache or other applications. Inspect memory events and retain
+headroom for control/stop handling.
 
-The JSON includes each process and descendant's RSS, PSS where readable, private
-memory, CPU ticks, and memory high-water mark. The primary capacity comparison is
-the observed cgroup usage against its actual `memory.max` (v2) or
-`memory.limit_in_bytes` (v1), together with visible ancestor limits. It includes
-kernel peak memory and OOM/failure counters. **Do not add process RSS and call it
-total memory:** shared pages are counted repeatedly. PSS apportions those pages;
-cgroup usage also accounts for cache/kernel memory and other members. A kernel
-peak may predate the recording, so also inspect the peak of sampled usage.
+The deployed **0.2.5 package** completed its one-observation camera check in
+**23 s**, including startup and saving. Sampled shared peak usage was
+**228,663,296 bytes (218.07 MiB)** against a 254,283,776-byte limit; the picker
+sampled peak was **163,155,968 bytes (155.60 MiB)**. Shared `max` stayed at its
+pre-existing 827, with `oom=0` and `oom_kill=0`. The unchanged 128 MiB startup
+guard passed at **128.8 MiB** visible shared headroom. Placement/recovery hashes
+were unchanged, and the existing gateway remained healthy with no active control
+lease or move after the check.
 
-If automatic cgroup discovery cannot see the WeOS mount, pass
-`--cgroup-dir /ACTUAL/MEMORY/CGROUP` after identifying it in that container. Missing
-counters and unlimited/hidden parent limits remain explicitly unavailable. The
-profiler does not derive a number from the WeOS 50% setting or assume a 240 MiB
-budget; the shared hosting allowance must be confirmed from observed limits and
-WeOS configuration when not visible inside the container.
-
-Building a package is not evidence that the combined process fits the hosting
-memory allowance. Measure camera startup/reconnect peaks, loaded idle memory,
-repeated scan peaks and control responsiveness while inference runs. First test
-the real camera in dry-run, verify target coordinates against calibration, then
-validate picking deliberately. Compare long-run memory and RSS at the same frame
-size and scene before accepting an INT8 model or a smaller camera profile.
-
-The Linux ARM64 image was built successfully and its native tests/import checks
-passed. A network-disabled, read-only Docker run completed a synthetic-camera
-three-frame scan with the actual 320 model, checked gateway authentication and
-dry-run mutation blocking, and recorded process/cgroup memory with this profiler.
-The worker links only standard C/C++ runtime libraries. Those timings and memory
-measurements come from Docker on the development Mac with a synthetic camera;
-they do not establish real Lynx speed or OAK memory requirements. Subsequent
-[checks on Lynx](LIVE_CHECK_2026-11-06.md) measured synthetic scans on the actual
-device. No robot movement was performed in either set of checks.
-
-An unsigned `.wmopkg` was also generated with the containerized Linux tools. Its
-embedded SquashFS was read back to verify the application/startup/model hashes,
-AArch64 native executable, and absence of deployment credentials. Use the sidecar
-JSON for the package hash and exact source image ID. A signing key can be supplied
-when building a package for a WeOS installation that requires signatures.
+The report keeps the historical 0.2.4 three-observation 43/41-second checks,
+earlier 0.2.2 overlay and 117.0–121.7 MiB startup refusals separately. The two
+0.2.4 launches restarted only the picker process inside the same container.
+Sampled measurements do not establish long-running reliability or worst-case
+memory use; no physical picking was tested in these camera checks.
+The earlier standalone Mac grid result (266 saved
+frames, 47.61 MiB peak RSS) excludes NCNN, Python and gateway memory. Store
+captures on persistent storage; archive only while idle and preserve placement
+and recovery records.

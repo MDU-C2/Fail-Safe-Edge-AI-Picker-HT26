@@ -1,8 +1,8 @@
 """Persistent visual cup references, never saved motion coordinates.
 
 References are cropped from raw captures and stored together in one atomic JSON
-document. The separate flock file protects cooperating processes across atomic
-replacements; an unreadable existing document is never treated as an empty store.
+document. Updates are synchronized across threads in the single application
+process; an unreadable existing document is never treated as an empty store.
 OpenCV/NumPy are imported only when an image actually needs processing.
 """
 
@@ -10,7 +10,6 @@ import base64
 import binascii
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import math
@@ -18,6 +17,7 @@ from pathlib import Path
 import re
 import stat
 import struct
+import threading
 import uuid
 
 from cup_inventory import SelectionError, atomic_json, finite_number
@@ -36,15 +36,23 @@ MAX_STORE_BYTES = MAX_REFERENCES * (MAX_BASE64_BYTES + 2048) + 1024
 PUBLIC_FIELDS = ("id", "name", "saved_at", "capture_id", "cup_id", "reference_sha256")
 STORED_FIELDS = set(PUBLIC_FIELDS) | {"image_jpeg_base64"}
 _SOF_MARKERS = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+_STORE_UPDATES = threading.RLock()
 
 
 def _name(value):
-    if not isinstance(value, str) or not value.isascii() or re.search(r"[^A-Za-z0-9 _-]", value):
-        raise SelectionError("Cup names may contain only ASCII letters, digits, spaces, underscores and hyphens.")
+    if isinstance(value, str):
+        value = value.replace("\u2018", "'").replace("\u2019", "'")
+    if not isinstance(value, str) or not value.isascii() or re.search(r"[^A-Za-z0-9 _'-]", value):
+        raise SelectionError("Cup names may contain letters, digits, spaces, apostrophes, underscores and hyphens.")
     value = " ".join(value.split())
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,47}", value):
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _'-]{0,47}", value):
         raise SelectionError("Cup names must start with a letter and contain 1 to 48 characters.")
     return value
+
+
+def name_key(value):
+    """Canonical exact lookup key; curly apostrophes are spelling variants."""
+    return _name(value).casefold()
 
 
 def _identifier(value):
@@ -337,13 +345,9 @@ class NamedCupStore:
     @contextmanager
     def _locked(self):
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.with_name("." + self.path.name + ".lock").open("a", encoding="utf-8") as stream:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            with _STORE_UPDATES:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                yield
         except OSError as error:
             raise SelectionError("Cannot access the named cup store.") from error
 
@@ -373,10 +377,10 @@ class NamedCupStore:
                 _identifier(record["id"])
                 if record["name"] != _name(record["name"]):
                     raise ValueError("Saved cup name is not normalized")
-                if record["id"] in ids or record["name"].casefold() in names:
+                if record["id"] in ids or name_key(record["name"]) in names:
                     raise ValueError("Duplicate saved cup ID or name")
                 ids.add(record["id"])
-                names.add(record["name"].casefold())
+                names.add(name_key(record["name"]))
                 if (not isinstance(record["capture_id"], str)
                         or not re.fullmatch(r"[A-Za-z0-9_-]{1,150}", record["capture_id"])
                         or type(record["cup_id"]) is not int or record["cup_id"] < 1):
@@ -424,7 +428,7 @@ class NamedCupStore:
             raise SelectionError("Choose one full CUP detection; an orphan CUP BASE cannot be saved.")
         with self._locked():
             value = self._read()
-            if any(record["name"].casefold() == name.casefold() for record in value["cups"]):
+            if any(name_key(record["name"]) == name_key(name) for record in value["cups"]):
                 raise SelectionError("That cup name already exists. Choose another name or delete its saved reference first.")
             if len(value["cups"]) >= MAX_REFERENCES:
                 raise SelectionError("The named cup store is full (32 references). Delete a reference first.")
@@ -437,11 +441,11 @@ class NamedCupStore:
             return self._public(record)
 
     def get(self, name):
-        name = _name(name).casefold()
+        name = name_key(name)
         with self._locked():
             records = self._read()["cups"]
             for record in records:
-                if record["name"].casefold() == name:
+                if name_key(record["name"]) == name:
                     return self._with_image(record)
         raise SelectionError("No cup is saved with that name.")
 
