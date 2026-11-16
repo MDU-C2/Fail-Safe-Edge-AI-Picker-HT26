@@ -37,7 +37,7 @@ class CapturePlacementTests(unittest.TestCase):
                                         analyse=Mock(side_effect=lambda rgb, depth: ([], rgb.copy())))
         self.store = SimpleNamespace(folder=self.grid.path.parent, save_capture=Mock())
         self.service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
-                                      placing_grid=self.grid)
+                                      placing_grid=self.grid, scan_observations=3)
         self.frames = [self.frame(sequence) for sequence in (10, 11, 12)]
         self.camera.capture.side_effect = self.frames
 
@@ -55,9 +55,9 @@ class CapturePlacementTests(unittest.TestCase):
         snapshot = self.grid.snapshot()
         result, started = self.service.capture("scan")
         self.assertEqual(self.camera.capture.call_count, 3)
-        self.assertEqual(self.camera.intrinsics.call_count, 3)
+        self.camera.intrinsics.assert_not_called()
         self.assertEqual(self.detector.analyse.call_count, 3)
-        self.assertEqual(self.calibration.ensure_unchanged.call_count, 4)
+        self.calibration.ensure_unchanged.assert_not_called()
         observation = result["placement_observation"]
         self.assertEqual(observation["frame_count"], 3)
         self.assertEqual(observation["frame_sequences"], [10, 11, 12])
@@ -84,7 +84,7 @@ class CapturePlacementTests(unittest.TestCase):
         result, _ = self.service.capture("verification")
         self.camera.capture.assert_called_once()
         self.detector.analyse.assert_called_once()
-        self.assertEqual(self.calibration.ensure_unchanged.call_count, 2)
+        self.calibration.ensure_unchanged.assert_not_called()
         observation = result["placement_observation"]
         self.assertEqual(observation["frame_count"], 1)
         self.assertNotIn("grid_snapshot", observation)
@@ -133,15 +133,12 @@ class CapturePlacementTests(unittest.TestCase):
         self.store.save_capture.assert_not_called()
         self.assertEqual(self.grid.path.read_bytes(), before)
 
-    def test_intrinsics_change_mid_scan_prevents_saving_partial_evidence(self):
-        before = self.grid.path.read_bytes()
-        self.camera.intrinsics.side_effect = [self.K, {**self.K, "fx": 601.0}]
-        with self.assertRaisesRegex(CameraError, "intrinsics changed"):
-            self.service.capture("scan")
-        self.camera.capture.assert_called_once()
-        self.detector.analyse.assert_called_once()
-        self.store.save_capture.assert_not_called()
-        self.assertEqual(self.grid.path.read_bytes(), before)
+    def test_scan_uses_loaded_intrinsics_without_repeated_configuration_checks(self):
+        self.camera.intrinsics.side_effect = CameraError("intrinsics would have changed")
+        result, _ = self.service.capture("scan")
+        self.camera.intrinsics.assert_not_called()
+        self.assertEqual(result["placement_observation"]["frame_count"], 3)
+        self.store.save_capture.assert_called_once()
 
     def test_misaligned_depth_mid_scan_prevents_saving_partial_evidence(self):
         before = self.grid.path.read_bytes()
@@ -154,14 +151,21 @@ class CapturePlacementTests(unittest.TestCase):
         self.store.save_capture.assert_not_called()
         self.assertEqual(self.grid.path.read_bytes(), before)
 
-    def test_calibration_change_after_last_frame_prevents_save(self):
-        before = self.grid.path.read_bytes()
-        self.calibration.ensure_unchanged.side_effect = [None, None, None, SelectionError("Calibration changed")]
-        with self.assertRaisesRegex(SelectionError, "Calibration changed"):
-            self.service.capture("scan")
-        self.assertEqual(self.camera.capture.call_count, 3)
-        self.store.save_capture.assert_not_called()
-        self.assertEqual(self.grid.path.read_bytes(), before)
+    def test_scan_uses_loaded_calibration_without_per_capture_file_identity_checks(self):
+        self.calibration.ensure_unchanged.side_effect = SelectionError("Calibration changed")
+        self.service.capture("scan")
+        self.calibration.ensure_unchanged.assert_not_called()
+        self.store.save_capture.assert_called_once()
+
+    def test_default_scan_is_one_observation_and_preserves_placement_evidence(self):
+        self.service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                      placing_grid=self.grid)
+        result, _ = self.service.capture("scan")
+        self.assertEqual(self.camera.capture.call_count, 1)
+        self.assertEqual(self.detector.analyse.call_count, 1)
+        self.assertEqual(result["placement_observation"]["frame_count"], 1)
+        self.assertEqual(result["placement_observation"]["frame_sequences"], [10])
+        self.assertEqual([slot["state"] for slot in result["placement_observation"]["slots"]], ["clear"] * 3)
 
     def test_object_seen_only_in_earlier_frame_still_blocks_final_clear_image(self):
         calls = [0]
@@ -184,7 +188,7 @@ class CapturePlacementTests(unittest.TestCase):
         self.calibration.offset = (-115.0, 17.0, 40.0)
         self.calibration.t = np.array([515.0, -17.0, 960.0])
         self.service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
-                                      placing_grid=self.grid)
+                                      placing_grid=self.grid, scan_observations=3)
         objects = []
         # Saved coordinates include the calibration tag displacement. After
         # applying both XY offsets, the first cup is in P1 at (400, 0); the

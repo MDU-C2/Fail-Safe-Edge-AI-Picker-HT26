@@ -213,22 +213,25 @@ def test_python_service_uses_one_yolo_pass_five_raw_samples_and_preserves_grid(p
     rig.controller.publish_session.assert_called_once()
 
 
-def test_existing_web_factory_keeps_three_observations_and_three_verifications(python_rig):
+@pytest.mark.parametrize("legacy_verification_frames", [None, 3])
+def test_existing_web_factory_uses_one_snapshot_observation(python_rig, legacy_verification_frames):
     rig = python_rig
     options = SimpleNamespace(gateway=rig.args.gateway, calibration=str(rig.root / "calibration.json"),
         output=str(rig.store.folder), placing_grid=str(rig.grid.path), grid_table_z=0.0,
         grid_cell_size=80.0, depth_frames=1, speed=None, max_result_age=15.0,
         match_mm=20.0, match_px=40.0, llm=False, llm_model="unused", ollama_url="http://127.0.0.1:11434")
+    if legacy_verification_frames is not None:
+        options.verification_frames = legacy_verification_frames
     before = rig.grid.path.read_bytes()
     session, _ = hardware_factory(options)(rig.controller)
-    assert session.verification_frames == 3 and not session.strict_single_verification
+    assert session.motion_settings()["workflow"] == "v4_snapshot"
+    assert session.require_placement_evidence is True
     assert session.max_result_age == 15
-    with patch("lynx.placement_records.combine", side_effect=AssertionError("Legacy scan must use three-view combine")):
-        inventory, _ = session.capture("scan")
-    assert rig.camera.capture.call_count == rig.detector.analyse.call_count == 3
-    assert rig.sample_counts == [1, 1, 1]
-    assert inventory["placement_observation"]["frame_count"] == 3
-    assert inventory["placement_observation"]["frame_sequences"] == [10, 11, 12]
+    inventory, _ = session.capture("scan")
+    assert rig.camera.capture.call_count == rig.detector.analyse.call_count == 1
+    assert rig.sample_counts == [1]
+    assert inventory["placement_observation"]["frame_count"] == 1
+    assert inventory["placement_observation"]["frame_sequences"] == [10]
     assert rig.grid.path.read_bytes() == before
 
 

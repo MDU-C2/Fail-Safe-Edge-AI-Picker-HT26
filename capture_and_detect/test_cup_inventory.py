@@ -86,19 +86,14 @@ class CupInventoryTests(unittest.TestCase):
                 self.assertEqual(moves[0]["z"], 450)
                 self.assertEqual(moves[1]["speed"], 100)
 
-    def test_corrected_flange_bounds_block_the_entire_plan(self):
-        cases = [(350, 100, (-171, 0, 0)), (800, 100, (1, 0, 0)),
-                 (500, -230, (0, -171, 0)), (500, 420, (0, 81, 0))]
-        for x, y, offset in cases:
+    def test_v4_source_xy_filter_does_not_add_corrected_flange_limits(self):
+        for x, y, offset in [(350, 100, (-171, 0, 0)), (800, 100, (1, 0, 0)),
+                             (500, -230, (0, -171, 0)), (500, 420, (0, 81, 0))]:
             with self.subTest(x=x, y=y, offset=offset):
-                cup = {"x": x, "y": y, "z": 50}
-                with self.assertRaisesRegex(SelectionError, "corrected flange"):
-                    hover_moves(cup, tag_offset=offset)
+                moves = hover_moves({"x": x, "y": y, "z": 50}, tag_offset=offset)
+                self.assertEqual((moves[1]["x"], moves[1]["y"]), (x + offset[0], y + offset[1]))
                 result = snapshot([detection("CUP BASE", 100, 0, x=x, y=y, cup_height=True)], offset)
-                self.assertFalse(result["cups"][0]["selectable"])
-                self.assertIsNone(result["cups"][0]["hover_target"])
-                with self.assertRaises(SelectionError):
-                    selected_cup(result, "scan", 1)
+                self.assertTrue(selected_cup(result, "scan", 1)["selectable"])
 
     def test_gateway_boundary_is_inclusive_but_original_scene_bounds_still_apply(self):
         for x, y, offset in [(350, -230, (-170, -170, 0)), (800, 420, (0, 80, 0))]:
@@ -109,13 +104,10 @@ class CupInventoryTests(unittest.TestCase):
                 with self.assertRaisesRegex(SelectionError, "configured XY"):
                     hover_moves({"x": x, "y": y, "z": 50})
 
-    def test_base_at_hover_height_or_above_is_rejected_but_negative_z_is_allowed(self):
-        for z in (250, 251, 1000):
+    def test_hover_uses_v4_fixed_height_without_a_source_z_gate(self):
+        for z in (-2.8, 0, 249.9, 250, 251, 1000):
             with self.subTest(z=z):
-                with self.assertRaisesRegex(SelectionError, "at or above"):
-                    hover_moves({"x": 500, "y": 100, "z": z})
-        for z in (-2.8, 0, 249.9):
-            self.assertEqual(hover_moves({"x": 500, "y": 100, "z": z})[1]["z"], 409)
+                self.assertEqual(hover_moves({"x": 500, "y": 100, "z": z})[1]["z"], 409)
 
     def test_nonfinite_or_invalid_coordinates_offsets_and_speed_never_produce_plan(self):
         cup = {"x": 500, "y": 100, "z": 50}
@@ -147,21 +139,18 @@ class CupInventoryTests(unittest.TestCase):
         result = snapshot([detection("CUP BASE", 100, 0, near_handle=True, cup_height=True)])
         self.assertEqual(result["cups"][0]["acceptance_reasons"], ["near_handle", "cup_height"])
 
-    def test_truthy_legacy_or_nonboolean_flags_do_not_authorize_orphan_base(self):
+    def test_unsupported_bases_are_ignored_as_in_v4(self):
         for flags in ({"is_cup": True}, {"in_cup": 1}, {"near_handle": "true"},
                       {"cup_height": [True]}, {"in_cup": False}, {}):
             with self.subTest(flags=flags):
-                cup = snapshot([detection("CUP BASE", 100, 0, **flags)])["cups"][0]
-                self.assertFalse(cup["selectable"])
-                self.assertEqual(cup["acceptance_reasons"], [])
+                self.assertEqual(snapshot([detection("CUP BASE", 100, 0, **flags)])["cups"], [])
 
-    def test_left_to_right_ids_include_blocked_cups_and_supported_orphans(self):
+    def test_ui_ids_remain_left_to_right_for_v4_base_candidates(self):
         objects = [detection("CUP BASE", 300, 0, cup_height=True),
                    detection("CUP", 200, 1), detection("CUP BASE", 100, 2, near_handle=True)]
         cups = snapshot(objects)["cups"]
-        self.assertEqual([(c["id"], c["pixel"]["u"]) for c in cups], [(1, 100), (2, 200), (3, 300)])
-        self.assertEqual([c["selectable"] for c in cups], [True, False, True])
-        self.assertIn("no CUP BASE", cups[1]["blocked_reason"])
+        self.assertEqual([(c["id"], c["pixel"]["u"]) for c in cups], [(1, 100), (2, 300)])
+        self.assertTrue(all(c["selectable"] for c in cups))
 
     def test_contained_base_is_not_also_saved_as_an_orphan(self):
         result = snapshot([detection("CUP", 100, 0),
@@ -171,20 +160,18 @@ class CupInventoryTests(unittest.TestCase):
         self.assertEqual(cup["base_detection_id"], 1)
         self.assertEqual(cup["acceptance_reasons"], ["in_cup", "near_handle", "cup_height"])
 
-    def test_multiple_bases_overlap_and_duplicate_bases_remain_blocked(self):
+    def test_each_supported_base_is_a_candidate_without_uniqueness_blockers(self):
         first = detection("CUP BASE", 100, 1, cup_height=True)
-        cases = [
-            ([detection("CUP", 100, 0), first, detection("CUP BASE", 102, 2)], "multiple"),
-            ([detection("CUP", 95, 0), detection("CUP", 105, 2), first], "overlapping"),
-            ([first, dict(first, detection_id=2)], "duplicate"),
-            ([first, detection("CUP BASE", 200, 1, cup_height=True)], "duplicate"),
-            ([first, first], "duplicate"),
-        ]
-        for objects, reason in cases:
-            with self.subTest(reason=reason):
+        cases = [([detection("CUP", 100, 0), first, detection("CUP BASE", 102, 2)], 2),
+                 ([detection("CUP", 95, 0), detection("CUP", 105, 2), first], 1),
+                 ([first, dict(first, detection_id=2)], 2),
+                 ([first, detection("CUP BASE", 200, 1, cup_height=True)], 2),
+                 ([first, first], 2)]
+        for objects, count in cases:
+            with self.subTest(count=count):
                 cups = snapshot(objects)["cups"]
-                self.assertTrue(all(not cup["selectable"] for cup in cups))
-                self.assertTrue(all(reason in cup["blocked_reason"] for cup in cups))
+                self.assertEqual(len(cups), count)
+                self.assertTrue(all(cup["selectable"] for cup in cups))
 
     def test_invalid_depth_stays_visible_and_serializable_but_blocked(self):
         for z in (None, float("nan"), float("inf")):
@@ -198,12 +185,11 @@ class CupInventoryTests(unittest.TestCase):
                 self.assertIn("missing or invalid", cup["blocked_reason"])
                 json.dumps(result, allow_nan=False)
 
-    def test_fresh_match_checks_corrected_bounds_again(self):
+    def test_legacy_matching_helper_retains_source_bounds_only(self):
         original = snapshot()["cups"][0]
         fresh = copy.deepcopy(original)
-        self.assertIs(match_observation(original, [fresh], 20, 40, tag_offset=(-115, 0, 40)), fresh)
-        with self.assertRaisesRegex(SelectionError, "corrected flange"):
-            match_observation(original, [fresh], 20, 40, tag_offset=(-400, 0, 40))
+        for offset in ((-115, 0, 40), (-400, 0, 40)):
+            self.assertIs(match_observation(original, [fresh], 20, 40, tag_offset=offset), fresh)
         self.assertIsNotNone(position_problem(original, (0, 0, float("nan"))))
 
 

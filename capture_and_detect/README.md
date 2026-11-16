@@ -1,5 +1,14 @@
 # Select a cup and run the handover
 
+The picker uses the **v4 snapshot workflow**: Scan captures one averaged-depth
+observation; reviewed single picks and batches use those saved cup coordinates.
+No new camera capture, matching check or image-age deadline runs between cups.
+Completed cups are removed from the available selection, while remaining cups
+can be selected from the same scan. Scan again when you change the scene.
+The UI, Assistant, 60-second confirmations, destination reservations, recovery,
+software Stop and smooth handover remain. Receiving offsets are fixed at zero.
+
+
 Run **`python capture_and_detect.py` for the terminal** and
 **`python web_app.py` for the browser dashboard**. These are separate commands;
 run one controller at a time. Both use the same camera, grid, motion and recovery
@@ -8,24 +17,25 @@ modules. `--web` on the terminal script remains a dashboard alias.
 The default terminal uses the `vision_detection4` workflow: **Enter captures a fresh
 scene and processes all available cups; `q` then Enter quits.** Live Enter starts
 the checked pick-and-place cycle without another confirmation. Use `--dry-run`
-to preview it without movement. Each cup still undergoes the existing verification,
-destination and recovery checks.
+to preview it without movement. Each cup uses the saved snapshot while destination reservations and recovery
+checks remain in effect.
 
 The next prompt appears after the whole batch finishes or is blocked. During a
 batch, `stop` and `status` remain available; extra Enter presses are rejected
-without queuing another cycle. **The ordinary terminal sends no automatic Home
-before, between or after cups.** After each handover the left arm stays above the
+without queuing another cycle. **Cup workflows send no automatic Home by default
+before, between or after cups, including the dashboard, command shell and language mode.** After each handover the left arm stays above the
 handover; the right releases the cup and stays 80 mm above its placement. The
 next cup starts through the existing left-ready and right-approach poses. In
 `--left-only` mode, the left arm stays above the cup it replaced. Both grippers
 are empty at a successfully completed cycle's end. Start with empty grippers
 and the picking/transfer paths clear; this mode does not park the arms for you.
-Add `--home-after-cup` to restore automatic Home in the ordinary terminal.
+Add `--home-after-cup` to restore automatic Home in the terminal, including
+`--commands` or `--llm` mode. Manual dashboard Home controls remain available.
 
 For the optional `scan`, `goto 2`, and `goto all` command shell, add `--commands`.
 In that shell, `scan` only observes, `goto 2` verifies and picks cup 2, and
 `goto all` previews a batch for confirmation. Cup IDs refer to the current scan.
-That shell and the dashboard retain their existing automatic Home behaviour.
+That shell and the dashboard use the same clearance poses at the end of each cup.
 For a browser preview without hardware, use `python web_app.py --demo`.
 
 Windows multi-device setup is described in
@@ -64,7 +74,7 @@ a usable pick coordinate. This preserves the existing centre-depth guard.
 
 The five samples form one observation, not five clear-grid checks. Three
 consecutive independent clear observations are still required for the batch's
-post-home placement check; averaging never fills a depth hole or replaces that
+post-clearance placement check (post-home when automatic Home is enabled); averaging never fills a depth hole or replaces that
 raw-frame evidence. The observation age starts before the oldest sample. A
 frozen/restarted stream or incomplete sample set is rejected. Only the latest raw
 image pair is archived; per-frame depths are recorded as object measurements.
@@ -76,13 +86,13 @@ The user-approved incoming movement settings are **250 mm travel TCP height** an
 modes and remains **disabled by default**. When enabled it uses
 `max(40, round(cup_base_z + 20, 1))` mm TCP for picking, with the same height used
 when replacing a cup in left-only mode. The guarded planner, confirmation and
-fresh-observation checks still apply. Without this flag, pick TCP stays at 70 mm.
+snapshot selection still applies. Without this flag, pick TCP stays at 70 mm.
 
-The incoming experiment that left arms away from home is not enabled: the working
-UI/grid workflow needs both arms home to obtain unobstructed placement evidence.
-The established overlapping handover and return sequence is preserved, including
-the corrected right-arm return and completion checks. No automatic movement is
-performed merely by launching the app.
+The incoming no-home sequence is used by all cup workflows. Fresh placement checks
+run after the preceding cup's complete clearance sequence and still require
+unobstructed camera evidence; an arm hiding a destination blocks the next cup.
+The established handover barriers and completion checks remain in place.
+No automatic movement is performed merely by launching the app.
 
 The direct MacBook dashboard uses GPT-6 Astra, configured in **Settings**;
 see [Assistant setup](ASSISTANT.md). YOLO still detects cups. The legacy terminal
@@ -218,7 +228,7 @@ Enter processes cups instead of only scanning.
 | `help` | Show the supported commands. |
 | `list` | Show IDs, coordinates, corrected hover positions and blocked reasons. |
 | `show 2` | Show the complete saved observation and execution record for cup 2. |
-| `goto 2` | Verify, pick, hand over, place, and home both arms. |
+| `goto 2` | Verify, pick, hand over, place, and lift clear; automatic Home is opt-in. |
 | `hover 2` | Verify once, move the left arm through ready, hover only. |
 | `goto all` / `pick all available cups` | Preview available cups in confidence order, limited by free grid locations. |
 | `confirm <code>` | Execute the exact batch or language proposal, once, within 60 seconds. |
@@ -226,7 +236,7 @@ Enter processes cups instead of only scanning.
 | `reset` | Acknowledge manually checking/recovering the robot; no hardware command. Requires a new scan. |
 | `q` / `quit` | Exit. If terminal work is active, request software stop before waiting for it to unwind. |
 
-After a live action, run `scan` again. `reset` is for recovery after an interrupted
+After a successful pick, select another available cup or run `scan` to replace the snapshot. `reset` is for recovery after an interrupted
 or unconfirmed action; it is not needed after a successful cycle and is not a
 command to move home.
 
@@ -281,7 +291,7 @@ send Stop. Demo and dry-run Stop make no robot or gateway requests.
 
 The shared plan in `handover_plan.py` defines the cup handover poses and sequence.
 Without a speed override, normal moves use
-**250 mm/s** and homes within the cup sequence use **200 mm/s**, with
+**250 mm/s** and optional homes within the cup sequence use **200 mm/s**, with
 **100% acceleration and ramp**. Left-arm descent, loaded lift and travel to the
 handover use at most **100 mm/s**. The two cup-turning moves use **100 mm/s**
 and **30% acceleration**, with 100% ramp.
@@ -296,43 +306,54 @@ The overall speed caps every stage. For example, applying 75 mm/s sets normal, l
 sequence-home speeds to 75 mm/s. Actual speed
 also depends on the robot controller. Both arms share one control lease and
 renewal loop, with at most one outstanding request per arm and a camera
-verification before each cup's motion. The sequence below includes Home as used
-by the dashboard, `--commands`, and the terminal's `--home-after-cup` option.
-The ordinary terminal omits the initial Home and both return sequences: step 7
-leaves the left arm at its lifted handover pose, step 8 ends at `right_clear`,
-and step 9 still waits for all dispatched movements to finish.
+planning from the saved snapshot before each cup's motion. The sequence below is the default in
+every cup workflow. It omits the initial Home and both return sequences.
 
 1. Verify the selected cup, grip geometry and destination with three consecutive
-   clear camera observations, then close the empty right gripper, home the right arm and check
-   its measured joint positions.
+   clear camera observations, then close the empty right gripper.
 2. Close the empty left gripper and move the left arm to ready.
 3. Approach above the verified cup with its detected grip rotation, open the
    left gripper to the measured opening, descend, grip, and lift.
 4. After the left arm lifts the cup, move it toward the handover while the closed
-   right hand moves through the existing approach positions to beside the handover.
+   right hand follows one buffered path through the existing via position to
+   beside the handover, blending through the intermediate point by 10 mm.
 5. Wait for both arms to reach those positions, then open the right hand, move
    below and up to receive the cup and grip.
 6. Only after the right grip reports completion, release the left hand and lift it clear.
-7. Lower the right arm, turn sideways at the midpoint between the lowered
-   receiving pose and the raised destination, then turn downward above that
-   destination. Once it clears the handover, close the empty left gripper, move
-   laterally to Y=400 mm at its lifted Z=690 mm, then home it and check its
-   joint positions. This left-arm return runs concurrently with step 8.
+7. Lower the right arm, then follow one buffered path through the sideways
+   midpoint toward the downward pose above the destination. This blends through
+   the midpoint by 10 mm and stops exactly above the destination. The left arm
+   remains at its lifted handover pose.
 8. Lower the right hand to the selected grid location, release, lift to the
-   confirmed clearance 80 mm above placement, close the empty gripper, then
-   request the controller's right Home and check its joint positions.
+   confirmed clearance 80 mm above placement and remain there.
 9. Wait for both branches to finish before completing the placement reservation
    or beginning another cup.
 
-The right return no longer requires a move to Z=600 mm at the placement XY.
+The two buffered paths use the controller's loaded `RunPath` implementation and
+the gateway's `POST /api/v1/robot/rws/path` endpoint. The client checks the
+path request shape locally before dispatch; discovery is informational. Every path ends at a
+fine stop; gripper changes and cross-arm clearance waits remain separate.
+Existing joint-space targets, orientations, phase speeds and turnover
+acceleration are retained. Receiving offsets are fixed at zero. Blending changes
+the curve near intermediate points, so physical clearance still needs checking.
+
+With terminal `--home-after-cup` (or explicit `CupSession(..., home_after_cup=True)`),
+step 1 also homes the right arm and checks its joints before picking. After the
+right arm clears the handover in step 7, the empty left gripper closes, the left
+arm moves laterally to Y=400 mm at Z=690 mm, and homes with a joint check while
+the right arm places. After `right_clear`, the empty right gripper closes and
+the right arm homes with a joint check. All jobs and checks finish before the next cup.
+
+This optional right return does not require a move to Z=600 mm at the placement XY.
 That target can be outside the arm's reach despite being inside the configured
 workspace box. The upstream branch tried progressively lower heights after a
 generic error; this app does not retry an error whose physical outcome is
-unknown. The right arm now homes from its confirmed raised placement position.
+unknown. When enabled, the right arm homes from its confirmed raised placement position.
 This is a changed return path and still needs validation on the physical setup.
 
-The two overlaps match the original branch's handover barriers. The initial
-right-arm home verification remains an additional guard. A failure stops new
+The handover barriers preserve both arms' required grip and clearance dependencies.
+When automatic Home is enabled, its initial right-arm home verification remains
+an additional guard. A failure stops new
 dispatch on both branches; already submitted requests are drained, confirmed
 peer completions are recorded, and recovery and reservations remain blocked.
 No automatic movement retry or resume is performed. The Python gateway supports
@@ -344,14 +365,13 @@ The detected CUP BASE mask and reliable interior depth provide an estimated
 diameter. The requested opening is diameter + 70 mm, converted to a bounded
 0–25 mm finger-position command using the calibrated 75 mm closed gap. Missing
 diameter falls back to fully open. A nearby unambiguous handle selects pickup
-yaw between 90° and 270°; no usable handle uses 180°. An ambiguous handle blocks
-picking. Fresh verification must keep yaw within 5° and finger position within
-2.5 mm of the scanned plan, or a new scan and review are required.
+yaw between 90° and 270°; no usable handle uses 180°. The selected handle, yaw and opening come from the saved snapshot; they are not
+recomputed during the pick.
 
 `--left-only` uses the same verified pickup, replaces the cup at its original
-position, closes the empty gripper, raises to Z=600 mm if needed, moves laterally
-to Y=400 mm, and homes the left arm. It sends no right-arm jobs and does not
-reserve or update a placement location.
+position, then lifts clear above it. With `--home-after-cup`, it also closes the
+empty gripper, raises to Z=600 mm if needed, moves laterally to Y=400 mm, and homes
+the left arm. It sends no right-arm jobs and does not reserve or update a placement location.
 
 After each grip, optional read-only telemetry records the reported finger
 position. Live final execution records are also appended to `grips.csv` in the
@@ -363,46 +383,11 @@ hovering do not produce grip rows.
 `DONE` confirms a gripper command completed; the API does not prove the fingers
 actually hold a cup. This workflow has no independent grasp or placement sensor.
 
-### Adjusting receiving-gripper alignment from the web app
+### Fixed receiving pose
 
-Open **Robot controls → Handover alignment** to correct the right hand's
-receiving position without updating the Pi gateway or RAPID. X/Y/Z offsets are
-in robot-base millimetres, relative to the existing flange position
-`(330, -115, 316)`. They are not camera/image directions. The startup offset is
-`(0, 0, 0)`; the application does not infer a correction from a phone video.
-
-After the current collision has been inspected and recovered, establish the
-robot-axis direction and the centring correction at the real setup. For a
-horizontal centring problem, leave Z at zero unless a height correction has
-also been taught. Apply the small measured X/Y correction, scan again, select
-one cup and review the displayed receiving XYZ before confirming the trial.
-For example, an **illustrative** X offset of `+2` changes receiving X from 330
-to 332 mm; that example is not a diagnosed direction for this mug.
-
-**Apply alignment** changes future plans only and sends no movement. It cancels
-cup and operator previews and invalidates the scan. **Reset alignment** returns
-the offsets to zero, also without movement. Settings last for this app session
-and reset on restart. The UI accepts 0.5 mm increments within ±20 mm per axis;
-those bounds limit configuration errors, not collision clearance.
-
-The take, below, beside and post-release lower points move together. The turning
-midpoint is recomputed; left-arm targets, pick coordinates, orientations and
-placement destinations stay as before. With a nonzero offset, the four nearby
-right-arm moves use at most 25 mm/s (or the selected lower speed), 20%
-acceleration and 10% ramp. This affects arm motion, not finger closing speed or
-force, and the controller still executes joint-space `MoveAbsJ` moves.
-
-The cup confirmation and saved language/execution records include the exact
-offset and effective receiving pose. A settings change invalidates an older
-confirmation, including changes before dispatch acquires the session lock.
-The right grip must still report DONE before left release; a failed grip never
-causes early release, automatic retry or a return-home command. Even contact
-can reduce sideways pushing but does not guarantee a collision-free grip.
-
-Cup-load handling is defined in `rapid/RightArmInstructions.mod`.
-That behavior runs on the robot controller when its updated RAPID module is loaded;
-changing the Python files alone does not install it. The app uses the same
-right-gripper grip/open requests. This integration does not deploy or modify RAPID.
+The right arm uses the established receiving position `(330, -115, 316)` mm.
+Receiving-alignment controls have been removed. Legacy saved offset triples are
+accepted during loading but normalized to zero; they cannot alter the motion.
 
 ## Placement grid and batches
 
@@ -418,11 +403,11 @@ or `scan`. The saved annotated capture shows all 12 actual placement locations,
 labelled **P1–P12**, projected onto the table. Cup IDs remain separate. The physical
 four-by-three layout appears as three columns and four rows from this camera angle.
 
-Each scan collects **three distinct, advancing RGB/depth frames**. Green means
+Each scan collects **one observation with averaged depth**. Green means
 clear table depth, red means a cup or raised object, gray means unknown depth or
 visibility, and amber means reserved. The picture is the last scan, not live video.
 Remove a placed cup, move your hand clear, then scan again. In live mode, a location
-is automatically made available only when all three observations confirm clear
+is automatically made available only when the observation confirms clear
 table depth and no cup detection overlaps its projected area. A raised depth
 cluster blocks release even if YOLO misses the cup. Cups already inside the
 placement area are excluded from picking and pick-all batches.
@@ -432,55 +417,12 @@ selection even when the previous file status was free. A later clear scan remove
 that block. Every update checks that the grid has not changed during capture and
 uses the same in-process synchronization as reservations. Camera checks never clear reserved
 locations or robot recovery. During recovery, and in dry-run mode, observations
-are previews only and do not change the saved grid. Motion verification captures
-also draw the overlay but do not release locations.
-The terminal and hardware dashboard require **three consecutive clear destination
-observations**, with at most six foreground attempts per cup. A depth-only anomaly
-or an occluded frame resets the clear count; it is not averaged away or treated
-as a vote for clearance. In these foreground checks, a detected cup or other
-labelled object at the destination, malformed evidence, changed calibration,
-geometry or reference, stale frames, changed target/grip geometry or Stop blocks
-the attempt. Persistent depth uncertainty still blocks after the bounded attempts.
-Saved verification records retain every check and the reason it counted or failed.
-Each assessed cell also records `raised_depth_pixels`,
-`raised_depth_inside_cell_pixels` and `raised_depth_outside_cell_pixels`. These
-distinguish physical intrusion from foreground depth overlapping the cell's
-camera projection. Outside-cell depth can still hide the destination, so these
-diagnostics do not relax clearance checks or change placement decisions.
+are previews only and do not change the saved grid. Picking does not capture additional observations or release locations.
+Picking uses the destination evidence from the reviewed scan. There are no
+per-cup destination captures, return-phase prefetch or source-cup rematching.
+The scan still checks placement geometry, table-reference identity and clear
+space; reservations and saved occupancy prevent reusing a completed destination.
 
-In a live batch with automatic Home, after `right_clear` has reported completion and been recorded,
-one camera worker can collect up to two observations for the next cup while the
-arms finish returning home. It does not move the robot or update reservations.
-The next cup waits for all current jobs and home checks to succeed, then takes
-at least one new observation after that barrier. The right arm may still hide
-cups or the destination during its return. These early observations are optional:
-a structurally valid but nonclear view, missing/ambiguous target, changed grip
-estimate or stale early image discards all early credit. A later clear background
-image cannot restore it. The app then requires three consecutive clear images
-after home, within six foreground attempts; the two early images do not use that
-budget. This does not classify the obstruction as an arm or mark hidden space
-clear. Malformed evidence, changed source/calibration/geometry/reference,
-repeated camera identities and capture errors still fail closed.
-All accepted evidence must remain fresh through the pick's freshness gates.
-Stop or a failed return discards the prefetch and drains its worker before
-another operation can use the camera.
-The first cup has no preceding return phase, so its checks run before motion.
-There is still no second camera check at left ready or a retry of robot movement.
-These checks do not observe the entire transfer continuously.
-
-In the ordinary terminal's no-Home workflow, return-phase prefetch is disabled.
-All three checks for the next cup begin after every move for the previous cup
-has completed, including the right arm's clearance lift. Saved audit records
-call these `post_clearance` checks; they never claim either arm is home. An arm
-that still obscures the next destination can still block its camera check;
-remaining at a clearance pose does not prove that the camera can see the cell.
-
-Library callers retain the legacy single-frame path unless they explicitly set
-`CupSession(..., verification_frames=3)`. Its existing stationary three-clear
-recheck for eligible unknown depth remains available; production launchers use
-the three-frame mode described above.
-
-The overlay uses placement **X/Y and table Z=0 mm**, not flange Z=230 mm.
 It inverts the calibration using all three tag-offset components. Cells are
 80 mm square, matching the existing spacing. `--grid-table-z` and
 `--grid-cell-size` configure those measurements in both modes;
@@ -703,7 +645,7 @@ unlabelled object with an indistinguishable depth surface cannot be separated
 reliably by this rule. Missing
 masks, low confidence, ambiguous associations or ambiguous ownership retain the
 conservative overlap checks. Assignment must yield clear neighbouring cells in
-all three fresh scan frames; changing/uncertain observations cannot release them.
+the fresh scan observation; changing/uncertain observations cannot release them.
 
 Restart and scan again to use this policy. New detection records preserve exact
 segmentation, including holes; older records without masks retain the conservative
@@ -739,7 +681,7 @@ check without a reference or cup exclusions. The live scene is not used to fit a
 new reference; a fresh scan is still required after the layout changes.
 
 The grid file's optional `cell_size_mm` is now authoritative for each capture,
-including motion verification. This file sets it to 90. `--grid-cell-size` is
+including initial scan placement checks. This file sets it to 90. `--grid-cell-size` is
 the fallback for older grid files without that field. Each three-frame scan
 uses one snapshot and size, and changes invalidate stale placement previews.
 The earlier `placing_grid_spaced.json` extends into the marked tray area; use
@@ -768,7 +710,7 @@ a raised obstacle, and a camera-clear cell is not a reachability guarantee.
 ```text
 cups> scan
 cups> goto all
-... cups and destination locations, normal/turning/home speed, confirmation code ...
+... cups and destination locations, movement speeds, automatic Home setting, confirmation code ...
 cups> confirm <the displayed code>
 ```
 
@@ -776,9 +718,10 @@ cups> confirm <the displayed code>
 with the same confirmation. Only candidates passing pick checks are included,
 highest confidence first (ID breaks ties). If there are more eligible cups than
 free locations, the preview lists the included cups and those left out. No new
-cup is silently substituted. Each included cup must match one fresh observation
-before its own sequence. Each cycle ends with both arms home.
-Any failure stops the batch before another cup is dispatched. Scan again afterward.
+cup is silently substituted. Each included cup uses the coordinates in the reviewed snapshot. Each cycle ends with both arms at clearance poses by
+default, or at home when automatic Home was explicitly enabled.
+Any failure stops the batch before another cup is dispatched. Successful picks
+leave any remaining cups available from the same snapshot.
 
 The confirmation binds the scan, cup order and exact destinations. An edited grid
 invalidates the proposal. Before the first live command, all destinations in the
@@ -854,29 +797,18 @@ straight-line path. Grid occupancy is stored state; camera evidence for the chos
 destination is checked before its cup's sequence, not continuously. The workflow
 assumes the same cup size and tabletop setup as the existing handover code.
 
-## Verification, interruption and recovery
+## Snapshot execution, interruption and recovery
 
-The selected cup must match a fresh observation uniquely within **20 mm in 3D
-and 40 pixels**, with unchanged calibration and advancing camera sequences.
-This verification window completes before any robot command in that cup's sequence.
-Its final accepted coordinates are used for the pick; there is no second camera check at left
-ready. Other cups' IDs in verification images never change the user's selection.
+The selected cup is taken from the reviewed scan. The picker sends no new camera
+request when confirming a pick, before approach or between cups. Stored images
+have no movement-age deadline. A successful pick marks that cup completed and
+leaves remaining cups selectable from the same scan. A completed cup cannot be
+picked again from that scan. An explicit new scan replaces the snapshot.
 
-Image age is checked before starting, approaching, descending and gripping.
-The default deadline is **30 seconds in the MacBook dashboard** and **15 seconds in the terminal controller**;
-`--max-result-age` changes it. Capture, inference, saving and movement time all
-count toward that deadline. If homing, the ready move or the approach exceeds it,
-the next approach, descent or grip is blocked without taking another image.
-Changes to the scene after the initial verification are not reobserved during
-that cup's sequence. After gripping, the fixed handover continues without requiring
-the cup to remain at its original camera position. This is not continuous scene monitoring.
-
-Camera errors, invalid/missing/ambiguous targets, failed persistence, failed
-commands or a lost control lease stop further dispatch. No automatic retry,
-release, return-home or reverse sequence is attempted after failure. An already
-sent command may still finish. `reset`, terminal exit/interrupt, and lease expiry
-are not hardware emergency stops; only an explicit Stop or an active terminal
-exit/interrupt additionally requests the software stop described above.
+The destination must be clear in the saved scan and its reservation must still
+be valid. Confirmation remains one-use and expires after 60 seconds. Stop,
+failed commands, lost control, persistence failures and uncertain completion
+still stop further dispatch and preserve recovery. No movement is retried.
 
 Control leases tolerate different Mac/gateway clocks. For a Lynx gateway without
 an HTTP `Date` header, the client measures the initial lease duration using the
@@ -916,7 +848,7 @@ change thresholds, replace outdated capture IDs, or acknowledge recovery itself.
 
 ## Local web dashboard
 
-The browser dashboard reuses the terminal's `CupSession`, camera verification,
+The browser dashboard reuses the terminal's `CupSession`, saved-snapshot selection,
 fixed motion plan and recovery journal. It shows the latest numbered scan,
 selectable cup cards, typed commands, an expiring action confirmation, controller
 progress and blocked reasons. It is a local app; no hosting or cloud account is
@@ -943,7 +875,7 @@ For real camera detections, use the terminal where `GATEWAY_TOKEN` is already se
 python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --dry-run
 ```
 
-This mode performs camera verification and previews the plan but sends no robot
+This mode captures a scan and previews the plan but sends no robot
 commands. As with the terminal dry-run, checks that normally run between physical
 steps are not executed. Scan and explicit cup buttons need no language API key.
 For flexible requests and real saved-cup matching, configure GPT-6 Astra in
@@ -953,8 +885,8 @@ requests. See [Assistant setup](ASSISTANT.md) for credentials, privacy and API u
 These Assistant features require the MacBook picker: either the direct dashboard
 or the combined `--device-config` dashboard with an in-process `backend: "local"`
 Mac entry. Pi/Lynx selections and older separate Mac HTTP services disable Assistant.
-Scene-dependent requests automatically take one photo when the current image is
-missing, unusable or over 30 seconds old; picking still needs one explicit confirmation.
+Scene-dependent requests take one photo when there is no usable snapshot.
+An existing usable snapshot has no age expiry; picking still needs one explicit confirmation.
 
 To enable the physical robot, stop the web server while the robot is idle and
 start it with the explicit **`--live`** flag:
@@ -967,7 +899,7 @@ Omitting `--dry-run` alone does **not** enable movement in the web app. The page
 shows **PHYSICAL ROBOT**, and each motion still requires clicking **Confirm cup N**.
 The button binds to the exact scan, cup, action and one-use confirmation token;
 it expires after 60 seconds. Even typed `goto 2` creates a proposal in the web app.
-The terminal's exact `goto 2` command executes directly after verification. A new scan or request
+The terminal's exact `goto 2` command executes directly from the selected snapshot. A new scan or request
 invalidates an older proposal. Cup IDs belong to one scan and can change on rescan.
 
 Only one action runs at a time. Work happens in a dedicated worker so status stays
@@ -1009,22 +941,22 @@ separate from the Pi gateway requirements.
 Expand **Robot controls** in the same dashboard. These explicit controls do not
 use the language model or a cup detection. In live mode the app reads the
 gateway's `/openapi.json` at startup and when **Refresh robot status** is used.
-Only actions supported by that contract and their required status checks are
-shown. Unsupported actions are also rejected by the backend before obtaining
-control or writing recovery records. If discovery fails, movement controls stay
-hidden and Refresh remains available to try again. Demo/dry-run controls are
-previews and do not discover or contact hardware.
+Discovery is informational. The implemented Home, gripper and controller actions
+remain visible if discovery is missing or fails. Each action still requires a
+reviewed confirmation and the existing ownership, Stop and recovery conditions.
+Actual controller status or command errors are reported by the operation.
+Demo/dry-run controls remain previews without hardware requests.
 
 The current Lynx C++ gateway (API version 0.4.0) supports Home, grippers,
 status and software Stop. Its missing collision-status route is supplied by
 the read-only controller connection described below. Collision acknowledgement,
-guarded reset and guarded initialization are hidden on that gateway. Its legacy
+guarded reset and guarded initialization may be rejected by that gateway. Its legacy
 `POST /robot/rapid/start` with `reset_program_pointer=true` starts execution from
 main; it does not provide the reset-and-leave-stopped contract or the generation
 check that prevents a delayed initialization from restarting after Stop.
 The dashboard does not use it as a substitute for those actions.
 
-Controls available according to the connected gateway:
+Implemented operator controls:
 
 - **Movement speeds** sets an overall limit (1–1500 mm/s) and separate pick/lift,
   right-handover travel, cup-turning and placement speeds. Defaults remain overall
@@ -1037,7 +969,7 @@ Controls available according to the connected gateway:
   show only their supported overall-speed control. Managed handoffs transfer custom
   stage settings only to updated services; restore defaults to switch to an older
   service. Existing settings are restored on service restart according to that
-  service's saved motion configuration.
+  service's saved motion configuration; legacy receiving offsets are reset to zero.
 - **Home left / right / Right, then left home** reviews a home request without needing a scan.
   Both runs right first, then left, only after the first arm's completion and
   measured home joints are confirmed. Manual home speed is capped at
@@ -1130,9 +1062,9 @@ Start the dashboard directly with `--web --gateway ...` and configure Astra in
 **Settings**. Scan, then send `Remember cup 2 as Kasun's cup` in **Assistant** and
 click **Save cup reference**. Saving a reference sends no API request or movement.
 The **Saved cup references** panel keeps the reference photo across scans and app
-restarts. Request `Pick Kasun's cup` to take a new scan and compare its cup crops
+restarts. Request `Pick Kasun's cup` to compare the current snapshot's cup crops
 with the reference through Astra. Review the saved photo, matched cup and grid
-destination inside **Assistant**, then confirm the existing pick/handover/place/home
+destination inside **Assistant**, then confirm the existing pick/handover/place/clearance
 sequence there once. There is no second confirmation in Pick cups. See [Assistant setup](ASSISTANT.md) for the full
 workflow. In terminal camera mode, saved-cup matching still requires the legacy
 `--llm --llm-model qwen3-vl:4b-instruct` options and a local Ollama server.
@@ -1180,12 +1112,10 @@ both the proposal and confirmation checks, without duplicating the photos.
 
 Confirmation binds the reference, current scan, candidate ID, destinations and
 motion settings. A changed or deleted reference invalidates the proposal. During
-the existing **single pre-motion verification**, the VLM checks the fresh geometric
-target against the same reference. It may reject that target, but cannot redirect
-the pick to another cup. There is still no second camera check at ready. Model
-processing counts toward the existing 15-second image-age limit; a slow visual
-check blocks rather than using stale coordinates. Stop remains independent of
-model processing. Numeric picks and the robot sequence are unchanged.
+confirmation, the VLM checks the selected snapshot candidate against the same
+reference. It may reject that target but cannot redirect the pick. It uses the
+same saved image, with no camera recapture or image-age expiry. Stop remains
+independent of model processing. Numeric picks keep the same robot sequence.
 
 ## Local language commands (terminal only)
 
@@ -1244,7 +1174,7 @@ python capture_and_detect.py --gateway http://192.168.125.204:8000 --llm --dry-r
 cups> scan
 cups> pick cup two
 Interpreting locally ...
-Preview only: cup 2 — pick with the left arm, hand to the right, place, and return both arms home.
+Preview only: cup 2 — pick with the left arm, hand to the right, place, and finish with both arms at clearance poses.
 ... Type confirm 12ab34cd within 60s, or cancel.
 cups> confirm 12ab34cd
 ... camera verification and planned robot requests ...
@@ -1288,8 +1218,8 @@ The separate saved-cup matcher receives reference/candidate photos and temporary
 It cannot send XYZ, arbitrary code, gripper commands, home, reset, speed or
 calibration changes. Its JSON output is independently validated; the app resolves
 relative references, binds the exact capture, and rejects stale proposals.
-Every confirmed movement still uses the initial camera verification, workspace and
-height validation, persistent recovery lock and gateway lease. The model's
+Every confirmed movement uses the reviewed snapshot, workspace bounds,
+destination reservation, persistent recovery lock and gateway lease. The model's
 explanation is labelled separately; success messages come from actual execution.
 Schema-valid output can still choose the wrong cup: confirmation is not optional.
 

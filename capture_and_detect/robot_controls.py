@@ -97,12 +97,6 @@ class RobotControls:
                 for action in ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
                                "rapid_start", "collision_ack", "collision_status")}
 
-    def _require_supported(self, action):
-        capability = self.capabilities().get(action, {})
-        if capability.get("supported") is not True:
-            raise SelectionError(capability.get("reason") or "This action is not supported by the connected gateway.")
-        return capability
-
     def _check_ready(self):
         self.session._check_stop()
         if self.session.motion_uncertain:
@@ -124,28 +118,16 @@ class RobotControls:
         refresh = getattr(self.session.robot, "refresh_operator_capabilities", None)
         if callable(refresh):
             refresh()
-        self._require_supported("robot_status")
         self.status = self.session.robot.read_control_status()
         return {"message": "Robot status refreshed." if not self.session.robot.dry_run else
                            "Simulated robot status; no gateway request sent."}
 
-    def set_handover_offset(self, offset):
-        self.cancel()
-        self._check_ready()
-        self.session.set_handover_offset(offset)
-        target = self.session.motion_settings()["handover"]["receive_mm"]
-        return {"message": "Handover alignment applied for future picks: right receiving XYZ "
-                           + ", ".join(f"{target[a]:g}" for a in "xyz")
-                           + " mm. No robot command sent. Scan again and review the new pick preview. "
-                           "Alignment resets to zero when the app restarts."}
-
     def propose(self, action, arm):
         self.cancel()
         self._check_ready()
-        capability = self._require_supported(action)
         plan = control_plan(action, arm, self.session.speed)
         self.pending = {**plan, "token": secrets.token_hex(8), "created": self.clock(),
-                        "session_speed": self.session.speed, "capability": capability}
+                        "session_speed": self.session.speed}
         return {"message": "Review the robot control action and acknowledge inspection before confirming."}
 
     def confirm(self, token):
@@ -155,9 +137,6 @@ class RobotControls:
         if self.clock() - pending["created"] >= self.ttl:
             raise SelectionError("Robot control preview expired. Preview the action again.")
         self._check_ready()
-        capability = self._require_supported(pending["action"])
-        if capability != pending["capability"]:
-            raise SelectionError("Gateway support changed. Review the robot action again.")
         if self.session.speed != pending["session_speed"]:
             raise SelectionError("Speed changed. Preview the action again.")
         self.status = None

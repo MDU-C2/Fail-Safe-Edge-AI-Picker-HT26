@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from camera_client import CameraClient, CameraError
+from camera_client import CameraClient, CameraError, NoNewCameraFrame
 from capture_and_detect import CaptureService, CaptureStore, Detector
 from depth_average import average_depth, capture_fresh_samples, mask_depth
 
@@ -33,15 +33,35 @@ class DepthSamplingTests(unittest.TestCase):
         self.assertEqual(len(samples), 3)
         self.assertEqual(pairs[-1][2]["observation_started_monotonic"], 3.0)
 
-    def test_frozen_or_restarted_sequence_fails_whole_set(self):
-        for sequences in ((2, 2), (2, 1)):
-            with self.subTest(sequences=sequences), self.assertRaises(CameraError):
-                capture_fresh_samples(SimpleNamespace(capture=Mock(side_effect=self.pairs(sequences))), 2)
+    def test_first_sample_uses_latest_pair_then_waits_only_for_additional_samples(self):
+        pairs = self.pairs()
+        camera = SimpleNamespace(capture_latest=Mock(return_value=pairs[0]),
+                                 capture=Mock(side_effect=pairs[1:]))
+        _, _, frame, samples = capture_fresh_samples(camera, 3)
+        camera.capture_latest.assert_called_once()
+        self.assertEqual(camera.capture.call_count, 2)
+        self.assertEqual(frame["depth_sampling"]["sequences"], [1, 2, 3])
+        self.assertEqual(len(samples), 3)
 
-    def test_partial_collection_is_not_silently_used(self):
-        camera = SimpleNamespace(capture=Mock(side_effect=[self.pairs()[0], CameraError("frozen")]))
+    def test_repeated_sequence_uses_available_samples_and_restart_accepts_new_sequence(self):
+        camera = SimpleNamespace(capture=Mock(side_effect=self.pairs((2, 2))))
+        _, _, frame, samples = capture_fresh_samples(camera, 2)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(frame["sequence"], 2)
+        camera.capture.side_effect = self.pairs((2, 1))
+        self.assertEqual(len(capture_fresh_samples(camera, 2)[3]), 2)
+
+    def test_only_no_new_frame_ends_burst_with_available_samples(self):
+        camera = SimpleNamespace(capture=Mock(side_effect=[self.pairs()[0], NoNewCameraFrame("frozen")]))
+        _, _, frame, samples = capture_fresh_samples(camera, 3)
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(frame["depth_sampling"]["count"], 1)
+        camera.capture.side_effect = [self.pairs()[0], CameraError("network disconnected")]
         with self.assertRaises(CameraError):
-            capture_fresh_samples(camera, 2)
+            capture_fresh_samples(camera, 3)
+        camera.capture.side_effect = NoNewCameraFrame("no first observation")
+        with self.assertRaises(NoNewCameraFrame):
+            capture_fresh_samples(camera, 3)
 
     def test_dimension_change_and_frame_count_are_bounded(self):
         for count in (0, 10, True, 1.5):
@@ -80,25 +100,24 @@ class AveragedObjectTests(unittest.TestCase):
             calibration=SimpleNamespace(to_robot=lambda x, y, z: (x, y, z - 750)),
             _depth_samples=self.depths)
 
-    def test_provider_compatible_core_mean_and_per_frame_robot_z(self):
-        # ProviderDetector calls describe unbound; no Detector-only helper may be required.
+    def test_provider_compatible_v4_mean_and_per_frame_robot_z(self):
         result = Detector.describe(self.detector, "CUP BASE", .95, self.mask, self.depths[-1])
         self.assertEqual(result["z_mm"], 804)
         self.assertEqual(result["robot_z_mm"], 54)
         self.assertEqual(result["robot_z_frames_mm"], [50, 54, 58])
-        self.assertTrue(result["depth_quality"]["valid"])
+        self.assertNotIn("depth_quality", result)
 
-    def test_missing_latest_core_cannot_be_filled_from_old_samples(self):
-        self.depths[-1][5:10, 5:10] = 0
+    def test_missing_latest_depth_uses_available_positive_samples_as_in_v4(self):
+        self.depths[-1][:] = 0
         result = Detector.describe(self.detector, "CUP BASE", .95, self.mask, self.depths[-1])
-        self.assertIsNone(result["z_mm"])
-        self.assertFalse(result["depth_quality"]["valid"])
+        self.assertEqual(result["z_mm"], 802)
+        self.assertEqual(result["z_frames_mm"], [800, 804, None])
 
-    def test_moving_depth_is_not_an_averaged_pick_target(self):
+    def test_v4_mean_has_no_twenty_mm_spread_rejection(self):
         self.depths[-1][:] = 950
         result = Detector.describe(self.detector, "CUP BASE", .95, self.mask, self.depths[-1])
-        self.assertIsNone(result["robot_z_mm"])
-        self.assertFalse(result["depth_quality"]["valid"])
+        self.assertEqual(result["z_mm"], 851.3)
+        self.assertEqual(result["robot_z_mm"], 101.3)
 
     def test_observation_preserves_raw_grid_depth_and_cleans_sample_buffers(self):
         shape = (15, 15)

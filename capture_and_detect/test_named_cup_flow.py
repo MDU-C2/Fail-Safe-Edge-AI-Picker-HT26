@@ -126,10 +126,10 @@ class NamedCupFlowTests(unittest.TestCase):
         for key in ("x", "y", "z", "robot_mm", "hover_target", "image_bytes"):
             self.assertNotIn(key, reopened.list()[0])
 
-    def test_saved_proposal_scans_fresh_and_requires_existing_confirmation(self):
+    def test_saved_proposal_reuses_snapshot_and_requires_confirmation(self):
         saved, proposal = self.proposal()
         self.assertEqual(proposal["kind"], "proposal")
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual(self.matcher.match.call_count, 1)
         self.fixture.interpreter.interpret.assert_not_called()
         self.assert_no_motion()
@@ -146,10 +146,10 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertIsInstance(reference, bytes)
         self.assertEqual([c["cup_id"] for c in candidates], [1, 2])
 
-    def test_confirm_reuses_single_pre_motion_verification_and_full_plan(self):
+    def test_confirm_reuses_snapshot_and_full_plan(self):
         saved, proposal = self.proposal()
         result = self.language.confirm(proposal["token"])
-        self.assertEqual(self.fixture.captures, ["scan", "scan", "verification"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual(self.matcher.match.call_count, 2)
         self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
         self.assertEqual(len(result["jobs"]), TRANSFER_JOB_COUNT)
@@ -157,25 +157,28 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertEqual(audit["saved_cup_id"], saved["id"])
         self.assertEqual(audit["matched_cup_id"], 1)
         self.assertFalse(self.fixture.recovery.required())
-        self.assertFalse(self.session.scan_usable)
+        self.assertTrue(self.session.scan_usable)
         self.assertIsNone(self.language.pending)
         with self.assertRaisesRegex(SelectionError, "No pending"):
             self.language.confirm(proposal["token"])
         self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
 
-    def test_renumbered_fresh_ids_match_same_geometric_cup(self):
-        _, proposal = self.proposal()
+    def test_explicit_new_scan_renumbers_named_candidates_then_confirmation_reuses_it(self):
+        saved = self.fixture.save_reference()
         extra = [detection("CUP", 40, x=450, detection_id=4),
                  detection("CUP BASE", 40, x=450, detection_id=5)]
         self.fixture.observations.append({"objects": extra + two_cups()})
+        self.session.scan()
         self.matcher.match.return_value = visual_result(2)
+        proposal = self.language.propose_saved(saved["id"])
         self.language.confirm(proposal["token"])
-        audit = self.session.inventory["cups"][0]["last_verification"]
+        audit = self.session.inventory["cups"][1]["last_verification"]
         self.assertEqual(audit["matched_cup_id"], 2)
         self.assertEqual(audit["named_identity"]["matched_cup_id"], 2)
         approach = next(job for job in self.robot.jobs if job["name"] == "approach_cup")
         self.assertEqual(approach["body"]["x"], 500)
         self.assertEqual([c["cup_id"] for c in self.matcher.match.call_args.args[1]], [1, 2, 3])
+        self.assertEqual(self.fixture.captures, ["scan", "scan"])
 
     def test_visual_veto_at_unchanged_xyz_cannot_redirect_to_another_cup(self):
         _, proposal = self.proposal()
@@ -228,7 +231,7 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertEqual(audit["state"], "blocked")
         self.assertEqual(audit["requested_saved_cup"], saved)
         self.assertEqual(audit["capture_id"], self.session.inventory["capture"])
-        self.assertNotEqual(audit["capture_id"], saved["capture_id"])
+        self.assertEqual(audit["capture_id"], saved["capture_id"])
         self.assertIn("No matching stripe", audit["error"])
         self.assertIn("not_found", audit["error"])
         self.assertIn("Visual detail:", audit["error"])
@@ -260,7 +263,7 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertNotIn("image_bytes", audit_path.read_text())
         self.assertNotIn("image_jpeg_base64", audit_path.read_text())
 
-    def test_confirmation_failure_retains_separate_fresh_visual_outcome(self):
+    def test_confirmation_failure_retains_separate_visual_outcome_on_same_snapshot(self):
         _, proposal = self.proposal()
         proposal_capture = self.session.inventory["capture"]
         self.matcher.match.return_value = {
@@ -277,9 +280,9 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertEqual(first, {"stage": "proposal", "capture_id": proposal_capture,
                                  "candidate_ids": [1, 2], **visual_result()})
         self.assertEqual(second, {
-            "stage": "confirmation", "capture_id": f"verification-{self.fixture.sequence}",
+            "stage": "confirmation", "capture_id": proposal_capture,
             "candidate_ids": [1, 2], **self.matcher.match.return_value})
-        self.assertNotEqual(first["capture_id"], second["capture_id"])
+        self.assertEqual(first["capture_id"], second["capture_id"])
 
     def test_invalid_visual_details_are_blocked_and_not_copied_into_audit(self):
         saved = self.fixture.save_reference()
@@ -305,8 +308,11 @@ class NamedCupFlowTests(unittest.TestCase):
 
     def test_match_to_blocked_cup_does_not_choose_an_available_alternative(self):
         saved = self.fixture.save_reference()
-        objects = two_cups()[:-1]  # Cup 2 has no CUP BASE, but its appearance remains a candidate.
+        objects = two_cups()
+        for point in objects[2:]:
+            point["robot_x_mm"] = 900  # A visible identity outside the V4 XY workspace remains blocked.
         self.fixture.observations.append({"objects": objects})
+        self.session.scan()
         self.matcher.match.return_value = visual_result(2)
         with self.assertRaisesRegex(SelectionError, "blocked"):
             self.language.propose_saved(saved["id"])
@@ -319,7 +325,7 @@ class NamedCupFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "no longer exists"):
             self.language.confirm(proposal["token"])
         self.assert_no_motion()
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertIsNone(self.language.pending)
 
     def test_reference_metadata_changed_after_proposal_invalidates_confirmation(self):
@@ -381,18 +387,15 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertTrue(self.session.stop_requested)
         self.assertIsNone(self.language.pending)
 
-    def test_model_latency_counts_toward_pre_motion_image_age(self):
+    def test_model_latency_does_not_expire_the_saved_snapshot(self):
         _, proposal = self.proposal()
-
         def slow_match(*args):
-            self.fixture.now += 16
+            self.fixture.now += 120
             return visual_result()
-
         self.matcher.match.side_effect = slow_match
-        with self.assertRaisesRegex(SelectionError, "Verification image is 16.0s old"):
-            self.language.confirm(proposal["token"])
-        self.assert_no_motion()
-        self.assertFalse(self.session.scan_usable)
+        self.language.confirm(proposal["token"])
+        self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertFalse(self.session.motion_uncertain)
 
     def test_movement_settings_changed_during_proposal_match_are_rejected(self):
@@ -408,20 +411,14 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assert_no_motion()
         self.assertIsNone(self.language.pending)
 
-    def test_missing_fresh_image_blocks_confirmation_without_fallback(self):
+    def test_missing_saved_snapshot_image_blocks_named_confirmation_without_recapture(self):
         _, proposal = self.proposal()
-        original_capture = self.session.capture
-
-        def missing_image(purpose):
-            fresh, started = original_capture(purpose)
-            Path(fresh["images"]["rgb"]).unlink()
-            return fresh, started
-
-        self.session.capture = missing_image
+        Path(self.session.inventory["images"]["rgb"]).unlink()
         with self.assertRaisesRegex(SelectionError, "missing or inaccessible"):
             self.language.confirm(proposal["token"])
         self.assert_no_motion()
         self.assertEqual(self.matcher.match.call_count, 1)
+        self.assertEqual(self.fixture.captures, ["scan"])
 
     def test_numeric_selection_uses_existing_path_without_visual_model(self):
         self.session.scan()
@@ -429,7 +426,7 @@ class NamedCupFlowTests(unittest.TestCase):
         self.language.confirm(proposal["token"])
         self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
         self.matcher.match.assert_not_called()
-        self.assertEqual(self.fixture.captures, ["scan", "verification"])
+        self.assertEqual(self.fixture.captures, ["scan"])
 
     def test_batch_selection_uses_existing_path_without_visual_model(self):
         self.session.scan()
@@ -437,7 +434,7 @@ class NamedCupFlowTests(unittest.TestCase):
         self.language.confirm(proposal["token"])
         self.assertEqual(len(self.robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.matcher.match.assert_not_called()
-        self.assertEqual(self.fixture.captures, ["scan", "verification", "verification"])
+        self.assertEqual(self.fixture.captures, ["scan"])
 
     def test_terminal_save_and_exact_named_commands_require_confirmation(self):
         self.session.scan()

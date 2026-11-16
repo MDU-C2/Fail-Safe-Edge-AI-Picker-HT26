@@ -25,7 +25,7 @@ function element() {
 function snapshot(overrides = {}) {
   return { ready: true, busy: false, recovery_required: false, stop_requested: false,
     csrf_token: "csrf-test", instance_id: "test-instance", mode: "live",
-    motion: { speed: 250, home_speed: 200, flip_speed: 100, phase_speeds_supported: true,
+    motion: { speed: 250, home_speed: 200, home_after_cup: false, flip_speed: 100, phase_speeds_supported: true,
       phase_speed_defaults: { ...defaults }, phase_speed_settings: { ...defaults },
       phase_speeds: { pick_lift: 100, handover: 250, flip: 100, placement: 250 },
       handover: { adjusted: false, approach_speed: 250 } }, ...overrides };
@@ -53,7 +53,7 @@ function dashboard(initial = snapshot()) {
   const code = section("  const idle =", "  const isStop =")
     + section("  function robotRequestSupported(", "  function renderRobotControls()")
     + section("  async function post(", "  async function showQuick(")
-    + section('  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener', '  handoverAxes.forEach((axis) => dom[`robot-handover-${axis}`].addEventListener')
+    + section('  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener', '  dom["robot-status-button"].addEventListener')
     + section("  function renderProposal()", "  function renderSavedCups()");
   vm.runInContext(code + "\nglobalThis.render = renderPhaseSpeedControls; globalThis.send = post; globalThis.review = renderProposal;", context);
   context.render();
@@ -187,4 +187,20 @@ test("picking review shows captured phase speeds and old agents retain existing 
   assert.doesNotMatch(page.dom["proposal-motion"].textContent, /Pick & lift/);
   page.context.state.proposal.action = "hover"; page.context.review();
   assert.doesNotMatch(page.dom["proposal-motion"].textContent, /Cup flip|Place & clear/);
+});
+
+test("picking review describes the proposed Home mode instead of promising parking", () => {
+  const page = dashboard();
+  page.context.state.motion.home_after_cup = true;
+  page.context.state.proposal = { cup_id: 2, action: "goto", home_after_cup: false, home_speed: 175 };
+  page.context.review();
+  assert.match(page.dom["proposal-action"].textContent, /lift clear/);
+  assert.match(page.dom["proposal-motion"].textContent, /Automatic home off; arms remain at clearance poses/);
+  assert.doesNotMatch(page.dom["proposal-motion"].textContent, /Sequence home:/);
+  page.context.state.motion.home_after_cup = false;
+  page.context.state.proposal.home_after_cup = true;
+  page.context.review();
+  assert.match(page.dom["proposal-action"].textContent, /return home/);
+  assert.match(page.dom["proposal-motion"].textContent, /Sequence home: 175 mm\/s/);
+  assert.doesNotMatch(page.dom["proposal-motion"].textContent, /Automatic home off/);
 });

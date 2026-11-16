@@ -78,16 +78,14 @@ def _motion_flange_problem(position, *, pick=False):
 
 def position_problem(cup, tag_offset=(0, 0, 0)):
     try:
-        ox, oy, _ = normalize_offset(tag_offset)
+        normalize_offset(tag_offset)
     except SelectionError as error:
         return str(error)
     if not all(finite_number(cup.get(axis)) for axis in ("x", "y", "z")):
         return "missing or invalid depth/robot coordinates"
     if not X_MIN <= cup["x"] <= X_MAX or not Y_MIN <= cup["y"] <= Y_MAX:
         return "outside the configured XY workspace"
-    if cup["z"] >= TRAVEL_Z:
-        return "cup base is at or above the fixed hover TCP height"
-    return _flange_problem((cup["x"] + ox, cup["y"] + oy, TRAVEL_Z + GRIPPER_TCP_Z))
+    return None
 
 
 def _hover_target(cup, tag_offset):
@@ -100,115 +98,49 @@ def _hover_target(cup, tag_offset):
     }
 
 
-def _duplicate_base(base, others):
-    """Reject repeated detector IDs or coincident base centres, without merging cups."""
-    for other in others:
-        if base is other:
-            continue
-        same_id = base.get("detection_id") is not None and base.get("detection_id") == other.get("detection_id")
-        same_point = (all(finite_number(base.get(axis)) and finite_number(other.get(axis))
-                          for axis in ("x_px", "y_px"))
-                      and all(base[axis] == other[axis] for axis in ("x_px", "y_px")))
-        if same_id or same_point:
-            return True
-    # The exact same input object can also have been inserted more than once.
-    return sum(other is base for other in others) > 1
-
-
 def set_grip_geometry(cups, objects):
-    """Associate handles within this observation, without borrowing old geometry.
+    """Use V4's nearest-cup/nearest-handle rule within this observation.
 
-    Jaws close perpendicular to the base-to-handle direction. Their symmetry
-    keeps yaw within 90 degrees of LEFT_DOWN. A missing usable handle retains
-    the default yaw; ambiguous geometry is explicit so picking can reject it
-    while ordinary hovering remains available. Coordinates are saved robot mm,
-    before the common calibration translation is applied to movement targets.
+    Input cups retain confidence order until geometry is assigned, so equal
+    distances choose the same first candidate as V4. UI numbering happens later.
     """
-    candidates = []
-    assigned = {}
-    for index, cup in enumerate(cups):
-        cup.update(rz=LEFT_DOWN[2], has_handle=False, grip_geometry_error=None)
-        quality = cup.get("depth_quality")
-        if (all(finite_number(cup.get(axis)) for axis in ("x", "y", "z"))
-                and not (isinstance(quality, dict) and quality.get("valid") is False)):
-            # Blocked candidates still compete for their own handles. Their
-            # handle must not be reassigned to a farther, selectable neighbour.
-            candidates.append((index, cup))
-            assigned[index] = []
+    candidates = [cup for cup in cups if all(finite_number(cup.get(axis)) for axis in ("x", "y"))]
+    closest = {}
     for obj in objects:
         if obj.get("class") != "CUP HANDLE" or not candidates:
             continue
-        quality = obj.get("depth_quality")
-        if (not all(finite_number(obj.get("robot_" + axis + "_mm")) for axis in ("x", "y", "z"))
-                or ("z_mm" in obj and (not finite_number(obj["z_mm"]) or obj["z_mm"] <= 0))
-                or (isinstance(quality, dict) and quality.get("valid") is False)):
+        if not all(finite_number(obj.get("robot_" + axis + "_mm")) for axis in ("x", "y")):
             continue
         hx, hy = obj["robot_x_mm"], obj["robot_y_mm"]
-        distances = sorted((math.hypot(hx - cup["x"], hy - cup["y"]), index)
-                           for index, cup in candidates)
-        distance, index = distances[0]
-        if distance > HANDLE_MAX_DIST:
-            continue
-        # Detector coordinates have 0.1 mm resolution. A tie at that precision
-        # does not establish which cup owns the handle.
-        tied = [other for value, other in distances
-                if math.isclose(value, distance, rel_tol=0, abs_tol=0.1)]
-        if len(tied) > 1:
-            for other in tied:
-                cups[other]["grip_geometry_error"] = "CUP HANDLE is equally close to multiple cup bases"
-            continue
-        if distance <= 0.1:
-            cups[index]["grip_geometry_error"] = "CUP HANDLE overlaps its cup base; grip direction is undefined"
-            continue
-        assigned[index].append((distance, hx, hy))
-    for index, matches in assigned.items():
-        cup = cups[index]
-        if not matches or cup.get("selectable") is not True or cup["grip_geometry_error"]:
-            continue
-        # Repeated detections at the same point imply the same direction, but
-        # equally near, distinct handles do not establish one grip orientation.
-        matches = sorted(set(matches))
-        distance, hx, hy = matches[0]
-        if any(math.isclose(other[0], distance, rel_tol=0, abs_tol=0.1)
-               for other in matches[1:]):
-            cup["grip_geometry_error"] = "Multiple equally close CUP HANDLE detections give an ambiguous grip direction"
-            continue
-        angle = math.degrees(math.atan2(hy - cup["y"], hx - cup["x"]))
-        cup["rz"] = round(LEFT_DOWN[2] + angle % 180 - 90, 1)
-        cup["has_handle"] = True
+        distance, cup = min(((math.hypot(hx - cup["x"], hy - cup["y"]), cup)
+                             for cup in candidates), key=lambda item: item[0])
+        if distance <= HANDLE_MAX_DIST and distance < closest.get(cup["id"], (math.inf,))[0]:
+            closest[cup["id"]] = (distance, hx, hy)
+    for cup in cups:
+        cup.update(rz=LEFT_DOWN[2], has_handle=cup["id"] in closest, grip_geometry_error=None)
+        if cup["has_handle"]:
+            _, hx, hy = closest[cup["id"]]
+            angle = math.degrees(math.atan2(hy - cup["y"], hx - cup["x"]))
+            cup["rz"] = round(LEFT_DOWN[2] + angle % 180 - 90, 1)
 
 
 def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, images, model,
                     tag_offset=(0, 0, 0)):
-    """Keep CUP observations and supported orphan bases, including blocked entries.
+    """One supported CUP BASE is one cup, as in V4's main picker.
 
-    A CUP needs one unambiguous base. An orphan base may use a literal True
-    in_cup/near_handle/cup_height flag computed by mark_cup_bases. Legacy is_cup
-    alone is not evidence. Duplicate detections are never selectable.
-    IDs are left-to-right in this snapshot, never persistent physical identities.
+    Parent CUPs and handles/height supply acceptance evidence, not a uniqueness
+    requirement. IDs remain left-to-right for selecting cups in the UI.
     """
     offset = normalize_offset(tag_offset)
     whole = [o for o in objects if o["class"] == "CUP"]
     bases = [o for o in objects if o["class"] == "CUP BASE"]
     entries = []
-    for parent in whole:
-        matches = [base for base in bases if inside(base, parent)]
-        reason = None
-        if len(matches) == 0:
-            reason = "no CUP BASE detected for this cup"
-        elif len(matches) > 1:
-            reason = "multiple CUP BASE detections in this cup"
-        elif sum(inside(matches[0], other) for other in whole) != 1:
-            reason = "CUP BASE belongs to overlapping CUP detections"
-        entries.append((matches[0] if len(matches) == 1 else parent, parent, reason))
-    for base in bases:
-        if not any(inside(base, parent) for parent in whole):
-            supported = any(base.get(flag) is True for flag in ACCEPTANCE_FLAGS)
-            entries.append((base, None, None if supported else
-                            "CUP BASE has no surrounding CUP detection or supported handle/height evidence"))
-
-    entries.sort(key=lambda item: tuple(item[0].get(axis) if finite_number(item[0].get(axis))
-                                       else math.inf for axis in ("x_px", "y_px")))
+    for base in sorted(bases, key=lambda point: measurement(point.get("confidence")) or 0, reverse=True):
+        parent = next((cup for cup in whole if inside(base, cup)), None)
+        supported = ((parent is not None and "in_cup" not in base)
+                     or any(base.get(flag) is True for flag in ACCEPTANCE_FLAGS))
+        if supported:
+            entries.append((base, parent, None))
     cups = []
     for cup_id, (point, parent, reason) in enumerate(entries, 1):
         diameter = point.get("diameter_mm") if point["class"] == "CUP BASE" else None
@@ -232,16 +164,12 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
             "aperture": round(diameter + GRIP_MARGIN, 1) if diameter is not None else None,
         }
         evidence = [flag for flag in ACCEPTANCE_FLAGS if point.get(flag) is True]
-        if parent is not None and point["class"] == "CUP BASE" and "in_cup" not in evidence:
+        if parent is not None and "in_cup" not in point:
             evidence.insert(0, "in_cup")  # Computed containment, not a truthy external flag.
         cup["acceptance_reasons"] = evidence if point["class"] == "CUP BASE" else []
         cup["robot_mm"] = {axis: cup[axis] for axis in ("x", "y", "z")}
         if point["class"] == "CUP BASE" and isinstance(point.get("depth_quality"), dict):
             cup["depth_quality"] = dict(point["depth_quality"])
-            if cup["depth_quality"].get("valid") is False:
-                reason = reason or cup["depth_quality"].get("reason") or "CUP BASE depth is unreliable"
-        if point["class"] == "CUP BASE" and _duplicate_base(point, bases):
-            reason = reason or "duplicate CUP BASE detection"
         if not all(finite_number(cup["pixel"][axis]) for axis in ("u", "v")):
             reason = reason or "missing or invalid pixel coordinates"
         reason = reason or position_problem(cup, offset)
@@ -250,6 +178,10 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
                    status="available" if reason is None else "blocked")
         cups.append(cup)
     set_grip_geometry(cups, objects)
+    cups.sort(key=lambda cup: tuple(cup["pixel"][axis] if finite_number(cup["pixel"][axis])
+                                   else math.inf for axis in ("u", "v")))
+    for cup_id, cup in enumerate(cups, 1):
+        cup["id"] = cup_id
     return {
         "schema_version": 2,
         "capture": capture_id,

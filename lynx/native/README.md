@@ -255,16 +255,16 @@ invalid framing or startup failure exits with nonzero status.
 ## C++ depth and placement ports; offline validation
 
 `object_depth.cpp` exposes `describe_objects(detections, masks, depths, config)`.
-It ports the current `Detector.describe`, mask erosion/depth sampling,
-`cup_base_depth` interior-quality checks, cup/base association, rounding and
+It ports the V4-style `Detector.describe`, eroded-mask depth sampling,
+cup/base association, rounding and
 packed segmentation. Object robot coordinates exclude `tag_offset`, matching
 the detector contract; the planner applies its configured offset. Placement
 geometry applies that offset when mapping depth into the physical grid.
 
 One depth image omits temporal fields. With multiple images, the **latest
-segmentation** selects samples in every depth frame; every per-object depth
-sample must be valid and their spread must not exceed 20 mm before averaging.
-Per-frame Z telemetry and invalid-depth reasons are preserved. Older depth
+segmentation** selects samples in every depth frame; positive mask medians are
+averaged and missing samples are ignored, as in V4. There is no core-coverage
+or depth-spread rejection. Per-frame Z telemetry is preserved. Older depth
 images affect object coordinates only: **placement always uses the newest raw
 depth**, never an average image. Five burst samples do not count as five clear
 placement observations.
@@ -275,8 +275,9 @@ connected depth regions, ambiguous splits/shared boundaries, bounded cup-edge
 uncertainty, projected visibility, labelled-object protection and the frozen
 table reference. Known tolerance for small unlabelled objects close to cups is
 preserved; port parity is not proof that stereo artefacts and such objects can
-always be distinguished. The coordinator still requires its separate fresh
-verification observations, target matching and recovery/reservation checks.
+always be distinguished. The coordinator uses one saved scan for each batch and retains placement
+reservations and unfinished-movement recovery; it does not recapture or rematch
+cups between transfers.
 
 The differential runners below are development tools, not deployed services.
 CMake currently builds the worker and dependency-free core tests only. Build

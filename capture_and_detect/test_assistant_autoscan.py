@@ -57,18 +57,15 @@ class AssistantAutoScanTests(unittest.TestCase):
         self.assistant.ask("What colour are the cups?")
         self.assertEqual(self.fixture.captures, ["scan"])
 
-    def test_stale_numbered_request_refreshes_but_never_reassigns_old_number(self):
+    def test_old_snapshot_is_reused_without_reassigning_cup_numbers(self):
         self.assistant.ask("What cups are on the table?")
-        self.fixture.session.inventory["saved_at"] = (datetime.now(timezone.utc) - timedelta(seconds=31)).isoformat()
+        self.fixture.session.inventory["saved_at"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         self.controller.publish_session()
         self.client.reset_mock()
         result = self.assistant.ask("Pick cup two")
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
-        self.assertTrue(result["camera_refreshed"])
-        self.assertIn("Cup numbers can change", result["message"])
-        self.assertEqual(result["action"], "answer")
-        self.assertIsNone(result["proposal_id"])
-        self.client.interpret.assert_not_called()
+        self.assertEqual(self.fixture.captures, ["scan"])
+        self.assertFalse(result["camera_refreshed"])
+        self.client.interpret.assert_called_once()
         self.assertEqual(self.fixture.robot.jobs, [])
 
     def test_explicit_camera_command_always_refreshes_without_key_or_cloud(self):

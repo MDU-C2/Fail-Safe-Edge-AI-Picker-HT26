@@ -125,21 +125,17 @@ class DetectionStorageTests(unittest.TestCase):
         self.assertFalse((self.out_dir / "cups.json").exists())
         self.assertFalse((self.out_dir / "latest.json").exists())
 
-    def test_changed_calibration_cannot_create_current_inventory(self):
-        self.calibration_path.write_text("changed")
-        with self.assertRaises(SelectionError):
-            self.service.capture("scan")
-        self.camera.capture.assert_not_called()
-        self.model.predict.assert_not_called()
-        self.assert_no_inventory()
+    def test_capture_uses_startup_calibration_without_rechecking_its_file(self):
+        self.calibration_path.write_text(self.calibration_path.read_text() + "\n")
+        result, _ = self.service.capture("scan")
+        self.assertEqual(result["calibration_sha256"], self.calibration.digest)
+        self.assertEqual(self.camera.capture.call_count, 1)
 
-    def test_changed_intrinsics_cannot_create_current_inventory(self):
+    def test_capture_uses_startup_intrinsics_without_a_change_gate(self):
         self.camera.intrinsics.return_value = dict(self.K, fx=900)
-        with self.assertRaises(CameraError):
-            self.service.capture("scan")
-        self.camera.capture.assert_not_called()
-        self.model.predict.assert_not_called()
-        self.assert_no_inventory()
+        result, _ = self.service.capture("scan")
+        self.camera.intrinsics.assert_not_called()
+        self.assertEqual(result["cups"][0]["x"], 510)
 
     def test_mismatched_rgb_or_depth_dimensions_cannot_create_current_inventory(self):
         for image, depth in ((self.image[:-1], self.depth), (self.image, self.depth[:-1])):

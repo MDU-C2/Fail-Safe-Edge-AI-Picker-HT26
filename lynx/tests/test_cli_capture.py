@@ -10,7 +10,7 @@ import zlib
 import pytest
 
 from lynx.capture import Calibration, CaptureService, CaptureStore
-from camera_client import CameraError
+from camera_client import CameraError, NoNewCameraFrame
 from cup_inventory import SelectionError
 from placing_grid import PlacingGrid
 from table_reference_contract import _identity
@@ -245,13 +245,19 @@ def test_malformed_single_scan_is_not_saved_or_applied(capture_rig, monkeypatch,
 
 
 @pytest.mark.parametrize("sequences", [[1, 1, 2, 3, 4], [5, 4, 6, 7, 8], [True, 2, 3, 4, 5]])
-def test_invalid_burst_sequences_abort_before_worker_or_saved_capture(capture_rig, sequences):
+def test_burst_uses_available_distinct_sequences_without_restart_gate(capture_rig, sequences):
     rig = capture_rig
     rig.camera.sequences = sequences
-    with pytest.raises(CameraError, match="advancing"):
-        rig.service.capture("verification")
-    assert not rig.worker.calls
-    assert not list(rig.store.folder.iterdir())
+    if sequences[0] is True:
+        with pytest.raises(CameraError, match="sequence"):
+            rig.service.capture("verification")
+        assert not rig.worker.calls
+        assert not list(rig.store.folder.iterdir())
+    else:
+        inventory, _ = rig.service.capture("verification")
+        expected = 1 if sequences[0] == sequences[1] else 5
+        assert len(rig.worker.calls) == 1
+        assert len(rig.worker.calls[0]["depths"]) == expected
 
 
 @pytest.mark.parametrize("second", [5, 4])
@@ -275,8 +281,32 @@ def test_frame_dimensions_change_aborts_before_native_inference(capture_rig):
     assert not list(rig.store.folder.iterdir())
 
 
+def test_native_burst_uses_latest_first_pair_and_available_samples(capture_rig):
+    rig = capture_rig
+    capture = rig.camera.capture_raw
+    rig.camera.capture_latest_raw = capture
+    def no_new_frame(timeout_s):
+        raise NoNewCameraFrame("Camera did not publish another frame")
+    rig.camera.capture_raw = no_new_frame
+    inventory, _ = rig.service.capture("scan")
+    assert rig.camera.calls == 1
+    assert inventory["frame"]["depth_sampling"]["count"] == 1
+    assert len(rig.worker.calls[0]["depths"]) == 1
+
+
+def test_native_burst_does_not_swallow_transport_errors_after_first_sample(capture_rig):
+    rig = capture_rig
+    rig.camera.capture_latest_raw = rig.camera.capture_raw
+    def disconnected(timeout_s):
+        raise CameraError("Gateway disconnected")
+    rig.camera.capture_raw = disconnected
+    with pytest.raises(CameraError, match="disconnected"):
+        rig.service.capture("scan")
+    assert not rig.worker.calls
+
+
 @pytest.mark.parametrize("when", ["before", "during_burst", "during_inference"])
-def test_intrinsics_change_cannot_authorize_saved_observation(capture_rig, when):
+def test_capture_uses_loaded_intrinsics_without_repeated_source_checks(capture_rig, when):
     rig = capture_rig
     def change():
         rig.camera.K["fx"] += 1
@@ -286,13 +316,13 @@ def test_intrinsics_change_cannot_authorize_saved_observation(capture_rig, when)
         rig.camera.on_capture = lambda camera, frame: change() if camera.calls == 3 else None
     else:
         rig.worker.on_observe = change
-    with pytest.raises(CameraError, match="intrinsics"):
-        rig.service.capture("verification")
-    assert len(rig.worker.calls) == (1 if when == "during_inference" else 0)
-    assert not list(rig.store.folder.iterdir())
+    inventory, _ = rig.service.capture("verification")
+    assert inventory["frame"]["sequence"] == 5
+    assert len(rig.worker.calls) == 1
+    assert rig.worker.calls[0]["config"]["intrinsics"]["fx"] == 100.0
 
 
-@pytest.mark.parametrize("changed", ["calibration", "reference", "grid_geometry"])
+@pytest.mark.parametrize("changed", ["reference", "grid_geometry"])
 @pytest.mark.parametrize("when", ["during_burst", "during_inference"])
 def test_changed_capture_identity_aborts_without_audit_or_grid_reconciliation(capture_rig, changed, when):
     rig = capture_rig

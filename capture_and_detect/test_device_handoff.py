@@ -299,7 +299,7 @@ class HandoffTests(unittest.TestCase):
         self.assertIsNone(source.owner["active_generation"])
         target = clients["pi"].agent
         self.assertEqual(target.controller.session.speed, 400)
-        self.assertEqual(tuple(target.controller.session.handover_offset), (1, 2, 3))
+        self.assertEqual(tuple(target.controller.session.handover_offset), (0, 0, 0))
         self.assertTrue(target.store.installed[0]["grid"]["locations"][0]["occupied"])
         with self.assertRaises(WebError):
             dashboard.submit("scan", {"_device_id": "mac", "_device_epoch": old_epoch, "request_id": "request-old-1"})
@@ -693,7 +693,7 @@ class HandoffStoreTests(unittest.TestCase):
                 elif kind == "speed": bundle["motion"]["speed"] = 1e12
                 elif kind == "home_cap": bundle["motion"]["home_speed"] = 1000
                 elif kind == "home_over_speed": bundle["motion"].update(speed=50, home_speed=100)
-                elif kind == "offset": bundle["motion"]["handover_offset"] = [1000, 0, 0]
+                elif kind == "offset": bundle["motion"]["handover_offset"] = ["invalid", 0, 0]
                 else: bundle["motion"]["camera_z"] = "false"
                 with self.assertRaises((WebError, ValueError)):
                     self.target.install(bundle)

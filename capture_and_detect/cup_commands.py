@@ -6,43 +6,10 @@ import math
 import threading
 import time
 
-from cup_inventory import GRIPPER_TCP_Z, SelectionError, hover_moves, match_observation, selected_cup
+from cup_inventory import GRIPPER_TCP_Z, SelectionError, hover_moves, selected_cup
 from handover_plan import (handover_jobs, left_only_jobs, handover_settings, motion_speeds,
                            normalize_handover_offset, pick_position_problem,
                            normalize_phase_speeds, effective_phase_speeds)
-
-
-class _VerificationPrefetch:
-    """One bounded camera worker; only the coordinator may consume its output."""
-
-    def __init__(self, capture, stopped):
-        self._capture, self._stopped = capture, stopped
-        self._cancelled = threading.Event()
-        self.results, self.error = [], None
-        self._thread = threading.Thread(target=self._run, name="cup-camera-prefetch", daemon=True)
-
-    def start(self):
-        self._thread.start()
-
-    def _run(self):
-        try:
-            for _ in range(2):
-                if self._cancelled.is_set() or self._stopped():
-                    break
-                result = self._capture("verification")
-                if self._cancelled.is_set() or self._stopped():
-                    break
-                self.results.append(result)
-        except BaseException as error:
-            self.error = error
-
-    def drain(self, *, cancel=False):
-        if cancel:
-            self._cancelled.set()
-        # Capture/inference have their own deadlines. Do not release ownership
-        # of the camera or let another action start until an active call ends.
-        self._thread.join()
-        return self.results, self.error
 
 
 class CupSession:
@@ -50,7 +17,7 @@ class CupSession:
                  match_mm=20.0, match_px=40.0, tag_offset=(0, 0, 0), speed=None,
                  clock=time.monotonic, recovery=None, placing_grid=None, handover_offset=(0, 0, 0),
                  left_only=False, verification_frames=1, camera_z=False,
-                 strict_single_verification=False, phase_speeds=None, home_after_cup=True):
+                 strict_single_verification=False, phase_speeds=None, home_after_cup=False):
         if type(home_after_cup) is not bool:
             raise ValueError("home_after_cup must be a boolean")
         if type(left_only) is not bool:
@@ -68,6 +35,8 @@ class CupSession:
         self.save = save
         self.robot = robot
         self.calibration_id = calibration_id
+        # Retain accepted launcher options for compatibility. Snapshot picks do
+        # not use observation age or cross-capture matching tolerances.
         self.max_result_age = max_result_age
         self.match_mm = match_mm
         self.match_px = match_px
@@ -85,6 +54,9 @@ class CupSession:
         self._camera_z = camera_z
         self.verification_frames = verification_frames
         self.strict_single_verification = strict_single_verification
+        # Older launchers used these policies to require placement-camera
+        # evidence. Preserve that requirement using the original scan only.
+        self.require_placement_evidence = strict_single_verification or verification_frames == 3
         self.batch_progress = None
         self.motion_uncertain = recovery.required() if recovery is not None else False
         self._stop_event = threading.Event()
@@ -95,7 +67,7 @@ class CupSession:
 
     @property
     def home_after_cup(self):
-        """Fixed at session startup; terminal continuation must not change mid-batch."""
+        """Fixed at session startup; cup continuation must not change mid-batch."""
         return self._home_after_cup
 
     @property
@@ -244,7 +216,7 @@ class CupSession:
         if self.motion_uncertain:
             raise SelectionError("Previous movement was not confirmed. Check the robot, then use reset.")
         if not self.scan_usable:
-            raise SelectionError("Run scan before selecting a cup; scans are invalidated after movement.")
+            raise SelectionError("Run scan before selecting a cup.")
         if self.inventory is None or self.inventory["capture"] != capture_id:
             raise SelectionError("Capture ID is not the active scan. Run scan again.")
 
@@ -343,9 +315,7 @@ class CupSession:
 
     def _execute_many_active(self, action, capture_id, cup_ids, placement, *, batch, identity_check=None):
         context = {"placement": copy.deepcopy(placement), "reservation": None, "index": 0,
-                   "sequence": self.inventory["frame"]["sequence"], "completed_cup_ids": [],
-                   "identity_check": identity_check, "cup_ids": list(cup_ids), "batch": batch,
-                   "prefetch": None, "motion_completed_at": None}
+                   "identity_check": identity_check}
         if placement is not None:
             self.placing_grid.validate_preview(placement)
         jobs = []
@@ -360,13 +330,11 @@ class CupSession:
                 context["index"] = index
                 if batch:
                     self.batch_progress["current_cup_id"] = cup_id
-                # The batch is bound to the original IDs, and each cup must match
-                # a NEW observation. This flag never exposes a usable old scan to
-                # another web action: the whole batch owns the single worker.
+                # The batch and individual picks share the original snapshot.
+                # The activity lock prevents a second action during execution.
                 self.scan_usable = True
                 jobs.extend(self._execute_one(action=action, capture_id=capture_id,
                                              cup_id=cup_id, context=context))
-                context["completed_cup_ids"].append(cup_id)
                 if batch:
                     self.batch_progress["completed_cups"].append(cup_id)
                     self.save(self.inventory)
@@ -397,35 +365,21 @@ class CupSession:
                     pass
             raise
         finally:
-            if context["prefetch"] is not None:
-                context["prefetch"].drain(cancel=True)
-                context["prefetch"] = None
-            self.scan_usable = (succeeded and self.robot.dry_run and not self.motion_uncertain
-                                and not self.stop_requested and not batch)
+            self.scan_usable = succeeded and not self.motion_uncertain and not self.stop_requested
 
     def _execute_one(self, *, action, capture_id, cup_id, context):
         """One cup's checked sequence inside a single or confirmed batch request."""
         self._check_stop()
         if action not in ("goto", "hover"):
-            raise SelectionError("Supported actions: goto (pick, hand over, place and home) or hover.")
+            raise SelectionError("Supported actions: goto (pick, hand over, place and clear) or hover.")
         if self.motion_uncertain:
             raise SelectionError("Previous movement was not confirmed. Check the robot, then use reset.")
         if not self.scan_usable:
-            raise SelectionError("Run scan before selecting a cup; scans are invalidated after movement.")
+            raise SelectionError("Run scan before selecting a cup.")
         original = selected_cup(self.inventory, capture_id, cup_id)
-        if (self.inventory["calibration_sha256"] != self.calibration_id
-                or tuple(self.inventory.get("tag_offset_mm", (0, 0, 0))) != self.tag_offset):
-            raise SelectionError("Scan calibration does not match this session. Run scan again.")
-        self.scan_usable = False
-        # Every attempted selection needs a new scan if validation fails.
-        sequence = context["sequence"]
+        self.scan_usable = False  # The active action owns the snapshot until completion.
         place = (context["placement"]["locations"][context["index"]]
                  if action == "goto" and not self.left_only else None)
-        multi_frame = self.verification_frames == 3 and place is not None
-        strict_single = self.strict_single_verification
-        observation_phase = "post_home" if self.home_after_cup else "post_clearance"
-        completed_pose = ("both arms have confirmed home" if self.home_after_cup else
-                          "the previous cup's clearance moves have completed")
 
         def plan(target):
             if action == "goto":
@@ -441,19 +395,6 @@ class CupSession:
                     for name, body in zip(("left_ready", "approach_cup"),
                                           hover_moves(target, tag_offset=self.tag_offset, speed=self.speed))]
 
-        # Validate the saved observation too, before taking a fresh image or
-        # opening either gripper. Picking requires a cup on the calibrated table.
-        original_jobs = plan(original)
-        accepted_started = []
-
-        def verification_age(started):
-            if isinstance(started, bool) or not isinstance(started, (int, float)):
-                raise SelectionError("Verification image has no valid capture time; motion blocked.")
-            age = self.clock() - started
-            if not math.isfinite(age) or age < 0 or age > self.max_result_age:
-                raise SelectionError(f"Verification image is {age:.1f}s old; motion blocked "
-                                     f"(limit {self.max_result_age:g}s).")
-
         def destination(observation):
             slots = observation.get("slots") if isinstance(observation, dict) else None
             matches = ([slot for slot in slots if isinstance(slot, dict)
@@ -465,8 +406,15 @@ class CupSession:
             return type(value) in (int, float) and math.isfinite(value)
 
         def destination_identity(observation, slot):
-            # Only the bounded recheck uses this stricter schema. Older clear
-            # observations retain their existing single-frame path.
+            # Saved evidence belongs to the scanned destination geometry.
+            # Ignore occupancy changes from this batch, but never apply that
+            # clear polygon to a newly edited location.
+            snapshot = observation.get("grid_snapshot", {}) if isinstance(observation, dict) else {}
+            locations = snapshot.get("locations", []) if isinstance(snapshot, dict) else []
+            scanned = [item for item in locations if isinstance(item, dict) and item.get("id") == place["id"]]
+            if (len(scanned) != 1 or any(scanned[0].get(axis) != place[axis] for axis in ("x", "y", "z"))
+                    or snapshot.get("cell_size_mm") != self.placing_grid.snapshot().get("cell_size_mm")):
+                raise SelectionError("Placement geometry changed since the scan; scan again.")
             polygon = slot.get("polygon_px") if slot is not None else None
             if (not isinstance(polygon, list) or not 3 <= len(polygon) <= 16
                     or any(not isinstance(point, list) or len(point) != 2
@@ -496,21 +444,7 @@ class CupSession:
                     and all(finite_number(slot.get(key)) and 0.5 <= slot[key] <= 1
                             for key in ("visible_fraction", "floor_visible_fraction")))
 
-        def recoverable_depth(slot):
-            if (slot is None or type(slot.get("cup_count")) is not int or slot["cup_count"] != 0
-                    or slot.get("assigned_cups") != []
-                    or not isinstance(slot.get("evidence"), list)
-                    or any(item != "raised_depth" for item in slot["evidence"])
-                    or any(not finite_number(slot.get(key)) or not 0 <= slot[key] <= 1
-                           for key in ("valid_fraction", "table_fraction", "visible_fraction",
-                                       "floor_visible_fraction"))):
-                return False
-            return ((slot.get("state") == "unknown" and slot.get("evidence") == []
-                     and slot.get("reason_code") in ("table_depth", "invalid_depth", "occluded"))
-                    or (slot.get("state") == "occupied" and slot.get("reason_code") == "raised_depth"
-                        and slot.get("evidence") == ["raised_depth"]))
-
-        def validate_visual_schema(slot, cups):
+        def validate_visual_schema(slot):
             """Separate a valid but unusable view from malformed evidence."""
             evidence = slot.get("evidence") if isinstance(slot, dict) else None
             assigned = slot.get("assigned_cups") if isinstance(slot, dict) else None
@@ -531,277 +465,55 @@ class CupSession:
                     or any(not finite_number(slot.get(key)) or not 0 <= slot[key] <= 1
                            for key in ("valid_fraction", "table_fraction", "visible_fraction", "floor_visible_fraction"))
                     or (slot["state"] == "clear" and (slot["reason_code"] != "clear" or not unobstructed(slot, clear=True)))
-                    or not isinstance(cups, list)):
-                raise SelectionError("Malformed placement or cup evidence in camera verification; scan again.")
-            seen = set()
-            for cup in cups:
-                if (not isinstance(cup, dict) or type(cup.get("id")) is not int or cup["id"] <= 0
-                        or cup["id"] in seen or type(cup.get("selectable")) is not bool
-                        or cup.get("status") not in ("available", "blocked")
-                        or (cup["status"] == "available") != cup["selectable"]
-                        or not isinstance(cup.get("pixel"), dict)
-                        or any(key not in cup for key in ("x", "y", "z", "confidence", "diameter", "aperture",
-                                                         "rz", "has_handle", "blocked_reason", "grip_geometry_error"))
-                        or any(key not in cup["pixel"] for key in ("u", "v"))):
-                    raise SelectionError("Malformed cup record in camera verification; scan again.")
-                seen.add(cup["id"])
-                values = [cup[key] for key in ("x", "y", "z", "confidence")] + [cup["pixel"][key] for key in ("u", "v")]
-                if (any(not finite_number(value) and not (value is None and not cup["selectable"]) for value in values)
-                        or (cup["confidence"] is not None and not 0 <= cup["confidence"] <= 1)
-                        or not finite_number(cup["rz"]) or not 90 <= cup["rz"] <= 270
-                        or any(cup[key] is not None and (not finite_number(cup[key]) or cup[key] <= 0)
-                               for key in ("diameter", "aperture"))
-                        or type(cup["has_handle"]) is not bool
-                        or any(cup[key] is not None and (not isinstance(cup[key], str) or not cup[key])
-                               for key in ("blocked_reason", "grip_geometry_error"))):
-                    raise SelectionError("Malformed cup measurements in camera verification; scan again.")
-
+                    ):
+                raise SelectionError("Malformed placement evidence in the saved scan; scan again.")
         def blocked_destination(slot):
             state = slot.get("state", "unknown") if slot is not None else "unknown"
             reason = slot.get("reason") if slot is not None else None
             detail = reason if isinstance(reason, str) and reason else "Destination evidence is missing or ambiguous."
-            return SelectionError(f"Placement location {place['id']} is {state} in the fresh camera check: "
+            return SelectionError(f"Placement location {place['id']} is {state} in the saved scan: "
                                   f"{detail} Inspect the destination and scan again.")
 
-        def verify():
-            nonlocal sequence
-            checks = []
-            rechecking = False
-            expected_identity = None
-            clear_count = 0
-            clear_started = []
-            prefetch_unusable = False
-            prefetched, prefetch_error = [], None
-            audit = {"action": action, "placement": copy.deepcopy(place),
-                     "placement_checks": checks, "state": "checking"}
-            original["last_verification"] = audit
+        # V4 snapshot execution: source coordinates and grip geometry come
+        # from the operator's scan for the entire batch and later single picks.
+        # Retained destination checks use that same saved observation; execution
+        # never requests another image or rejects it because of elapsed time.
+        audit = {"action": action, "source": "saved_scan", "state": "checking",
+                 "capture": self.inventory["capture"],
+                 "frame": copy.deepcopy(self.inventory.get("frame", {})),
+                 "placement": copy.deepcopy(place), "placement_checks": []}
+        original["last_verification"] = audit  # Existing UI/audit schema.
+        try:
+            observation = self.inventory.get("placement_observation")
+            if place is not None and (observation is not None or self.require_placement_evidence):
+                slot = destination(observation)
+                destination_identity(observation, slot)
+                validate_visual_schema(slot)
+                audit["placement_checks"].append({"capture": self.inventory["capture"],
+                    "state": slot["state"], "reason": slot["reason"],
+                    "reason_code": slot["reason_code"], "source": "saved_scan"})
+                if slot["state"] != "clear" or not unobstructed(slot, clear=True):
+                    raise blocked_destination(slot)
+                audit["placement_visibility"] = copy.deepcopy(slot)
+            jobs = plan(original)
+            bodies = {job["name"]: job["body"] for job in jobs}
+            identity = (context["identity_check"](self.inventory, original)
+                        if context["identity_check"] is not None else None)
+            audit.update(state="verified", matched_cup_id=original["id"],
+                         robot_mm={axis: original[axis] for axis in ("x", "y", "z")},
+                         jobs=copy.deepcopy(jobs), motion_settings=self.motion_settings(),
+                         grip_geometry={**{key: original.get(key) for key in
+                                             ("diameter", "aperture", "rz", "has_handle")},
+                                        "pick_tcp_z_mm": (bodies["descend_to_cup"]["z"] - GRIPPER_TCP_Z
+                                                            if action == "goto" else None)})
+            if identity is not None:
+                audit["named_identity"] = identity
+            self._check_stop()
+        except Exception as error:
+            audit.update(state="failed", error=str(error))
+            self.save(self.inventory)
+            raise
 
-            def discard_prefetch(reason):
-                nonlocal clear_count, clear_started, prefetch_unusable
-                prefetch_unusable = True
-                clear_count, clear_started = 0, []
-                for check in checks:
-                    if check.get("prefetched"):
-                        check.update(disposition="discarded", view_status="pending_view")
-                        check.setdefault("discard_reason", reason)
-                audit["multi_frame"]["clear_count"] = 0
-                audit["prefetch"].update({"discarded_count": sum(check.get("prefetched", False) for check in checks),
-                                         f"requires_three_{observation_phase}": True})
-
-            def persist_pending_view():
-                self.save(self.inventory)
-                self._check_stop()
-
-            try:
-                if strict_single and place is not None:
-                    scan_observation = self.inventory.get("placement_observation")
-                    expected_identity = destination_identity(scan_observation, destination(scan_observation))
-                    audit["single_observation"] = {"max_observations": 1, "max_result_age_s": self.max_result_age}
-                if multi_frame:
-                    scan_observation = self.inventory.get("placement_observation")
-                    expected_identity = destination_identity(scan_observation, destination(scan_observation))
-                    audit["multi_frame"] = {"required_clear": 3, "clear_count": 0,
-                                            f"max_{observation_phase}_observations": 6,
-                                            f"{observation_phase}_observations": 0}
-                    if context["prefetch"] is not None:
-                        prefetched, prefetch_error = context["prefetch"].drain()
-                        context["prefetch"] = None
-                    audit["prefetch"] = {"capture_count": len(prefetched),
-                                         "max_observations": 2 if self.home_after_cup else 0,
-                                         "discarded_count": 0, f"requires_three_{observation_phase}": False,
-                                         ("home_completed_at" if self.home_after_cup else "clearance_completed_at"):
-                                             context["motion_completed_at"]}
-                # Three-frame mode tolerates only bounded depth uncertainty;
-                # the legacy mode retains its one-clear / three-recheck policy.
-                for attempt in range(1 if strict_single else len(prefetched) + 6 if multi_frame else 4):
-                    self._check_stop()
-                    was_prefetched = attempt < len(prefetched)
-                    if was_prefetched:
-                        fresh, started = prefetched[attempt]
-                    else:
-                        if prefetch_error is not None:
-                            raise prefetch_error
-                        fresh, started = self.capture("verification")
-                        if multi_frame:
-                            audit["multi_frame"][f"{observation_phase}_observations"] += 1
-                    if not isinstance(fresh, dict):
-                        raise SelectionError("Malformed verification observation; scan again.")
-                    observation = fresh.get("placement_observation")
-                    checking_place = place is not None and (multi_frame or rechecking
-                        or "placement_observation" in self.inventory or "placement_observation" in fresh)
-                    slot = destination(observation) if checking_place else None
-                    entry = {"capture": fresh.get("capture"), "frame": copy.deepcopy(fresh.get("frame")),
-                             "state": slot.get("state", "unknown") if slot is not None else "unknown",
-                             "reason": slot.get("reason") if slot is not None else None,
-                             "reason_code": slot.get("reason_code") if slot is not None else None}
-                    if multi_frame:
-                        entry["prefetched"] = was_prefetched
-                        entry["capture_started_monotonic"] = started
-                    checks.append(entry)
-                    audit.update(capture=fresh.get("capture"), frame=copy.deepcopy(fresh.get("frame")))
-                    self._check_stop()
-                    if was_prefetched:
-                        if not finite_number(started) or not finite_number(self.clock() - started) or self.clock() < started:
-                            raise SelectionError("Prefetched verification has an invalid or future capture time; motion blocked.")
-                    else:
-                        verification_age(started)
-                        if (not self.home_after_cup and context["motion_completed_at"] is not None
-                                and started < context["motion_completed_at"]):
-                            raise SelectionError(f"Verification must begin after {completed_pose}; scan again.")
-                    offset = fresh.get("tag_offset_mm", (0, 0, 0))
-                    if (fresh.get("calibration_sha256") != self.calibration_id
-                            or not isinstance(offset, (list, tuple)) or tuple(offset) != self.tag_offset):
-                        raise SelectionError("Calibration changed. Restart with the intended calibration and scan again.")
-                    if multi_frame or strict_single:
-                        model, scanned_model = fresh.get("model"), self.inventory.get("model")
-                        if (fresh.get("gateway") != self.inventory.get("gateway")
-                                or not isinstance(model, dict) or not isinstance(scanned_model, dict)
-                                or any(model.get(key) != scanned_model.get(key)
-                                       for key in ("weights", "confidence_threshold"))
-                                or len(offset) != 3 or not all(finite_number(value) for value in offset)):
-                            raise SelectionError("Camera source or detection configuration changed during verification; scan again.")
-                        capture_id = fresh.get("capture")
-                        if (not isinstance(capture_id, str) or not capture_id.strip()
-                                or capture_id == self.inventory.get("capture")
-                                or any(check["capture"] == capture_id for check in checks[:-1])):
-                            raise SelectionError("Verification capture identity is missing or repeated; scan again.")
-                    frame = fresh.get("frame")
-                    new_sequence = frame.get("sequence") if isinstance(frame, dict) else None
-                    if type(new_sequence) is not int or new_sequence <= sequence:
-                        raise SelectionError("Camera sequence did not advance or the gateway restarted. Scan again.")
-                    sequence = new_sequence
-                    context["sequence"] = sequence
-                    if checking_place:
-                        if strict_single:
-                            # A single fresh observation retains the strict evidence
-                            # contract. Unclear destinations fail without more captures.
-                            if destination_identity(observation, slot) != expected_identity:
-                                raise SelectionError("Placement geometry or table reference changed during verification; scan again.")
-                            validate_visual_schema(slot, fresh.get("cups"))
-                            if (slot.get("state") != "clear" or slot.get("reason_code") != "clear"
-                                    or not unobstructed(slot, clear=True)):
-                                raise blocked_destination(slot)
-                        elif multi_frame:
-                            if destination_identity(observation, slot) != expected_identity:
-                                raise SelectionError("Placement geometry or table reference changed during verification; scan again.")
-                            validate_visual_schema(slot, fresh.get("cups"))
-                            if was_prefetched and self.clock() - started > self.max_result_age:
-                                discard_prefetch("Early camera observation expired during return; awaiting a fresh view after home.")
-                                persist_pending_view()
-                                continue
-                            if (not was_prefetched and not prefetch_unusable
-                                    and any(check.get("prefetched") and self.clock() - check["capture_started_monotonic"] > self.max_result_age
-                                            for check in checks)):
-                                discard_prefetch("Early camera observation expired; awaiting three clear views after home.")
-                            clear = (slot.get("state") == "clear" and slot.get("reason_code") == "clear"
-                                     and unobstructed(slot, clear=True))
-                            if was_prefetched and (not clear or prefetch_unusable):
-                                discard_prefetch("Return-phase view is not usable; awaiting three clear views after home. " + slot["reason"])
-                                persist_pending_view()
-                                continue
-                            if not clear and not recoverable_depth(slot):
-                                raise blocked_destination(slot)
-                            clear_count = clear_count + 1 if clear else 0
-                            clear_started = [*clear_started, started] if clear else []
-                            audit["multi_frame"]["clear_count"] = clear_count
-                        elif rechecking:
-                            if (slot is None or slot.get("state") != "clear"
-                                    or slot.get("reason_code") != "clear" or not unobstructed(slot, clear=True)):
-                                raise blocked_destination(slot)
-                            if destination_identity(observation, slot) != expected_identity:
-                                raise SelectionError("Placement geometry or table reference changed during recheck; scan again.")
-                        elif slot is None or slot.get("state") != "clear":
-                            if (slot is None or slot.get("state") != "unknown"
-                                    or slot.get("reason_code") not in ("table_depth", "invalid_depth")
-                                    or not unobstructed(slot)):
-                                raise blocked_destination(slot)
-                            scan_observation = self.inventory.get("placement_observation")
-                            expected_identity = destination_identity(scan_observation, destination(scan_observation))
-                            if destination_identity(observation, slot) != expected_identity:
-                                raise SelectionError("Placement geometry or table reference changed since the scan; scan again.")
-                            rechecking = True
-                            audit["stationary_recheck"] = {"required_clear": 3, "clear_count": 0}
-                    if not isinstance(fresh.get("cups"), list):
-                        raise SelectionError("Malformed cup observations in fresh camera check; scan again.")
-                    try:
-                        target = match_observation(original, fresh["cups"], self.match_mm, self.match_px,
-                                                   tag_offset=self.tag_offset)
-                        jobs = plan(target)
-                        if action == "goto":
-                            before = {job["name"]: job["body"] for job in original_jobs}
-                            after = {job["name"]: job["body"] for job in jobs}
-                            yaw_change = abs(before["approach_cup"]["rz"] - after["approach_cup"]["rz"])
-                            opening_change = abs(before["left_open"].get("position", 25)
-                                                 - after["left_open"].get("position", 25))
-                            if yaw_change > 5 or opening_change > 2.5:
-                                raise SelectionError("Cup grip geometry changed since the scan. Scan and review the grip again.")
-                            pick_height_change = round(abs(before["descend_to_cup"]["z"]
-                                                           - after["descend_to_cup"]["z"]), 1)
-                            if pick_height_change > 5:
-                                raise SelectionError("Camera pick height changed since the scan. Scan and review the grip again.")
-                    except SelectionError as error:
-                        if not was_prefetched:
-                            raise
-                        discard_prefetch("Source cup needs a new view after home: " + str(error))
-                        persist_pending_view()
-                        continue
-                    if multi_frame:
-                        entry["disposition"] = "clear" if clear else "depth_uncertain"
-                    audit.update(matched_cup_id=target["id"],
-                                 robot_mm={axis: target[axis] for axis in ("x", "y", "z")},
-                                 jobs=jobs, motion_settings=self.motion_settings(),
-                                 grip_geometry={**{key: target.get(key) for key in
-                                                   ("diameter", "aperture", "rz", "has_handle")},
-                                                "pick_tcp_z_mm": (after["descend_to_cup"]["z"] - GRIPPER_TCP_Z
-                                                                  if action == "goto" else None)})
-                    if slot is not None:
-                        audit["placement_visibility"] = copy.deepcopy(slot)
-                    if multi_frame and clear_count < 3:
-                        if not was_prefetched and audit["multi_frame"][f"{observation_phase}_observations"] == 6:
-                            raise SelectionError(f"Placement location {place['id']} did not produce three consecutive "
-                                                 f"clear camera checks in six {observation_phase.replace('_', '-')} observations. {slot.get('reason', '')} "
-                                                 "Inspect the destination and scan again.")
-                        self.save(self.inventory)
-                        self._check_stop()
-                        verification_age(started)
-                        continue
-                    if multi_frame and was_prefetched:
-                        raise SelectionError(f"Final verification must begin after {completed_pose}; scan again.")
-                    if ((multi_frame or strict_single or not self.home_after_cup)
-                            and context["motion_completed_at"] is not None and started < context["motion_completed_at"]):
-                        raise SelectionError(f"Final verification must begin after {completed_pose}; scan again.")
-                    if rechecking:
-                        audit["stationary_recheck"]["clear_count"] = attempt
-                        if attempt < 3:
-                            self.save(self.inventory)
-                            self._check_stop()
-                            verification_age(started)
-                            continue
-                    # Named identity is checked only on the final accepted image.
-                    identity = (context["identity_check"](fresh, target)
-                                if context["identity_check"] is not None else None)
-                    self._check_stop()
-                    for observed_at in clear_started if multi_frame else [started]:
-                        verification_age(observed_at)
-                    if identity is not None:
-                        audit["named_identity"] = identity
-                    audit["state"] = "verified"
-                    accepted_started[:] = clear_started if multi_frame else [started]
-                    return jobs, started
-            except Exception as error:
-                audit.update(state="failed", error=str(error))
-                if rechecking or multi_frame or strict_single:
-                    self.save(self.inventory)
-                raise
-
-        jobs, started = verify()
-
-        def check_age():
-            for observed_at in accepted_started:
-                verification_age(observed_at)
-
-        check_age()
-        self._check_stop()
         if self.robot.dry_run:
             self.robot.execute_jobs(jobs)
             self._check_stop()
@@ -811,9 +523,6 @@ class CupSession:
             self.scan_usable = not self.stop_requested
             return jobs
 
-        for cup in self.inventory["cups"]:
-            if cup["id"] not in context["completed_cup_ids"]:
-                cup["status"] = "needs_rescan"
         original["status"] = "command_pending"
         original["execution"] = {"action": action, "state": "pending", "completed_steps": [],
                                  "pending_jobs": {}, "pending_steps": [], "total_steps": len(jobs),
@@ -848,15 +557,6 @@ class CupSession:
 
         def before_job(index, job):
             self._check_stop()
-            # Use the single pre-motion verification throughout this cup's pick.
-            # Do not capture again at ready; the initial image must still meet
-            # the freshness deadline before approach, descent and gripping.
-            # After gripping, the observed cup is intentionally moved and may
-            # be hidden by the arm. Its old camera age must not interrupt the
-            # transfer while either gripper is holding it. Fixed handover steps
-            # still require a live lease and confirmed completion of each job.
-            if index == 0 or job["name"] in ("approach_cup", "left_open", "descend_to_cup", "grip_cup"):
-                check_age()
             job = jobs[index]
             with self._state_lock:
                 execution["state"] = "running"
@@ -868,8 +568,6 @@ class CupSession:
             if context["reservation"] is not None:
                 remaining = [p["id"] for p in context["placement"]["locations"][context["index"]:]]
                 self.placing_grid.validate_reservation(context["reservation"], remaining)
-            if index == 0 or job["name"] in ("approach_cup", "left_open", "descend_to_cup", "grip_cup"):
-                check_age()
             print(f"Step {index + 1}/{len(jobs)}: {job['name'].replace('_', ' ')}", flush=True)
             self._check_stop()
             return job
@@ -892,15 +590,6 @@ class CupSession:
                 execution["pending_jobs"].pop(job["name"], None)
                 pending_changed()
             persist_execution()
-            if (self.home_after_cup and job["name"] == "right_clear" and multi_frame and context["batch"]
-                    and context["index"] + 1 < len(context["cup_ids"]) and not self.robot.dry_run):
-                self._check_stop()
-                if context["prefetch"] is not None:
-                    raise SelectionError("A previous verification capture is still active; motion blocked.")
-                # Placement and release have completed. Read only while the
-                # empty arms return; never publish or validate on this worker.
-                context["prefetch"] = _VerificationPrefetch(self.capture, lambda: self.stop_requested)
-                context["prefetch"].start()
 
         try:
             self.save(self.inventory)  # If persistence fails, do not dispatch motion.
@@ -910,20 +599,19 @@ class CupSession:
             self.motion_uncertain = True
             if place is not None and context["reservation"] is None:
                 context["reservation"] = self.placing_grid.reserve(context["placement"])
-            # Reservation I/O also counts toward the camera freshness deadline.
-            check_age()
             self._check_stop()
             self.robot.execute_jobs(jobs, before_send=before_job, after_done=after_job)
             self._check_stop()
             if (execution["pending_jobs"] or len(execution["completed_steps"]) != len(jobs)
                     or {job["name"] for job in execution["completed_steps"]} != {job["name"] for job in jobs}):
                 raise SelectionError("Not every robot step was confirmed. Inspect both arms before recovery.")
-            # This means all planned jobs completed. The terminal's branch-4
+            # This means all planned jobs completed. The default branch-4
             # choreography ends at clearance poses; it must never claim Home.
-            context["motion_completed_at"] = self.clock()
             if place is not None:
                 self.placing_grid.complete(context["reservation"], place["id"])
             original["status"] = ("replaced" if self.left_only else "placed") if action == "goto" else "at_hover"
+            if action == "goto":
+                original.update(selectable=False, blocked_reason="Cup was already processed from this scan.")
             execution["state"] = "completed"
             self.save(self.inventory)
             with self._state_lock:
@@ -951,6 +639,9 @@ class CupSession:
         phases = effective_phase_speeds(self.speed, self.phase_speeds)
         return {"speed": self.speed, "home_speed": self.home_speed,
                 "left_only": self.left_only, "camera_z": self.camera_z,
+                "home_after_cup": self.home_after_cup,
+                "handover_motion": "blended_path" if not self.left_only else "single_arm",
+                "workflow": "v4_snapshot",
                 "phase_speeds": normalize_phase_speeds(self.phase_speeds),
                 "effective_phase_speeds": phases,
                 "handover": handover_settings(self.handover_offset, phases["handover"])}
@@ -995,19 +686,8 @@ class CupSession:
             self._activity_lock.release()
 
     def set_handover_offset(self, offset):
-        """Change future receiving poses only; operator review precedes motion."""
-        offset = normalize_handover_offset(offset)
-        if not self._activity_lock.acquire(blocking=False):
-            raise SelectionError("Wait for the active operation before changing handover alignment.")
-        try:
-            self._check_stop()
-            if self.motion_uncertain:
-                raise SelectionError("Inspect and acknowledge recovery before changing handover alignment.")
-            self.handover_offset = offset
-            self.scan_usable = False
-            self.batch_progress = None
-        finally:
-            self._activity_lock.release()
+        """The V4 workflow uses fixed receiving coordinates."""
+        raise SelectionError("Receiving-hand adjustment is unavailable in the V4 workflow.")
 
     def set_speed(self, speed):
         """Update future plans only; never change an in-flight movement."""

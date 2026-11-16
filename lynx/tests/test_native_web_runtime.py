@@ -96,6 +96,8 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
     session, language = factory(rig.controller)
     assert session.verification_frames == 1 and session.strict_single_verification is True
     assert session.max_result_age == 60 and session.camera_z is False
+    assert session.home_after_cup is False
+    assert session.motion_settings()["home_after_cup"] is False
     assert session.robot.dry_run and session.robot.require_session is False
     assert session.placing_grid.path == rig.grid.path
     assert session.tag_offset == rig.calibration.offset
@@ -112,8 +114,8 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
                                            confidence=0.5, timeout=30.0)
     metadata = factory.metadata()
     assert metadata["ready"] and metadata["worker_running"]
-    assert metadata["policy"] == {"scan_observations": 1, "verification_frames": 1,
-        "strict_single_verification": True, "depth_frames": 5, "max_result_age": 60.0,
+    assert metadata["policy"] == {"workflow": "v4_snapshot", "scan_observations": 1,
+        "verification_frames": 0, "per_cup_capture": False, "depth_frames": 5,
         "camera_z": False, "confidence_threshold": 0.5}
     assert metadata["model"]["sha256"] == rig.worker.model.sha256
     assert metadata["camera"] == rig.camera.K
@@ -258,6 +260,7 @@ def test_live_factory_preserves_explicit_mode_and_configures_only_requested_prof
     factory = native_web_factory(rig.args)
     session, _ = factory(rig.controller)
     assert session.robot.dry_run is False
+    assert session.home_after_cup is False
     configure.assert_called_once_with(rig.args.controller_profile)
     assert rig.camera.calls == 0 and not rig.worker.calls
     rig.controller.close()

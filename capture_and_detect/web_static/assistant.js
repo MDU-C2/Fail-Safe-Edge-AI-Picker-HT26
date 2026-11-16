@@ -101,7 +101,7 @@
       : status?.stale ? "The next scene request will take a fresh photo automatically. Cup numbers may change."
       : status?.demo ? "Explore a sample scene. Previews stay in demo mode."
       : !configured ? "Save and list cup references without a key. Add a key in Settings to find a saved cup or use other requests."
-      : "Takes a fresh photo when needed. Review the real pick here, then confirm once.");
+      : "Uses the current snapshot. Review your pick here, then confirm once.");
     ui.input.disabled = !connected || unavailable || Boolean(busy) || Boolean(active) || Boolean(controllerState?.busy);
     ui.send.disabled = !canAsk() || !ui.input.value.trim();
     const editable = canEditSettings();
@@ -192,7 +192,9 @@
     const heading = document.createElement("h4"); setText(heading, ids.length === 1 ? `Pick Cup ${ids[0]}` : `Pick ${ids.length} cups`);
     const mode = document.createElement("p"); mode.className = "assistant-pick-mode";
     setText(mode, state.mode === "live" ? "LIVE · confirmation will move the robot" : state.mode === "demo" ? "DEMO · no robot movement" : "DRY RUN · no robot movement");
-    const description = document.createElement("p"); setText(description, string(proposal.description) || "Pick, hand over, place and return home.");
+    const homeAfterCup = proposal.home_after_cup ?? state.motion?.home_after_cup ?? false;
+    const description = document.createElement("p"); setText(description, string(proposal.description)
+      || (homeAfterCup ? "Pick, hand over, place and return home." : "Pick, hand over, place and finish at clearance poses."));
     const destinations = document.createElement("p"); destinations.className = "assistant-pick-destinations";
     setText(destinations, proposal.placements.map((place, index) => `Cup ${ids[index]} → P${place.id}`).join(" · "));
     record.details.append(heading, mode, description, destinations);
@@ -221,7 +223,8 @@
     const movement = document.createElement("details"); movement.className = "assistant-pick-motion";
     const summary = document.createElement("summary"); setText(summary, "Movement settings");
     const speeds = document.createElement("p"); const speed = (value) => Number.isFinite(value) ? `${value} mm/s` : "unavailable";
-    setText(speeds, `Normal: ${speed(proposal.speed)} · Cup flip: ${speed(proposal.flip_speed)} · Return home: ${speed(proposal.home_speed)}.`);
+    const home = homeAfterCup ? `Return home: ${speed(proposal.home_speed)}` : "Automatic home off; arms remain at clearance poses";
+    setText(speeds, `Normal: ${speed(proposal.speed)} · Cup flip: ${speed(proposal.flip_speed)} · ${home}.`);
     movement.append(summary, speeds);
     const phases = proposal.phase_speeds;
     if (phases && ["pick_lift", "handover", "flip", "placement"].every((key) => Number.isFinite(phases[key]))) {
@@ -328,7 +331,7 @@
   }
   async function preparePick(answer, article, expectedContext) {
     const record = makeOperation(article);
-    setText(record.progress, answer.action === "pick_saved" ? "Taking a fresh scan and comparing the saved cup reference…" : "Checking the selected cups and placement destinations…");
+    setText(record.progress, answer.action === "pick_saved" ? "Comparing the saved cup reference with the workspace snapshot…" : "Checking the selected cups and placement destinations…");
     try {
       const response = await request("/api/assistant/prepare", { method: "POST", payload: { proposal_id: answer.proposal_id }, bindOwner: true, timeout: 30000, verifyState: (state) => {
         if (active !== record) throw new Error("This request is no longer active.");

@@ -1,4 +1,4 @@
-"""Pure discovery of the gateway contracts used by explicit robot controls.
+"""Pure discovery of the gateway contracts used by robot controls and paths.
 
 This module performs no HTTP, reads no files, and authorizes no movement.
 An advertised route is not evidence that a controller is ready or permission
@@ -168,6 +168,73 @@ class _Schema:
                    for key, kind, allowed in expected)
 
 
+def _blended_path_contract(reader):
+    """Require the complete bounded path contract, not merely a named route.
+
+    Path objects must advertise their fields together. Conservatively reject
+    object alternatives/compositions rather than combining different branches
+    into a contract that no single accepted request actually satisfies.
+    """
+    def object_schema(value, required):
+        value = reader.resolve(value)
+        if (value is None or value.get("type") != "object"
+                or any(key in value for key in ("allOf", "anyOf", "oneOf"))
+                or not isinstance(value.get("properties"), dict)
+                or not isinstance(value.get("required"), list)
+                or any(not isinstance(key, str) for key in value["required"])
+                or set(value["required"]) != required):
+            return None
+        return value
+
+    def number_range(value, low, high):
+        value = reader.resolve(value)
+        if value is None or any(key in value for key in (
+                "allOf", "oneOf", "enum", "const", "exclusiveMinimum", "exclusiveMaximum", "multipleOf")):
+            return False
+        if "anyOf" in value:
+            if any(key in value for key in ("type", "minimum", "maximum")):
+                return False
+            alternatives = value["anyOf"]
+            if not isinstance(alternatives, list) or len(alternatives) != 2:
+                return False
+            branches = [reader.resolve(branch) for branch in alternatives]
+            if any(branch is None for branch in branches):
+                return False
+            numbers = [branch for branch in branches if branch.get("type") == "number"]
+            nulls = [branch for branch in branches if branch.get("type") == "null"]
+            if len(numbers) != 1 or len(nulls) != 1:
+                return False
+            value = numbers[0]
+        return (value.get("type") == "number"
+                and not any(key in value for key in ("allOf", "anyOf", "oneOf", "enum", "const",
+                                                     "exclusiveMinimum", "exclusiveMaximum", "multipleOf"))
+                and type(value.get("minimum")) in (int, float) and value["minimum"] == low
+                and type(value.get("maximum")) in (int, float) and value["maximum"] == high)
+
+    endpoint = "/robot/rws/path"
+    body = object_schema(reader.body("POST", endpoint), {"points"})
+    if body is None or not reader.fields(body, [("arm", "string", ("left", "right")),
+                                               ("wait", "boolean", (True,))]):
+        return False
+    points = reader.resolve(reader.property(body, "points"))
+    if (points is None or points.get("type") != "array"
+            or any(key in points for key in ("allOf", "anyOf", "oneOf", "prefixItems", "contains"))
+            or type(points.get("minItems")) is not int or points["minItems"] != 1
+            or type(points.get("maxItems")) is not int or points["maxItems"] != 8):
+        return False
+    coordinates = {"x", "y", "z", "rx", "ry", "rz"}
+    point = object_schema(points.get("items"), coordinates)
+    if point is None or not reader.fields(point, [
+            *((name, "number", ()) for name in coordinates), ("linear", "boolean", (False, True))]):
+        return False
+    limits = {"speed": (1, 1500), "acceleration": (20, 100), "ramp": (10, 100),
+              "zone": (0, 100), "max_acceleration": (.1, 20)}
+    return (all(number_range(reader.property(body, name), *bounds) for name, bounds in limits.items())
+            and all(number_range(reader.property(point, name), *limits[name]) for name in ("speed", "zone"))
+            and reader.fields(reader.response("POST", endpoint),
+                              [("accepted", "boolean", (True,)), ("message", "string", ("DONE",))]))
+
+
 def parse_gateway_capabilities(schema, api_prefix="/api/v1"):
     """Return supported action booleans and dependency/protocol metadata.
 
@@ -228,6 +295,7 @@ def parse_gateway_capabilities(schema, api_prefix="/api/v1"):
     result = {"schema_valid": bool(valid), "gateway_version": version, "api_prefix": prefix,
               "supported": {}, "actions": {},
               "protocols": {"native_reset_generation": native,
+                            "blended_path": bool(valid and _blended_path_contract(reader)),
                             "joint_readback": joint_readback,
                             "legacy_start_reset_pp": legacy,
                             "control_session_header": session_header},

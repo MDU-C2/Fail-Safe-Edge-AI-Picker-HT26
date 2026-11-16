@@ -106,7 +106,7 @@ class HandoffStore:
         recovery = read_json(self.recovery_path) if self.recovery_path.exists() else {
             "schema_version": 1, "recovery_required": False}
         motion = {"speed": session.speed, "home_speed": session.home_speed,
-                  "camera_z": session.camera_z, "handover_offset": list(session.handover_offset)}
+                  "camera_z": session.camera_z, "handover_offset": [0, 0, 0]}
         phases = normalize_phase_speeds(getattr(session, "phase_speeds", None))
         # The existing four-field bundle remains compatible with older
         # services when all stage speeds are at their original defaults.

@@ -11,8 +11,7 @@ Harness argv: CONFIG_JSON DETECTIONS_JSON MASKS_BIN DEPTH_RAW [DEPTH_RAW ...].
 Configuration contains calibration {scale,R,t,tag_offset}, intrinsics and names.
 Detections/masks use the native worker's existing JSON/cropped uint8-mask format.
 Depths are matching uint16 little-endian images in chronological order. One depth
-omits temporal metadata; two or more enable all samples, with the last image
-providing the initial depth-quality record. stdout must be an object-array JSON.
+omits temporal metadata; two or more record all available per-frame mask medians. stdout must be an object-array JSON.
 
 The authoritative reference reconstructs full-frame masks and calls the current
 Detector.describe and mark_cup_bases. Erosion must distinguish an actual image
@@ -112,43 +111,43 @@ def synthetic_fixtures():
     def single(name, mask=base, image=depth, *, label="CUP BASE", box=None, score=.9, checks=()):
         return fixture(name, [(label, mask, box, score)], [image], checks=checks)
 
-    yield single("base_good", checks=((0, "z_mm", 800.0), (0, "depth_quality.valid", True)))
+    yield single("base_good", checks=((0, "z_mm", 800.0),))
     rim = depth.copy()
     rim[13:24, 15:26] = 700
     yield single("base_core_ignores_background_rim", image=rim, checks=((0, "z_mm", 700.0),))
     hole = depth.copy()
     hole[17:20, 19:22] = 0
     yield single("base_centroid_depth_hole", image=hole,
-                 checks=((0, "z_mm", None), (0, "depth_quality.valid", False)))
+                 checks=((0, "z_mm", 800.0),))
     one_hole = depth.copy()
     one_hole[18, 20] = 0
     yield single("base_one_center_hole", image=one_hole,
-                 checks=((0, "depth_quality.valid_center_pixels", 8), (0, "z_mm", 800.0)))
+                 checks=((0, "z_mm", 800.0),))
     for count in (5, 6):
         image = depth.copy()
         image[17:20, 19:22] = 0
         for index in range(count):
             image[17 + index // 3, 19 + index % 3] = 800
         yield single(f"base_center_{count}_of_nine", image=image,
-                     checks=((0, "depth_quality.valid", count == 6),))
+                     checks=((0, "z_mm", 800.0),))
     sparse = depth.copy()
     sparse[13:24, 15:26] = 0
     sparse[17:20, 19:22] = 800
     yield single("base_sparse_core_good_center", image=sparse,
-                 checks=((0, "z_mm", None), (0, "depth_quality.valid_center_pixels", 9)))
+                 checks=((0, "z_mm", 800.0),))
     for name, mask in (("base_tiny", rectangle(shape, 10, 10, 12, 12)),
                        ("base_thin", rectangle(shape, 10, 10, 35, 11))):
-        yield single(name, mask=mask, checks=((0, "depth_quality.valid", False),))
+        yield single(name, mask=mask, checks=((0, "z_mm", 800.0),))
     border = rectangle(shape, 0, 0, 5, 5)
     yield single("base_at_image_border", mask=border,
-                 checks=((0, "depth_quality.valid", True), (0, "depth_quality.core_pixels", 9)))
+                 checks=((0, "z_mm", 800.0),))
     lobes = rectangle(shape, 3, 10, 13, 25) | rectangle(shape, 25, 10, 35, 25)
     yield single("base_disconnected_centroid_gap", mask=lobes,
-                 checks=((0, "depth_quality.valid", False),))
+                 checks=((0, "z_mm", 800.0),))
     ring = base.copy()
     ring[16:21, 18:23] = False
     yield single("base_mask_centroid_hole", mask=ring,
-                 checks=((0, "depth_quality.valid", False),))
+                 checks=((0, "z_mm", 800.0),))
     even_mask = rectangle(shape, 10, 10, 18, 18)
     even = depth.copy()
     even[:, 14:] = 801
@@ -202,24 +201,22 @@ def synthetic_fixtures():
         checks=((0, "near_handle", True), (0, "in_cup", False), (0, "cup_height", False)))
     yield fixture("association_cup_height_only", [("CUP BASE", base, None, .9)], [depth],
                   checks=((0, "in_cup", False), (0, "near_handle", False), (0, "cup_height", True)))
-    for name, values, valid in (("temporal_span_twenty", (800, 810, 820), True),
-                                ("temporal_span_twenty_one", (800, 810, 821), False),
-                                ("temporal_all_invalid", (0, 0, 0), False),
-                                ("temporal_fractional_mean", (800, 800, 801), True)):
+    for name, values, expected in (("temporal_span_twenty", (800, 810, 820), 810.0),
+                                   ("temporal_span_twenty_one", (800, 810, 821), 810.3),
+                                   ("temporal_all_invalid", (0, 0, 0), None),
+                                   ("temporal_fractional_mean", (800, 800, 801), 800.3),
+                                   ("temporal_available_samples", (800, 0, 820), 810.0)):
         samples = [np.full(shape, value, np.uint16) for value in values]
         yield fixture(name, [("CUP BASE", base, None, .9)], samples,
-                      checks=((0, "depth_quality.valid", valid),
-                              (0, "depth_quality.sample_count", 3)))
+                      checks=((0, "z_mm", expected),))
     yield fixture("temporal_latest_center_hole", [("CUP BASE", base, None, .9)],
-                  [depth, depth, hole], checks=((0, "z_mm", None),
-                                              (0, "depth_quality.valid_center_pixels", 0)))
+                  [depth, depth, hole], checks=((0, "z_mm", 800.0),))
     yield fixture("temporal_old_center_hole", [("CUP BASE", base, None, .9)],
-                  [hole, depth, depth], checks=((0, "z_mm", None),
-                                              (0, "depth_quality.valid_center_pixels", 9)))
+                  [hole, depth, depth], checks=((0, "z_mm", 800.0),))
     yield fixture("temporal_nonbase_stable", [("CUP", base, None, .9)],
                   [depth, depth + np.uint16(10), depth + np.uint16(20)], checks=((0, "z_mm", 810.0),))
     yield fixture("temporal_nonbase_invalid_sample", [("CUP HANDLE", handle, None, .9)],
-                  [depth, np.zeros(shape, np.uint16), depth], checks=((0, "z_mm", None),))
+                  [depth, np.zeros(shape, np.uint16), depth], checks=((0, "z_mm", 800.0),))
     # 512*512 is exactly the retained raw-crop budget, independent of nonzero area.
     boundary_shape = (512, 512)
     boundary_depth = np.full(boundary_shape, 800, np.uint16)

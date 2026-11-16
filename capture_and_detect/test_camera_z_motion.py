@@ -112,13 +112,12 @@ class CameraZPlanTests(unittest.TestCase):
                         expected["body"]["z"] = 259
                     self.assertEqual(actual, expected)
                 names = [job["name"] for job in changed]
-                self.assertIn("left_home", names)
+                self.assertFalse(any(job["endpoint"].endswith("/home") for job in changed))
                 if left_only:
-                    self.assertEqual(names[-1], "left_home")
+                    self.assertEqual(names[-1], "left_clear")
                     self.assertTrue(all(job["body"]["arm"] == "left" for job in changed))
                 else:
-                    self.assertIn("right_home_start", names)
-                    self.assertEqual(names[-1], "right_home")
+                    self.assertEqual(names[-1], "right_clear")
 
     def test_camera_height_does_not_apply_tag_offset_z_twice_or_mutate_cup(self):
         original = copy.deepcopy(self.cup)
@@ -138,10 +137,10 @@ class CameraZPlanTests(unittest.TestCase):
                 with self.subTest(left_only=left_only, value=value), self.assertRaises(ValueError):
                     self.plan(left_only=left_only, camera_z=value)
 
-    def test_invalid_or_implausible_height_never_returns_a_camera_plan(self):
+    def test_non_numeric_height_never_returns_a_camera_plan(self):
         for left_only in (False, True):
             for value in (None, True, "50", float("nan"), float("inf"),
-                          -float("inf"), 10 ** 1000, -30.1, 150.1):
+                          -float("inf"), 10 ** 1000):
                 with self.subTest(left_only=left_only, value=value), self.assertRaises(SelectionError):
                     self.plan(left_only=left_only, cup=dict(self.cup, z=value), camera_z=True)
 
@@ -213,40 +212,35 @@ class CameraZSessionTests(unittest.TestCase):
                 self.assertEqual(robot.jobs, [])
                 self.assertEqual(grid.snapshot(), before)
 
-    def test_fresh_height_changes_over_five_mm_block_before_reservation_or_motion(self):
+    def test_camera_height_uses_original_scan_even_when_later_scene_changes(self):
         for left_only in (False, True):
-            for fresh in (64.9, 75.1):
-                with self.subTest(left_only=left_only, fresh=fresh):
-                    session, capture, robot, grid = self.session(
-                        scanned=70, fresh=fresh, camera_z=True, left_only=left_only)
-                    session.scan()
-                    before = grid.snapshot()
-                    with patch.object(grid, "reserve", wraps=grid.reserve) as reserve:
-                        with self.assertRaisesRegex(SelectionError, "pick height changed"):
-                            self.execute(session)
-                        reserve.assert_not_called()
-                    self.assertEqual(capture.call_count, 2)
-                    self.assertEqual(robot.jobs, [])
-                    self.assertEqual(grid.snapshot(), before)
-                    self.assertFalse(session.scan_usable)
-
-    def test_fresh_height_changes_up_to_five_mm_reach_jobs_and_audit(self):
-        for left_only in (False, True):
-            for fresh in (65, 70, 75):
+            for fresh in (10, 64.9, 75.1, 150):
                 with self.subTest(left_only=left_only, fresh=fresh):
                     session, capture, robot, _ = self.session(
                         scanned=70, fresh=fresh, camera_z=True, left_only=left_only)
                     session.scan()
+                    self.execute(session)
+                    self.assertEqual(capture.call_count, 1)
+                    self.assertEqual(bodies(robot.jobs)["descend_to_cup"]["z"], 249)
+                    self.assertTrue(session.scan_usable)
+
+    def test_scanned_camera_height_reaches_jobs_and_audit(self):
+        for left_only in (False, True):
+            for scanned in (65, 70, 75):
+                with self.subTest(left_only=left_only, scanned=scanned):
+                    session, capture, robot, _ = self.session(
+                        scanned=scanned, fresh=100, camera_z=True, left_only=left_only)
+                    session.scan()
                     jobs = self.execute(session)
                     self.assertEqual(robot.jobs, jobs)
                     result = bodies(jobs)
-                    self.assertEqual(result["descend_to_cup"]["z"], fresh + 20 + 159)
+                    self.assertEqual(result["descend_to_cup"]["z"], scanned + 20 + 159)
                     if left_only:
                         self.assertEqual(result["replace_cup"]["z"], result["descend_to_cup"]["z"])
                     audit = session.inventory["cups"][0]["last_verification"]
-                    self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], fresh + 20)
+                    self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], scanned + 20)
                     self.assertIs(audit["motion_settings"]["camera_z"], True)
-                    self.assertEqual(capture.call_count, 2)
+                    self.assertEqual(capture.call_count, 1)
 
     def test_height_guard_compares_planned_descent_after_floor(self):
         session, _, robot, _ = self.session(scanned=10, fresh=19, camera_z=True)
@@ -256,21 +250,13 @@ class CameraZSessionTests(unittest.TestCase):
         audit = session.inventory["cups"][0]["last_verification"]
         self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], 40)
 
-    def test_fractional_five_mm_boundary_uses_the_planners_tenth_mm_resolution(self):
-        for fresh, accepted in ((71.1, True), (81.1, True), (71.0, False), (81.2, False)):
-            with self.subTest(fresh=fresh):
-                session, _, robot, grid = self.session(scanned=76.1, fresh=fresh, camera_z=True)
-                session.scan()
-                before = grid.snapshot()
-                if accepted:
-                    jobs = self.execute(session)
-                    self.assertEqual(robot.jobs, jobs)
-                    self.assertAlmostEqual(bodies(jobs)["descend_to_cup"]["z"], fresh + 20 + 159)
-                else:
-                    with self.assertRaisesRegex(SelectionError, "pick height changed"):
-                        self.execute(session)
-                    self.assertEqual(robot.jobs, [])
-                    self.assertEqual(grid.snapshot(), before)
+    def test_fractional_scanned_height_keeps_planner_resolution(self):
+        session, capture, robot, _ = self.session(scanned=76.1, fresh=81.2, camera_z=True)
+        session.scan()
+        jobs = self.execute(session)
+        self.assertEqual(robot.jobs, jobs)
+        self.assertAlmostEqual(bodies(jobs)["descend_to_cup"]["z"], 255.1)
+        self.assertEqual(capture.call_count, 1)
 
     def test_fixed_mode_keeps_70_mm_descent_when_observed_height_changes(self):
         session, _, robot, _ = self.session(scanned=70, fresh=80)

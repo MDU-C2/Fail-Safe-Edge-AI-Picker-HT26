@@ -7,7 +7,7 @@ import unittest
 from gateway_capabilities import ACTIONS, parse_gateway_capabilities
 
 
-def schema_fixture(*, native=False, collisions=False, prefix="/api/v1"):
+def schema_fixture(*, native=False, collisions=False, blended_path=False, prefix="/api/v1"):
     """Minimal faithful shapes from Lynx 0.4.0 and the guarded reset extension."""
     schemas = {
         "Status": {"type": "object", "properties": {
@@ -49,6 +49,23 @@ def schema_fixture(*, native=False, collisions=False, prefix="/api/v1"):
     add("post", "/robot/rws/home", "Command", "Motion")
     add("post", "/robot/rws/gripper", "Command", "Gripper")
     add("get", "/robot/arms/{arm}/joints", "Joints")
+    if blended_path:
+        def bounded(low, high, *, nullable=True):
+            number = {"type": "number", "minimum": low, "maximum": high}
+            return {"anyOf": [number, {"type": "null"}]} if nullable else number
+
+        coordinates = ("x", "y", "z", "rx", "ry", "rz")
+        schemas["PathPoint"] = {"type": "object", "required": list(coordinates), "properties": {
+            **{name: {"type": "number"} for name in coordinates},
+            "linear": {"type": "boolean", "default": False},
+            "speed": bounded(1, 1500), "zone": bounded(0, 100)}}
+        schemas["Path"] = {"type": "object", "required": ["points"], "properties": {
+            **copy.deepcopy(schemas["Motion"]["properties"]),
+            "speed": bounded(1, 1500), "acceleration": bounded(20, 100), "ramp": bounded(10, 100),
+            "zone": bounded(0, 100, nullable=False), "max_acceleration": bounded(.1, 20),
+            "points": {"type": "array", "minItems": 1, "maxItems": 8,
+                       "items": {"$ref": "#/components/schemas/PathPoint"}}}}
+        add("post", "/robot/rws/path", "Command", "Path")
     if native:
         schemas["Status"]["properties"]["stop_generation"] = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
         schemas["Reset"] = {"type": "object", "properties": {
@@ -63,6 +80,65 @@ def schema_fixture(*, native=False, collisions=False, prefix="/api/v1"):
 
 
 class GatewayCapabilitiesTests(unittest.TestCase):
+    def test_blended_path_requires_complete_schema_at_the_configured_prefix(self):
+        self.assertFalse(parse_gateway_capabilities(schema_fixture())["protocols"]["blended_path"])
+        for prefix in ("/api/v1", "", "/different/api"):
+            schema = schema_fixture(blended_path=True, prefix=prefix)
+            self.assertTrue(parse_gateway_capabilities(schema, api_prefix=prefix)["protocols"]["blended_path"])
+        schema = schema_fixture(blended_path=True)
+        self.assertFalse(parse_gateway_capabilities(schema, api_prefix="/other")["protocols"]["blended_path"])
+        operation = schema["paths"]["/api/v1/robot/rws/path"].pop("post")
+        schema["paths"]["/api/v1/robot/rws/path"]["get"] = operation
+        self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+
+    def test_blended_path_requires_all_advertised_motion_and_point_fields(self):
+        for component, fields in (("Path", ("arm", "wait", "speed", "acceleration", "ramp", "zone",
+                                            "max_acceleration", "points")),
+                                  ("PathPoint", ("x", "y", "z", "rx", "ry", "rz", "linear", "speed", "zone")),
+                                  ("Command", ("accepted", "message"))):
+            for field in fields:
+                schema = schema_fixture(blended_path=True)
+                del schema["components"]["schemas"][component]["properties"][field]
+                with self.subTest(component=component, field=field):
+                    self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+
+    def test_blended_path_rejects_wrong_bounds_types_and_incomplete_required_pose(self):
+        changes = [("Path", "points", {"minItems": 0}), ("Path", "points", {"maxItems": 9}),
+                   ("Path", "points", {"maxItems": True}), ("Path", "points", {"type": "string"}),
+                   ("Path", "points", {"items": {"$ref": "#/not-found"}}),
+                   ("Path", "points", {"allOf": [{"type": "array"}]}),
+                   ("Path", "arm", {"enum": ["left"]}), ("Path", "wait", {"enum": [False]}),
+                   ("PathPoint", "linear", {"type": "integer"}),
+                   ("PathPoint", "linear", {"enum": [True]}),
+                   ("PathPoint", "rz", {"type": "string"}),
+                   ("Command", "message", {"enum": ["QUEUED"]})]
+        for component, name, replacement in changes:
+            schema = schema_fixture(blended_path=True)
+            schema["components"]["schemas"][component]["properties"][name].update(replacement)
+            with self.subTest(component=component, field=name, replacement=replacement):
+                self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+        for component, field in (("Path", "points"), ("PathPoint", "rz")):
+            schema = schema_fixture(blended_path=True)
+            schema["components"]["schemas"][component]["required"].remove(field)
+            self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+
+    def test_blended_path_rejects_unproven_numeric_limits_and_object_alternatives(self):
+        for component, field in (("Path", "speed"), ("Path", "acceleration"), ("Path", "ramp"),
+                                 ("Path", "max_acceleration"), ("PathPoint", "speed"), ("PathPoint", "zone")):
+            for replacement in ({"type": "number"}, {"type": "string"},
+                                {"type": "number", "minimum": 0, "maximum": 9999},
+                                {"anyOf": [{"type": "number", "minimum": 1, "maximum": 1500},
+                                           {"type": "null"}], "enum": [1]}):
+                schema = schema_fixture(blended_path=True)
+                schema["components"]["schemas"][component]["properties"][field] = replacement
+                with self.subTest(component=component, field=field, replacement=replacement):
+                    self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+        for component in ("Path", "PathPoint"):
+            schema = schema_fixture(blended_path=True)
+            value = schema["components"]["schemas"][component]
+            schema["components"]["schemas"][component] = {"anyOf": [value, {"type": "null"}]}
+            self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
+
     def test_lynx_contract_advertises_legacy_start_without_enabling_it(self):
         result = parse_gateway_capabilities(schema_fixture())
         self.assertTrue(result["schema_valid"])

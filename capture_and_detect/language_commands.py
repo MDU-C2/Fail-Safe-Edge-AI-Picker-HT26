@@ -285,7 +285,8 @@ class LanguageController:
                 if self.session.motion_uncertain:
                     raise SelectionError("Inspect the robot and acknowledge recovery before requesting a saved cup.")
                 settings_before = self.session.motion_settings()
-                fresh = self.session.scan()
+                fresh = (self.session.inventory if self.session.scan_usable and self.session.inventory is not None
+                         else self.session.scan())
                 record["capture_id"] = fresh["capture"]
                 match = self._visual_match(reference, fresh, audit=record)
                 if self.session.inventory is not fresh:
@@ -357,10 +358,14 @@ class LanguageController:
             cup_ids = preview["cup_ids"]
             if motion_settings != self.session.motion_settings():
                 raise SelectionError("Movement settings changed. Request a new preview.")
-            description = ("pick with the left arm, hand to the right, place, and return both arms home"
+            finish = ("return both arms home" if motion_settings["home_after_cup"] else
+                      "finish with both arms at clearance poses")
+            description = (f"pick with the left arm, hand to the right, place, and {finish}"
                            if action in ("goto", "goto_all") else "move the left arm above it without gripping")
             if self.session.left_only and action in ("goto", "goto_all"):
-                description = "pick, lift and replace at the original position, then return the left arm home"
+                finish = ("return the left arm home" if motion_settings["home_after_cup"] else
+                          "leave the left arm lifted clear above the cup")
+                description = f"pick, lift and replace at the original position, then {finish}"
             placement = preview["placement"]
             destinations = ""
             if placement:
@@ -374,7 +379,7 @@ class LanguageController:
                           cup_ids=cup_ids, placement=placement, excluded_cup_ids=excluded,
                           speed=self.session.speed, flip_speed=motion_settings["effective_phase_speeds"]["flip"],
                           phase_speeds=motion_settings["effective_phase_speeds"],
-                          home_speed=self.session.home_speed,
+                          home_speed=self.session.home_speed, home_after_cup=motion_settings["home_after_cup"],
                           motion_settings=motion_settings,
                           handover=(motion_settings["handover"]
                                     if action in ("goto", "goto_all") and not self.session.left_only else None),
@@ -395,7 +400,9 @@ class LanguageController:
             named_text = (f"Saved cup: {record['saved_cup']['name']}. Visual match: {record['saved_cup']['match_reason']}\n"
                           "Compare the reference photo with the highlighted cup before confirming.\n"
                           if "saved_cup" in record else "")
-            home_text = (f"Automatic home: {record['home_speed']:g} mm/s.\n"
+            clearance = "the left arm remains lifted clear above the cup" if self.session.left_only else "arms remain at clearance poses"
+            home_text = ((f"Automatic home: {record['home_speed']:g} mm/s.\n" if record["home_after_cup"] else
+                          f"Automatic home disabled; {clearance}.\n")
                          if action in ("goto", "goto_all") else "")
             phases = record["phase_speeds"]
             phase_text = (f"Pick/lift and left transfer: {phases['pick_lift']:g} mm/s; "
@@ -454,12 +461,16 @@ class LanguageController:
                         expected_motion=record["motion_settings"], **options)
                 record["state"] = "previewed" if self.session.robot.dry_run else "completed"
                 self._save(record)
+                if self.session.left_only:
+                    finish = "the left arm home" if record["home_after_cup"] else "the left arm lifted clear"
+                    completed = f"Robot reported the cup replaced and {finish}. Select another available cup or scan again."
+                else:
+                    finish = "home poses checked" if record["home_after_cup"] else "both arms at clearance poses"
+                    completed = f"Robot reported pick, handover and placement complete; {finish}. Select another available cup or scan again."
                 return {"kind": "result", "action": record["action"], "jobs": jobs,
                         "message": "Preview complete; no robot commands sent." if self.session.robot.dry_run else
-                        (("Robot reported the cup replaced and the left arm home. Scan again."
-                          if self.session.left_only else
-                          "Robot reported pick, handover and placement complete; home poses checked. Scan again.")
-                         if record["action"] in ("goto", "goto_all") else "Robot reported hover complete. Scan again.")}
+                        (completed if record["action"] in ("goto", "goto_all") else
+                         "Robot reported hover complete. Scan again.")}
             except BaseException as error:
                 record.update(state="blocked_or_interrupted", error=str(error))
                 try:

@@ -21,7 +21,7 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
         output.__enter__()
         self.addCleanup(output.__exit__, None, None, None)
 
-    def session(self, *, dry_run=False, robot=None, grid=None, left_only=True, cups=1):
+    def session(self, *, dry_run=False, robot=None, grid=None, left_only=True, cups=1, home_after_cup=False):
         objects = []
         for index in range(cups):
             objects.extend([detection("CUP", 100 + index * 100, x=500 + index * 50),
@@ -31,13 +31,13 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
         def capture(purpose):
             nonlocal sequence
             sequence += 1
-            return inventory(capture=f"{purpose}-{sequence}", sequence=sequence, objects=objects), 99
+            return inventory(capture=f"{purpose}-{sequence}", sequence=sequence, objects=objects), 100
 
         camera = Mock(side_effect=capture)
         robot = robot if robot is not None else RobotDouble()
         robot.dry_run = dry_run
         session = CupSession(camera, Mock(), robot, "cal-1", clock=lambda: 100,
-                             placing_grid=grid, left_only=left_only)
+                             placing_grid=grid, left_only=left_only, home_after_cup=home_after_cup)
         session.scan()
         return session, camera, robot
 
@@ -47,12 +47,13 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
         names = [job["name"] for job in jobs]
         self.assertLess(names.index("grip_cup"), names.index("replace_cup"))
         self.assertLess(names.index("replace_cup"), names.index("left_release"))
-        self.assertEqual(names[-1], "left_home")
+        self.assertEqual(names[-1], "left_clear")
+        self.assertFalse(any("home" in name for name in names))
         descend = next(job["body"] for job in jobs if job["name"] == "descend_to_cup")
         replace = next(job["body"] for job in jobs if job["name"] == "replace_cup")
         self.assertEqual([descend[axis] for axis in "xyz"], [replace[axis] for axis in "xyz"])
 
-    def test_fake_live_replaces_and_homes_without_grid_or_right_arm(self):
+    def test_fake_live_replaces_and_lifts_clear_without_grid_or_right_arm(self):
         grid = Mock()
         session, camera, robot = self.session(grid=grid)
         capture_id = session.inventory["capture"]
@@ -62,13 +63,13 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
         self.assert_left_replacement(jobs)
         self.assertEqual(robot.jobs, jobs)
         self.assertEqual(grid.mock_calls, [])
-        self.assertEqual([call.args[0] for call in camera.call_args_list], ["scan", "verification"])
+        self.assertEqual([call.args[0] for call in camera.call_args_list], ["scan"])
         cup = session.inventory["cups"][0]
         self.assertEqual(cup["status"], "replaced")
         self.assertEqual(cup["execution"]["state"], "completed")
         self.assertIsNone(cup["execution"]["placement"])
         self.assertFalse(session.motion_uncertain)
-        self.assertFalse(session.scan_usable)
+        self.assertTrue(session.scan_usable)
 
     def test_dry_run_previews_replacement_without_http_or_completion_status(self):
         robot = RobotClient("http://offline.invalid/api/v1", {}, dry_run=True)
@@ -83,7 +84,7 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
         self.assertIn("dry-run", cup["last_action"])
         self.assertTrue(session.scan_usable)
 
-    def test_batch_has_no_destinations_and_checks_each_cup_again(self):
+    def test_batch_has_no_destinations_and_reuses_one_scan(self):
         for dry_run in (False, True):
             with self.subTest(dry_run=dry_run):
                 session, camera, robot = self.session(dry_run=dry_run, cups=2)
@@ -94,7 +95,7 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
                 self.assertEqual(sum(job["name"] == "replace_cup" for job in jobs), 2)
                 self.assertEqual({job["body"]["arm"] for job in jobs}, {"left"})
                 self.assertEqual([call.args[0] for call in camera.call_args_list],
-                                 ["scan", "verification", "verification"])
+                                 ["scan"])
                 self.assertEqual(session.batch_progress["completed_cups"], [1, 2])
                 self.assertEqual(session.batch_progress["state"], "previewed" if dry_run else "completed")
                 if not dry_run:
@@ -132,11 +133,23 @@ class LeftOnlyWorkflowTests(unittest.TestCase):
             self.assertIsNone(record["handover"])
             self.assertIsNone(record["placement"])
             self.assertIn("replace", record["description"])
-            self.assertIn("left arm home", proposal["message"])
+            self.assertIn("left arm lifted clear", proposal["message"])
+            self.assertNotIn("left arm home", proposal["message"])
             self.assertNotIn("hand to the right", proposal["message"])
             self.assertEqual(robot.jobs, [])
             language.confirm(proposal["token"])
             self.assert_left_replacement(robot.jobs)
+
+    def test_confirmation_describes_explicit_left_arm_home(self):
+        with tempfile.TemporaryDirectory() as folder:
+            session, _, robot = self.session(dry_run=True, home_after_cup=True)
+            language = LanguageController(session, DisabledIntentClient(), audit_dir=Path(folder), clock=lambda: 100)
+            proposal = language.propose_selection(action="goto", capture_id=session.inventory["capture"], cup_id=1)
+            self.assertIn("return the left arm home", proposal["message"])
+            self.assertNotIn("hand to the right", proposal["message"])
+            language.confirm(proposal["token"])
+            self.assertEqual(robot.jobs[-1]["name"], "left_home")
+            self.assertEqual({job["body"]["arm"] for job in robot.jobs}, {"left"})
 
 
 if __name__ == "__main__":

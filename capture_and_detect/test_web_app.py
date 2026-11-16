@@ -306,14 +306,28 @@ class WebStartupTests(unittest.TestCase):
             self.assertTrue(session.robot.dry_run)
             self.assertIsNone(session.inventory)
             scan = session.scan()
-            self.assertEqual(len(scan["cups"]), 3)
-            self.assertEqual([cup["selectable"] for cup in scan["cups"]], [True, True, False])
+            self.assertEqual(len(scan["cups"]), 2)
+            self.assertEqual([cup["selectable"] for cup in scan["cups"]], [True, True])
             proposal = language.propose("hover above cup two")
             with redirect_stdout(io.StringIO()):
                 result = language.confirm(proposal["token"])
             self.assertEqual(result["action"], "hover")
             self.assertEqual(len(result["jobs"]), 2)
             self.assertIn("no robot commands", result["message"])
+
+    def test_demo_handover_defaults_to_clearance_without_automatic_home(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("requests.Session.request", side_effect=AssertionError("Network forbidden")), \
+                redirect_stdout(io.StringIO()):
+            session, language = demo_factory(Path(directory))(Mock())
+            self.assertFalse(session.home_after_cup)
+            self.assertFalse(session.motion_settings()["home_after_cup"])
+            scan = session.scan()
+            proposal = language.propose_selection(action="goto", capture_id=scan["capture"], cup_id=1)
+            result = language.confirm(proposal["token"])
+            self.assertEqual(result["jobs"][-1]["name"], "right_clear")
+            self.assertIn("left_clear", [job["name"] for job in result["jobs"]])
+            self.assertFalse(any("home" in job["name"] for job in result["jobs"]))
 
 
 if __name__ == "__main__":

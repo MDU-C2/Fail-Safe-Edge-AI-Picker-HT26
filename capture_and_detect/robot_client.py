@@ -31,6 +31,7 @@ class RobotClient:
     # The RWS gateway waits up to 60 seconds for a job to complete.
     COMMAND_TIMEOUT = 90
     MOVE_ENDPOINT = "/robot/rws/move"
+    PATH_ENDPOINT = "/robot/rws/path"
     HOME_ENDPOINT = "/robot/rws/home"
     GRIPPER_ENDPOINT = "/robot/rws/gripper"
     MOTION_OPTIONS = {"speed": (1, 1500), "acceleration": (20, 100), "ramp": (10, 100)}
@@ -106,23 +107,23 @@ class RobotClient:
         result = copy.deepcopy(self._operator_gateway["actions"])
         if not self._operator_gateway.get("schema_valid"):
             # Keep the read-only discovery button available after a disconnect.
-            # None means unknown, never permission to dispatch a robot action.
+            # None records unknown discovery; runtime calls remain available.
             result["robot_status"].update(supported=None, reason=self._capability_error)
         if (self._operator_gateway.get("schema_valid") and self._controller_status is not None
                 and self._operator_gateway["protocols"]["joint_readback"]
                 and not result["collision_status"]["advertised"]):
             result["collision_status"].update(supported=True, reason=None, protocol="native_read_only")
-        for name in ("home", "open", "grip"):
-            if result[name]["supported"] and not result["collision_status"]["supported"]:
-                result[name].update(supported=False,
-                    reason="A verified controller status connection is required before moving this robot.")
+        # Discovery is informational. Missing/older OpenAPI descriptions do not
+        # prevent an explicit operator action; its runtime response is decisive.
+        for capability in result.values():
+            capability["advertised_supported"] = capability.get("supported")
+            capability["discovery_reason"] = capability.get("reason")
+            capability.update(supported=True, reason=None)
         return result
 
     def require_control_action(self, action):
-        capabilities = self.operator_capabilities
-        if capabilities is not None and capabilities.get(action, {}).get("supported") is not True:
-            reason = capabilities.get(action, {}).get("reason") or self._capability_error
-            raise RobotCommandError(reason or "This robot control is not supported by the connected gateway.")
+        """Compatibility hook: discovery no longer gates explicit UI controls."""
+        return None
 
     @property
     def stop_requested(self):
@@ -218,13 +219,12 @@ class RobotClient:
         result = self._control_status_fields(self._get_object("/robot/rapid"))
         result["collision_state"] = None
         try:
-            gateway_collision = (self._operator_gateway is None
+            gateway_collision = (self._controller_status is None or self._operator_gateway is None
                 or self._operator_gateway["actions"]["collision_status"]["advertised"])
             if gateway_collision:
                 state = self._get_object("/robot/rapid/collision").get("collision_state")
                 result["collision_source"] = "gateway"
-            elif (self._controller_status is not None
-                  and self._operator_gateway["protocols"]["joint_readback"]):
+            elif self._controller_status is not None:
                 state = self._controller_status.read_collision(self._get_object)
                 result["collision_source"] = "controller"
             else:
@@ -533,6 +533,62 @@ class RobotClient:
         return cls._validate_motion(move, left_only=True)
 
     @classmethod
+    def _validate_path(cls, body):
+        """Accept only bounded structured paths; never raw RAPID commands.
+
+        A path remains one blocking job: the controller must stop at its final
+        point and report DONE before any dependent arm or gripper can proceed.
+        Validate and copy every point before acquiring the shared lease.
+        """
+        required = {"arm", "wait", "points"}
+        options = {**cls.MOTION_OPTIONS, "zone": (0, 100), "max_acceleration": (0.1, 20)}
+        if (not isinstance(body, dict) or not required <= body.keys()
+                or body.keys() - required - options.keys()):
+            raise RobotCommandError(
+                "Path jobs require only arm, wait, points and optional speed, acceleration, "
+                "ramp, zone, max_acceleration. Raw robot commands are not accepted."
+            )
+        if body["arm"] not in ("left", "right") or body["wait"] is not True:
+            raise RobotCommandError("Path jobs require arm='left' or 'right' and wait=True.")
+        points = body["points"]
+        if not isinstance(points, list) or not 1 <= len(points) <= 8:
+            raise RobotCommandError("Path points must be a list containing between 1 and 8 points.")
+
+        def number(value, name, limits=None):
+            try:
+                finite = (not isinstance(value, bool) and isinstance(value, (int, float))
+                          and math.isfinite(value))
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise RobotCommandError(f"Path {name} must be a finite number.")
+            if limits is not None and not limits[0] <= value <= limits[1]:
+                raise RobotCommandError(f"Path {name} must be between {limits[0]} and {limits[1]}.")
+
+        for name, limits in options.items():
+            if name in body:
+                number(body[name], name, limits)
+        coordinates = {"x", "y", "z", "rx", "ry", "rz"}
+        point_options = {"speed": cls.MOTION_OPTIONS["speed"], "zone": (0, 100)}
+        validated = []
+        for index, point in enumerate(points):
+            if (not isinstance(point, dict) or not coordinates <= point.keys()
+                    or point.keys() - coordinates - point_options.keys() - {"linear"}):
+                raise RobotCommandError(
+                    f"Path point {index + 1} requires only x/y/z, rx/ry/rz "
+                    "and optional linear, speed, zone."
+                )
+            if "linear" in point and type(point["linear"]) is not bool:
+                raise RobotCommandError(f"Path point {index + 1} linear must be a boolean.")
+            for name in coordinates:
+                number(point[name], f"point {index + 1} {name}")
+            for name, limits in point_options.items():
+                if name in point:
+                    number(point[name], f"point {index + 1} {name}", limits)
+            validated.append(dict(point))
+        return {**body, "points": validated}
+
+    @classmethod
     def _validate_job(cls, job):
         if (not isinstance(job, dict) or not {"name", "endpoint", "body"} <= set(job)
                 or set(job) - {"name", "endpoint", "body", "after"}):
@@ -547,6 +603,8 @@ class RobotClient:
         endpoint = job["endpoint"]
         if endpoint == cls.MOVE_ENDPOINT:
             body = cls._validate_motion(job["body"])
+        elif endpoint == cls.PATH_ENDPOINT:
+            body = cls._validate_path(job["body"])
         elif endpoint == cls.HOME_ENDPOINT:
             body = cls._validate_motion(job["body"], home=True)
         elif endpoint == cls.GRIPPER_ENDPOINT:
@@ -572,7 +630,7 @@ class RobotClient:
                     raise RobotCommandError("Gripper position must be a finite number from 0 to 25 mm.")
             body = dict(body)
         else:
-            raise RobotCommandError("Only RWS move, home and gripper endpoints are supported.")
+            raise RobotCommandError("Only RWS move, path, home and gripper endpoints are supported.")
         result = {"name": job["name"], "endpoint": endpoint, "body": body}
         if "after" in job:
             result["after"] = list(job["after"])
@@ -580,10 +638,9 @@ class RobotClient:
 
     @staticmethod
     def _copy_job(job):
-        result = {**job, "body": dict(job["body"])}
-        if "after" in job:
-            result["after"] = list(job["after"])
-        return result
+        # Path points are nested; callback mutations must never change a
+        # validated plan, an in-flight request, or the completion record.
+        return copy.deepcopy(job)
 
     @staticmethod
     def _job_dependencies(jobs):
@@ -618,10 +675,24 @@ class RobotClient:
             remaining = {name: required for name, required in remaining.items() if name not in ready}
         return dependencies
 
+    def _check_motion_height(self, job):
+        """Apply V4's height rule to the move about to be dispatched."""
+        if job["endpoint"] not in (self.MOVE_ENDPOINT, self.PATH_ENDPOINT):
+            return
+        pick = job["endpoint"] == self.MOVE_ENDPOINT and job["name"] in {
+            "descend_to_cup", "replace_cup", "right_place"}
+        points = job["body"].get("points", [job["body"]])
+        for point in points:
+            if point["z"] > 700 or (point["z"] < 199 and not pick):
+                raise RobotCommandError(
+                    f"Step '{job['name']}' flange Z {point['z']} refused: "
+                    "ordinary motion requires 199..700 mm; only picking/placing may go lower.")
+
     def _perform_job(self, job):
         """One blocking request; confirmation never infers or retries motion."""
         self._check_stop()
         self._check_lease()
+        self._check_motion_height(job)
         reply, _ = self._post(job["endpoint"], move=job["body"])
         self._check_stop()
         print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
@@ -640,7 +711,11 @@ class RobotClient:
             return job
         try:
             replacement = callback(index, self._copy_job(job))
-            return job if replacement is None else self._validate_job(replacement)
+            candidate = job if replacement is None else self._validate_job(replacement)
+            if (candidate["endpoint"] != job["endpoint"]
+                    and self.PATH_ENDPOINT in (candidate["endpoint"], job["endpoint"])):
+                raise RobotCommandError("Pre-command replacement cannot change a blended path endpoint.")
+            return candidate
         except Exception as exc:
             raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
 
@@ -837,7 +912,8 @@ class RobotClient:
 
         Validate the complete plan before acquiring control. Every job requires
         wait=True and an exact accepted=True / DONE response. No failed command
-        is retried and no recovery moves are added. Hooks receive a zero-based
+        is retried and no recovery moves are added. Paths require
+        blocking completion just like individual moves. Hooks receive a zero-based
         index and a copy of the job; before_send may return a replacement job,
         which is validated before dispatch. after_done runs only after confirmed
         completion (and measured home joints for home jobs); raising from either

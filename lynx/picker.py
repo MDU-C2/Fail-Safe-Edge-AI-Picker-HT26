@@ -65,7 +65,7 @@ def arguments(argv=None):
     parser.add_argument("--live", action="store_true", help="Enable explicit operator motion commands")
     parser.add_argument("--scan-once", action="store_true", help="Save one camera-only scan and exit; never moves")
     parser.add_argument("--max-result-age", type=positive, default=60.0,
-                        help="Maximum verification age in seconds, including processing and pre-grip motion (default: 60)")
+                        help="Legacy compatibility option; snapshot picking has no image-age limit")
     parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=5)
     parser.add_argument("--camera-z", action="store_true", help="Optional measured pick height; disabled by default")
     parser.add_argument("--speed", type=positive)
@@ -200,8 +200,8 @@ def main(argv=None):
         terminal = TerminalController(session, language, CommandHandler(session, language, controls),
                                       output=terminal_output)
         terminal_output(f"{'LIVE' if args.live else 'DRY RUN'} · native {model.precision} · {model.input_size}px · {api}")
-        terminal_output(f"Camera checks: one observation per scan/verification; {args.depth_frames} raw depth samples; "
-                        f"maximum verification age {args.max_result_age:g}s.")
+        terminal_output(f"Snapshot picking: one observation per scan; {args.depth_frames} raw depth samples. "
+                        "Picks reuse the saved snapshot without further captures or an image-age limit.")
         terminal_output(HELP)
         if session.motion_uncertain:
             terminal_output("Recovery inspection is required before motion; scan is available.")

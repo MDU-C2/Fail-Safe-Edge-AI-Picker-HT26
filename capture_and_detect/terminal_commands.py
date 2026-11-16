@@ -14,9 +14,9 @@ HELP = """Commands:
   Enter / scan        Detect and save cups; no robot movement.
   list                Show cups, saved XYZ, and the corrected hover target.
   show 2              Show all stored information for cup 2.
-  goto 2              Verify cup 2; pick with left, hand to right, place it,
-                      then finish with both arms home.
-  hover 2             Verify cup 2; move the left arm above it without gripping.
+  goto 2              Use saved cup 2; pick with left, hand to right, place it,
+                      then finish at clearance poses by default.
+  hover 2             Move above saved cup 2 without gripping.
   goto all            Preview a batch of available cups, limited by free slots.
   save cup 2 as mug    Save a named visual reference; no movement.
   saved cups          List saved references.
@@ -104,16 +104,19 @@ def handle_terminal(session, line):
                 raise SelectionError(f"Cup {cup_id} is not in the current scan.")
             log(json.dumps(matches[0], indent=2))
         else:
-            log(f"Rechecking cup {cup_id} against a new camera observation ...")
+            log(f"Preparing cup {cup_id} from the saved workspace snapshot ...")
             session.execute_selection(action=command, capture_id=session.inventory["capture"], cup_id=cup_id)
             if session.robot.dry_run:
                 log("Preview complete; no robot commands sent.")
             elif command == "goto":
-                log("Robot reported the cup replaced and the left arm home. Scan again before another cup."
-                    if session.left_only else
-                    "Robot reported the pick, handover and placement complete; both home poses checked. Scan again before another cup.")
+                if session.left_only:
+                    finish = "the left arm home" if session.home_after_cup else "the left arm lifted clear"
+                    log(f"Robot reported the cup replaced and {finish}. Select another available cup from this scan.")
+                else:
+                    finish = "both home poses checked" if session.home_after_cup else "both arms at clearance poses"
+                    log(f"Robot reported the pick, handover and placement complete; {finish}. Select another available cup from this scan.")
             else:
-                log("Robot reported DONE above the selected cup. Scan again before another move.")
+                log("Robot reported DONE above the selected cup. This scan remains available.")
     else:
         raise SelectionError("Unknown command. Use scan, list, show <id>, goto <id>, hover <id>, reset, help, or quit.")
     return True

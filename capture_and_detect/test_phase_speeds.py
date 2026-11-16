@@ -36,37 +36,51 @@ class PhasePlanTests(unittest.TestCase):
                 name = job["name"]
                 expected = min(speed, 200) if job["endpoint"].endswith("/home") else (
                     min(speed, 100) if name in ("descend_to_cup", "lift_cup", "left_handover",
-                                                "right_turn_half", "right_retreat") else speed)
+                                                "right_retreat") else speed)
                 self.assertEqual(job["body"]["speed"], expected, name)
+                if "points" in job["body"]:
+                    self.assertEqual(len(job["body"]["points"]), 2)
+                    for index, point in enumerate(job["body"]["points"]):
+                        self.assertEqual(point["speed"], expected, (name, index))
 
     def test_selected_phase_speeds_leave_all_geometry_grippers_and_dependencies_unchanged(self):
         original = self.plan()
         changed = self.plan(phase_speeds=self.profile)
         groups = {"pick_lift": ("descend_to_cup", "lift_cup", "left_handover"),
-                  "handover": ("right_via", "right_beside", "right_below", "right_take", "right_lower"),
-                  "flip": ("right_turn_half", "right_retreat"), "placement": ("right_place", "right_clear")}
+                  "handover": ("right_beside", "right_below", "right_take", "right_lower"),
+                  "flip": ("right_retreat",), "placement": ("right_place", "right_clear")}
         expected = {name: self.profile[phase] for phase, names in groups.items() for name in names}
         for before, after in zip(original, changed):
             if after["name"] in expected:
                 self.assertEqual(after["body"]["speed"], expected[after["name"]])
                 after["body"]["speed"] = before["body"]["speed"]
+                if "points" in after["body"]:
+                    self.assertEqual(len(after["body"]["points"]), 2)
+                    for initial, point in zip(before["body"]["points"], after["body"]["points"]):
+                        self.assertEqual(point["speed"], expected[after["name"]])
+                        point["speed"] = initial["speed"]
             self.assertEqual(after, before)
 
-    def test_overall_home_and_adjusted_alignment_caps_remain_effective(self):
+    def test_overall_home_caps_and_phase_speeds_ignore_legacy_alignment(self):
         fast = dict.fromkeys(self.profile, 1500)
         for cap in (7, 75, 300):
             jobs = {job["name"]: job for job in self.plan(speed=cap, phase_speeds=fast,
-                                                        handover_offset=(1, -1, 2))}
+                                                        handover_offset=(1, -1, 2),
+                                                        home_after_cup=True)}
             for job in jobs.values():
                 if "speed" in job["body"]:
                     self.assertLessEqual(job["body"]["speed"], cap)
+                for point in job["body"].get("points", []):
+                    self.assertLessEqual(point["speed"], cap)
                 if job["endpoint"].endswith("/home"):
                     self.assertLessEqual(job["body"]["speed"], 200)
             for name in ("right_beside", "right_below", "right_take", "right_lower"):
                 body = jobs[name]["body"]
-                self.assertEqual((body["speed"], body["acceleration"], body["ramp"]), (min(cap, 25), 20, 10))
-            for name in ("right_turn_half", "right_retreat"):
-                self.assertEqual(jobs[name]["body"]["acceleration"], 30)
+                self.assertEqual((body["speed"], body["acceleration"], body["ramp"]), (cap, 100, 100))
+            self.assertEqual([point["speed"] for point in jobs["right_beside"]["body"]["points"]],
+                             [cap, cap])
+            self.assertEqual(jobs["right_retreat"]["body"]["acceleration"], 30)
+            self.assertEqual([point["speed"] for point in jobs["right_retreat"]["body"]["points"]], [cap, cap])
         slow_alignment = dict(self.profile, handover=10)
         jobs = self.plan(phase_speeds=slow_alignment, handover_offset=(1, 0, 0))
         self.assertEqual(next(j["body"]["speed"] for j in jobs if j["name"] == "right_take"), 10)
@@ -151,9 +165,12 @@ class PhaseControllerTests(unittest.TestCase):
         payload = {key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")}
         state = self.submit("confirm", **payload)
         self.assertIsNone(state["error"])
-        turns = [job for job in self.fixture.robot.jobs if job["name"] == "right_turn_half"]
+        turns = [job for job in self.fixture.robot.jobs if job["name"] == "right_retreat"]
         self.assertEqual(len(turns), 2)
-        self.assertTrue(all(job["body"]["speed"] == 200 for job in turns))
+        for job in turns:
+            self.assertEqual(job["endpoint"], "/robot/rws/path")
+            self.assertEqual(job["body"]["speed"], 200)
+            self.assertEqual([point["speed"] for point in job["body"]["points"]], [200, 200])
         for cup in self.fixture.session.inventory["cups"][:2]:
             self.assertEqual(cup["last_verification"]["motion_settings"]["phase_speeds"], self.profile)
 

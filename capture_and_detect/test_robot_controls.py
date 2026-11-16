@@ -108,7 +108,8 @@ class RobotControlSessionTests(OfflineControlFixture):
                 self.robot.dry_run = True
                 session = CupSession(self.fixture.capture, Mock(), self.robot, "cal-1",
                                      clock=lambda: self.fixture.now,
-                                     placing_grid=self.session.placing_grid, **settings)
+                                     placing_grid=self.session.placing_grid,
+                                     home_after_cup=True, **settings)
                 self.assertEqual(session.motion_settings()["speed"], normal_speed)
                 self.assertEqual(session.motion_settings()["home_speed"], home_speed)
                 scan = session.scan()
@@ -121,8 +122,8 @@ class RobotControlSessionTests(OfflineControlFixture):
                                ("left_ready", "left_home_lateral", "right_place")]
                 self.assertEqual(len(normal_jobs), 3)
                 self.assertTrue(all(job["body"]["speed"] == normal_speed for job in normal_jobs))
-                flip_jobs = [job for job in jobs if job["name"] in ("right_turn_half", "right_retreat")]
-                self.assertEqual([job["body"]["speed"] for job in flip_jobs], [min(normal_speed, 100)] * 2)
+                flip = next(job["body"] for job in jobs if job["name"] == "right_retreat")
+                self.assertEqual([point["speed"] for point in flip["points"]], [min(normal_speed, 100)] * 2)
 
     def test_applying_speed_caps_automated_homes_without_changing_manual_home_limit(self):
         self.assertEqual(self.session.motion_settings()["home_speed"], 200)

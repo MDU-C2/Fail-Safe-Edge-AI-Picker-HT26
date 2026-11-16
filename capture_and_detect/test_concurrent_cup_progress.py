@@ -35,7 +35,7 @@ class ConcurrentRobotDouble:
             self.jobs.append(copy.deepcopy(job))
             return job
 
-        parallel_names = ("left_handover", "right_via")
+        parallel_names = ("left_handover", "right_beside")
         for index, job in enumerate(jobs):
             if job["name"] == parallel_names[1]:
                 continue
@@ -100,10 +100,10 @@ class ConcurrentCupProgressTests(unittest.TestCase):
     def test_reverse_completion_keeps_other_arm_pending_and_actual_confirmation_order(self):
         jobs = self.execute()
         both = self.observed["both_pending"]
-        self.assertEqual(both["cup"]["execution"]["pending_steps"], ["left_handover", "right_via"])
-        self.assertEqual(set(both["cup"]["execution"]["pending_jobs"]), {"left_handover", "right_via"})
-        self.assertEqual(both["progress"]["step"], "left_handover + right_via")
-        self.assertEqual(both["progress"]["pending_steps"], ["left_handover", "right_via"])
+        self.assertEqual(both["cup"]["execution"]["pending_steps"], ["left_handover", "right_beside"])
+        self.assertEqual(set(both["cup"]["execution"]["pending_jobs"]), {"left_handover", "right_beside"})
+        self.assertEqual(both["progress"]["step"], "left_handover + right_beside")
+        self.assertEqual(both["progress"]["pending_steps"], ["left_handover", "right_beside"])
         right = self.observed["right_done"]
         execution = right["cup"]["execution"]
         self.assertEqual(execution["pending_steps"], ["left_handover"])
@@ -113,7 +113,7 @@ class ConcurrentCupProgressTests(unittest.TestCase):
         self.assertEqual(right["progress"]["step"], "left_handover")
         self.assertEqual(right["journal"]["context"]["execution"], execution)
         names = [job["name"] for job in self.session.inventory["cups"][0]["execution"]["completed_steps"]]
-        self.assertLess(names.index("right_via"), names.index("left_handover"))
+        self.assertLess(names.index("right_beside"), names.index("left_handover"))
         self.assertEqual(set(names), {job["name"] for job in jobs})
 
     def test_placement_and_recovery_remain_reserved_until_executor_returns(self):
@@ -136,14 +136,14 @@ class ConcurrentCupProgressTests(unittest.TestCase):
         execution = cup["execution"]
         self.assertEqual(execution["state"], "interrupted")
         self.assertEqual(execution["pending_steps"], ["left_handover"])
-        self.assertEqual(execution["completed_steps"][-1]["name"], "right_via")
+        self.assertEqual(execution["completed_steps"][-1]["name"], "right_beside")
         self.assertEqual(json.loads(self.journal.path.read_text())["context"]["execution"], execution)
         self.assertTrue(self.session.placing_grid.snapshot()["locations"][0]["reserved"])
         self.assertTrue(self.session.motion_uncertain)
         self.assertFalse(self.session.scan_usable)
         self.assertTrue(self.journal.required())
         self.assertEqual(self.controller.state()["progress"]["pending_steps"], ["left_handover"])
-        self.assertNotIn("right_beside", [job["name"] for job in self.robot.jobs])
+        self.assertNotIn("right_open", [job["name"] for job in self.robot.jobs])
 
     def test_premature_executor_return_cannot_complete_placement(self):
         self.robot.return_early = True
@@ -176,7 +176,7 @@ class ConcurrentCupProgressTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "Software stop requested"):
             self.execute()
         execution = self.session.inventory["cups"][0]["execution"]
-        self.assertEqual(execution["pending_steps"], ["left_handover", "right_via"])
+        self.assertEqual(execution["pending_steps"], ["left_handover", "right_beside"])
         self.assertTrue(self.session.placing_grid.snapshot()["locations"][0]["reserved"])
         self.assertTrue(self.session.motion_uncertain)
         self.assertTrue(self.journal.required())

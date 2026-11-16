@@ -49,7 +49,8 @@ Actions:
 - list: ask what cups were found or which are available in the current scene.
 - show: ask for details about one cup.
 - goto: explicitly request picking/transferring one cup using the fixed sequence:
-  left arm picks it, right arm receives and places it, both arms return home.
+  left arm picks it, right arm receives and places it, both arms finish at clearance
+  poses unless automatic Home was explicitly enabled in the application.
   The literal command 'goto 2' means that full sequence for cup 2.
 - hover: explicitly move above one cup, without picking or transferring it.
 - goto_all: explicitly pick all available cups. The application previews a batch

@@ -128,8 +128,7 @@ an interrupted state transfer. Do not reinitialize an existing deployment.
 
 Back up the existing state before first migration, while its controller is
 stopped. Keep the original state and journal. The selected source's occupancy,
-clean recovery record, normal/home speed, camera-height choice and handover
-offset transfer during a successful switch. The target saves its previous grid
+clean recovery record, normal/home speed, camera-height choice transfer during a successful switch. The target saves its previous grid
 and journal in `device-state-before-handoff.json`. Captures and saved-cup libraries
 remain on their respective devices; scan again after every switch.
 
@@ -212,8 +211,8 @@ reuses an existing direct Mac dashboard's grid, captures, recovery journal and
 saved-cup library. Without it, the standard files in `state_dir` are used.
 The table-reference filename must correspond to the placement-grid filename.
 All devices still need matching geometry, calibration and table reference.
-The local computer defaults to a 30-second verification-image limit; remote service
-settings are unchanged. `GATEWAY_TOKEN` supplies the local computer credential when
+The local computer uses one saved snapshot without per-cup captures or image-age
+expiry. Updated remote services use the same snapshot workflow. `GATEWAY_TOKEN` supplies the local computer credential when
 set; otherwise the existing state-directory token is used.
 
 Close the old direct dashboard and separate Mac service before starting this
@@ -319,7 +318,7 @@ All services default to dry-run without `--live`. The dashboard and all configur
 services must agree on live/dry-run mode. For a dry-run installation, omit
 `--live` from all four commands. Activation loads the selected model; startup
 does not scan or move the robot. Service defaults are five raw depth samples per
-observation, one full verification observation and a 60-second result-age limit.
+scan observation. Picks reuse that snapshot without new observations or a result-age limit.
 Camera-derived pick height stays off unless explicitly enabled. Existing motion
 limits and per-action confirmation remain in force.
 
@@ -343,16 +342,15 @@ they are unavailable on the remote services.
 
 The dashboard opens on **Pick cups**, with the camera, cup selection, preview
 and placement grid together. **Robot controls** contains Home, grippers,
-controller status and recovery. **Settings** contains speed, handover alignment,
+controller status and recovery. **Settings** contains speed,
 placement-record release and service diagnostics. The device selector remains
 above these tabs; **Stop robot** and current-task progress stay in the header
 while scrolling. The activity log is under Settings. Changing a
 tab only changes the browser view and sends no controller request.
 
-Home and gripper actions appear in the **Robot controls** tab. Advertised
-actions whose required status connection is missing remain visible but disabled,
-with the reason shown. **Refresh robot status** is read-only. Unsupported gateway
-routes remain hidden. To pick just one cup, use **Scan workspace**, select it in
+Home and gripper actions appear in the **Robot controls** tab. Gateway discovery is informational and does not hide these controls.
+**Refresh robot status** is read-only. Each action retains confirmation, ownership,
+Stop and recovery checks; actual controller failures are reported. To pick just one cup, use **Scan workspace**, select it in
 the image or cup list, then **Pick selected cup** and review its preview. The
 button remains visible with guidance when a fresh scan or selection is needed.
 New pick or manual-action previews open their corresponding tab; repeated status

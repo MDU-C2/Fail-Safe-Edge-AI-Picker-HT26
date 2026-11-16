@@ -84,7 +84,7 @@ class WebNamedCupTests(unittest.TestCase):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertEqual(response.content, self.fixture.store.get_id(saved["id"])["image_bytes"])
 
-    def test_pick_saved_scans_then_previews_and_only_confirm_executes(self):
+    def test_pick_saved_reuses_snapshot_and_only_confirm_executes(self):
         saved = self.save()
         state = self.post("pick_saved", id=saved["id"])
         self.assertIsNone(state["error"])
@@ -92,14 +92,14 @@ class WebNamedCupTests(unittest.TestCase):
         self.assertEqual(proposal["action"], "goto")
         self.assertEqual(proposal["saved_cup"]["id"], saved["id"])
         self.assertEqual(proposal["saved_cup"]["thumbnail_url"], saved["thumbnail_url"])
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual(self.fixture.robot.jobs, [])
         self.fixture.interpreter.interpret.assert_not_called()
         payload = {key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")}
         state = self.post("confirm", **payload)
         self.assertIsNone(state["error"])
         self.assertEqual(len(self.fixture.robot.jobs), TRANSFER_JOB_COUNT)
-        self.assertEqual(self.fixture.captures, ["scan", "scan", "verification"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual(self.fixture.matcher.match.call_count, 2)
         self.assertIsNone(state["proposal"])
 
@@ -112,7 +112,7 @@ class WebNamedCupTests(unittest.TestCase):
         self.assertIsNone(state["proposal"])
         self.assertEqual(self.client.get(saved["thumbnail_url"]).status_code, 404)
         self.assertEqual(self.fixture.robot.jobs, [])
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
+        self.assertEqual(self.fixture.captures, ["scan"])
 
     def test_name_command_route_uses_visual_match_without_text_interpretation(self):
         saved = self.save()

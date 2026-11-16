@@ -36,21 +36,20 @@ class EnterProcessTests(unittest.TestCase):
         objects = [detection("CUP", 100), detection("CUP BASE", 100),
                    detection("CUP", 200, x=550), detection("CUP BASE", 200, x=550)]
         return inventory(capture=f"frame-{len(self.captures)}", sequence=10 + len(self.captures),
-                         objects=objects), 99
+                         objects=objects), self.session.clock()
 
     def test_enter_uses_fresh_scan_then_checked_batch_with_no_second_confirmation(self):
         self.session.inventory = inventory(capture="old-scan")
         self.session.scan_usable = True
         with patch.object(self.session, "execute_batch", wraps=self.session.execute_batch) as execute:
             self.assertTrue(app.handle_process_input(self.session, ""))
-        self.assertEqual(self.captures, [("scan", 0), ("verification", 0),
-                                        ("verification", TRANSFER_JOB_COUNT)])
+        self.assertEqual(self.captures, [("scan", 0)])
         self.assertEqual(len(self.robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertEqual(execute.call_args.kwargs["capture_id"], "frame-1")
         self.assertEqual(execute.call_args.kwargs["cup_ids"], [1, 2])
         self.assertEqual(execute.call_args.kwargs["expected_motion"], self.session.motion_settings())
         self.assertEqual(self.session.inventory["batch_execution"]["completed_cups"], [1, 2])
-        self.assertFalse(self.session.scan_usable)
+        self.assertTrue(self.session.scan_usable)
 
     def test_each_enter_captures_again_even_after_a_dry_run(self):
         self.robot.dry_run = True
@@ -58,8 +57,8 @@ class EnterProcessTests(unittest.TestCase):
         app.handle_process_input(self.session, "")
         app.handle_process_input(self.session, "   ")
         self.assertEqual([purpose for purpose, _ in self.captures],
-                         ["scan", "verification", "verification"] * 2)
-        self.assertEqual(self.session.inventory["capture"], "frame-4")
+                         ["scan", "scan"])
+        self.assertEqual(self.session.inventory["capture"], "frame-2")
         self.assertEqual(self.grid.path.read_bytes(), original_grid)
         self.assertIn("no robot commands sent", self.output.getvalue())
 
@@ -71,7 +70,7 @@ class EnterProcessTests(unittest.TestCase):
                              placing_grid=self.grid, home_after_cup=False)
         app.handle_process_input(session, "")
         self.assertEqual(session.batch_progress["completed_cups"], [1, 2])
-        self.assertEqual(len(self.robot.jobs), 46)
+        self.assertEqual(len(self.robot.jobs), 42)
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in self.robot.jobs))
         self.assertIn("left arm above handover, right arm above the last placement", self.output.getvalue())
         self.assertNotIn("both home poses checked", self.output.getvalue())
@@ -257,7 +256,7 @@ class EnterProcessTests(unittest.TestCase):
 
     def test_main_defaults_to_enter_mode_and_explicit_flags_keep_command_shell(self):
         for flags, command_mode, recovery_required in (([], False, False), (["--home-after-cup"], False, False),
-                (["--commands"], True, False),
+                (["--commands"], True, False), (["--commands", "--home-after-cup"], True, False),
                 (["--llm"], True, False), ([], False, True), (["--commands"], True, True)):
             with self.subTest(flags=flags, recovery_required=recovery_required), ExitStack() as stack:
                 self.session.motion_uncertain = recovery_required
@@ -295,7 +294,7 @@ class EnterProcessTests(unittest.TestCase):
                 self.assertEqual(command.call_count, int(command_mode))
                 self.assertEqual(process.call_count, int(not command_mode))
                 self.assertEqual(create_session.call_args.kwargs["home_after_cup"],
-                                 command_mode or "--home-after-cup" in flags)
+                                 "--home-after-cup" in flags)
                 self.assertEqual(read.call_args.args, ("cups> ",) if command_mode else ())
                 if not command_mode:
                     self.assertIn(app.terminal_prompt(self.session), self.output.getvalue())

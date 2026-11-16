@@ -46,11 +46,8 @@ class GripGeometryTests(unittest.TestCase):
                 self.assertTrue(cup["selectable"])
                 json.dumps(cup, allow_nan=False)
 
-    def test_whole_cup_without_a_base_cannot_supply_aperture(self):
-        cup = observe([{**base(), "class": "CUP"}])["cups"][0]
-        self.assertIsNone(cup["diameter"])
-        self.assertIsNone(cup["aperture"])
-        self.assertFalse(cup["selectable"])
+    def test_whole_cup_without_a_base_is_not_a_v4_pick_candidate(self):
+        self.assertEqual(observe([{**base(), "class": "CUP"}])["cups"], [])
 
     def test_yaw_is_perpendicular_and_uses_symmetric_jaw_orientation(self):
         for dx, dy, expected in ((40, 0, 90), (0, 40, 180), (-40, 0, 90),
@@ -78,19 +75,17 @@ class GripGeometryTests(unittest.TestCase):
         self.assertTrue(cups[0]["has_handle"])
         self.assertFalse(cups[1]["has_handle"])
 
-    def test_equal_distance_cup_ownership_is_explicitly_ambiguous(self):
-        cups = observe([base(), base(2, x=600, u=200), handle(x=550)])["cups"]
-        for cup in cups:
-            self.assertIn("multiple cup bases", cup["grip_geometry_error"])
-            self.assertFalse(cup["has_handle"])
-            self.assertEqual(cup["rz"], 180)
-            self.assertTrue(cup["selectable"])
-            self.assertEqual(len(hover_moves(cup)), 2)
+    def test_equal_distance_handle_ownership_uses_v4_confidence_order(self):
+        cups = observe([base(confidence=.8), base(2, x=600, u=200, confidence=.9), handle(x=550)])["cups"]
+        self.assertEqual([cup["has_handle"] for cup in cups], [False, True])
+        self.assertEqual(cups[1]["rz"], 90)
+        self.assertTrue(all(cup["grip_geometry_error"] is None for cup in cups))
 
-    def test_equal_distance_distinct_handles_are_ambiguous(self):
+    def test_equal_distance_handles_use_the_first_detection_as_in_v4(self):
         cup = observe([base(), handle(x=520), handle(x=500, y=120)])["cups"][0]
-        self.assertIn("ambiguous grip direction", cup["grip_geometry_error"])
-        self.assertFalse(cup["has_handle"])
+        self.assertTrue(cup["has_handle"])
+        self.assertEqual(cup["rz"], 90)
+        self.assertIsNone(cup["grip_geometry_error"])
 
     def test_repeated_identical_handle_detection_retains_one_direction(self):
         cup = observe([base(), handle(), handle(detection_id=100)])["cups"][0]
@@ -98,36 +93,35 @@ class GripGeometryTests(unittest.TestCase):
         self.assertEqual(cup["rz"], 90)
         self.assertIsNone(cup["grip_geometry_error"])
 
-    def test_zero_length_handle_direction_is_an_error_but_hover_remains_valid(self):
+    def test_overlapping_handle_uses_v4_atan2_orientation(self):
         cup = observe([base(), handle(x=500)])["cups"][0]
-        self.assertIn("undefined", cup["grip_geometry_error"])
-        self.assertFalse(cup["has_handle"])
-        self.assertTrue(cup["selectable"])
-        self.assertEqual(len(hover_moves(cup)), 2)
+        self.assertTrue(cup["has_handle"])
+        self.assertEqual(cup["rz"], 90)
+        self.assertIsNone(cup["grip_geometry_error"])
 
-    def test_invalid_handle_coordinates_or_depth_cannot_supply_yaw(self):
-        for key in ("robot_x_mm", "robot_y_mm", "robot_z_mm", "z_mm"):
+    def test_handle_yaw_uses_valid_xy_without_extra_depth_quality_gate(self):
+        for key in ("robot_x_mm", "robot_y_mm"):
             for value in (None, True, "40", float("nan"), float("inf")):
                 with self.subTest(key=key, value=value):
                     cup = observe([base(), handle(**{key: value})])["cups"][0]
                     self.assertFalse(cup["has_handle"])
                     self.assertEqual(cup["rz"], 180)
-                    self.assertIsNone(cup["grip_geometry_error"])
-        for changes in ({"z_mm": 0}, {"z_mm": -1}, {"depth_quality": {"valid": False}}):
+        for changes in ({"z_mm": 0}, {"robot_z_mm": None}, {"depth_quality": {"valid": False}}):
             cup = observe([base(), handle(**changes)])["cups"][0]
-            self.assertFalse(cup["has_handle"])
+            self.assertTrue(cup["has_handle"])
+            self.assertEqual(cup["rz"], 90)
 
-    def test_unreliable_base_cannot_supply_handle_geometry(self):
-        cup = observe([base(depth_quality={"valid": False, "reason": "unreliable"}), handle()])["cups"][0]
-        self.assertFalse(cup["selectable"])
-        self.assertFalse(cup["has_handle"])
-        self.assertEqual(cup["rz"], 180)
+    def test_legacy_core_quality_does_not_add_a_v4_candidate_gate(self):
+        cup = observe([base(depth_quality={"valid": False, "reason": "legacy"}), handle()])["cups"][0]
+        self.assertTrue(cup["selectable"])
+        self.assertTrue(cup["has_handle"])
+        self.assertEqual(cup["rz"], 90)
 
-    def test_blocked_neighbour_keeps_its_handle_from_a_farther_selectable_cup(self):
+    def test_out_of_reach_neighbour_keeps_its_own_handle_as_in_v4(self):
         cups = observe([base(x=750), base(2, x=801, u=200), handle(x=805)])["cups"]
         self.assertTrue(cups[0]["selectable"])
         self.assertFalse(cups[1]["selectable"])
-        self.assertFalse(any(cup["has_handle"] for cup in cups))
+        self.assertEqual([cup["has_handle"] for cup in cups], [False, True])
 
     def test_geometry_is_recomputed_per_observation_without_mutating_detections(self):
         objects = [base(rz=55, aperture=999, has_handle=True), handle(x=540, y=140)]

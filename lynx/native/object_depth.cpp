@@ -19,8 +19,8 @@ using json = nlohmann::json;
 constexpr int kMaxWidth = 1920, kMaxHeight = 1080;
 constexpr std::size_t kMaxDetections = 64, kMaxMaskBytes = 64 * 1024 * 1024;
 constexpr std::size_t kMaxObjectCropPixels = 262144, kMaxRetainedCropPixels = 8388608;
-constexpr int kEdgePixels = 5, kMinCorePixels = 9;
-constexpr double kValidFraction = 0.6, kCupZMin = -30.0, kCupZMax = 150.0;
+constexpr int kEdgePixels = 5;
+constexpr double kCupZMin = -30.0, kCupZMax = 150.0;
 
 [[noreturn]] void invalid(const char* message) { throw std::invalid_argument(message); }
 
@@ -139,14 +139,12 @@ struct MaskGeometry {
     cv::Mat crop;
     // Crop-local uint32 indices avoid two full-image cv::Point vectors when a
     // large mask is returned. Each index is bounded by 1920*1080.
-    PixelIndices pixels, inner, core, center;
+    PixelIndices pixels, inner;
     double u = 0, v = 0;
-    int center_size = 0;
-    const char* core_failure = nullptr;
 };
 
 MaskGeometry mask_geometry(const cv::Mat& raw, int origin_x, int origin_y,
-                           int width, int height, bool base) {
+                           int width, int height) {
     MaskGeometry result;
     const auto local = cv::boundingRect(raw);
     if (local.empty()) invalid("Native mask is empty");
@@ -164,92 +162,24 @@ MaskGeometry mask_geometry(const cv::Mat& raw, int origin_x, int origin_y,
     }
     result.u = static_cast<double>(sx)/result.pixels.size();
     result.v = static_cast<double>(sy)/result.pixels.size();
-    if (!base) {
-        // Five explicit background pixels reproduce full-frame erosion. At a
-        // genuine image edge, clipping preserves OpenCV's high exterior border.
-        const cv::Rect frame(0, 0, width, height);
-        const cv::Rect expanded = (result.bounds + cv::Size(2*kEdgePixels, 2*kEdgePixels)
-                                   - cv::Point(kEdgePixels, kEdgePixels)) & frame;
-        cv::Mat padded(expanded.height, expanded.width, CV_8U, cv::Scalar(0));
-        result.crop.copyTo(padded(cv::Rect(result.bounds.x-expanded.x, result.bounds.y-expanded.y,
-                                           result.bounds.width, result.bounds.height)));
-        cv::Mat shrunk;
-        cv::erode(padded, shrunk, cv::Mat::ones(2*kEdgePixels+1, 2*kEdgePixels+1, CV_8U));
-        result.inner.reserve(result.pixels.size());
-        for (const auto index : result.pixels) {
-            const int x = result.bounds.x+index%result.bounds.width;
-            const int y = result.bounds.y+index/result.bounds.width;
-            if (shrunk.at<unsigned char>(y-expanded.y, x-expanded.x)) result.inner.push_back(index);
-        }
-        if (result.inner.empty()) result.inner = result.pixels;
-        return result;
-    }
-    if (result.pixels.size() < kMinCorePixels) {
-        result.core_failure = "CUP BASE mask is too small for reliable interior depth.";
-        return result;
-    }
-    cv::Mat padded, distances;
-    cv::copyMakeBorder(result.crop, padded, 1, 1, 1, 1, cv::BORDER_CONSTANT, cv::Scalar(0));
-    cv::distanceTransform(padded, distances, cv::DIST_L2, 5);
-    double maximum = 0;
-    cv::minMaxLoc(distances, nullptr, &maximum);
-    const double minimum = std::max(2.0, maximum*0.5);
-    const int cx = static_cast<int>(std::floor(result.u+0.5));
-    const int cy = static_cast<int>(std::floor(result.v+0.5));
-    const int lx = cx-result.bounds.x, ly = cy-result.bounds.y;
-    if (!result.crop.at<unsigned char>(ly, lx) || distances.at<float>(ly+1, lx+1) < minimum) {
-        result.core_failure = "CUP BASE centre is not inside a sufficiently thick mask interior.";
-        return result;
-    }
-    const double half_width = std::max(1.5, result.bounds.width/4.0);
-    const double half_height = std::max(1.5, result.bounds.height/4.0);
+    // Five explicit background pixels reproduce full-frame erosion. At a
+    // genuine image edge, clipping preserves OpenCV's high exterior border.
+    const cv::Rect frame(0, 0, width, height);
+    const cv::Rect expanded = (result.bounds + cv::Size(2*kEdgePixels, 2*kEdgePixels)
+                               - cv::Point(kEdgePixels, kEdgePixels)) & frame;
+    cv::Mat padded(expanded.height, expanded.width, CV_8U, cv::Scalar(0));
+    result.crop.copyTo(padded(cv::Rect(result.bounds.x-expanded.x, result.bounds.y-expanded.y,
+                                       result.bounds.width, result.bounds.height)));
+    cv::Mat shrunk;
+    cv::erode(padded, shrunk, cv::Mat::ones(2*kEdgePixels+1, 2*kEdgePixels+1, CV_8U));
+    result.inner.reserve(result.pixels.size());
     for (const auto index : result.pixels) {
-        const int x = index%result.bounds.width, y = index/result.bounds.width;
-        if (std::abs(x+result.bounds.x-result.u) <= half_width && std::abs(y+result.bounds.y-result.v) <= half_height &&
-            distances.at<float>(y+1, x+1) >= minimum)
-            result.core.push_back(index);
+        const int x = result.bounds.x+index%result.bounds.width;
+        const int y = result.bounds.y+index/result.bounds.width;
+        if (shrunk.at<unsigned char>(y-expanded.y, x-expanded.x)) result.inner.push_back(index);
     }
-    for (int y = std::max(0, cy-1); y < std::min(height, cy+2); ++y)
-        for (int x = std::max(0, cx-1); x < std::min(width, cx+2); ++x) {
-            ++result.center_size;
-            if (result.bounds.contains(cv::Point(x, y)) &&
-                result.crop.at<unsigned char>(y-result.bounds.y, x-result.bounds.x))
-                result.center.push_back(static_cast<std::uint32_t>((y-result.bounds.y)*result.bounds.width+x-result.bounds.x));
-        }
+    if (result.inner.empty()) result.inner = result.pixels;
     return result;
-}
-
-struct DepthValue { std::optional<double> value; json quality; };
-
-DepthValue core_depth(const MaskGeometry& mask, const cv::Mat& depth) {
-    std::size_t valid_mask = 0;
-    for (const auto index : mask.pixels)
-        valid_mask += depth.at<std::uint16_t>(mask.bounds.y+index/mask.bounds.width, mask.bounds.x+index%mask.bounds.width) > 0;
-    json quality = {{"method", "interior_median"}, {"valid", false},
-                    {"mask_pixels", mask.pixels.size()}, {"valid_mask_pixels", valid_mask},
-                    {"core_pixels", 0}, {"valid_core_pixels", 0}, {"core_valid_fraction", 0.0},
-                    {"center_pixels", 0}, {"valid_center_pixels", 0}};
-    auto rejected = [&](const char* reason) -> DepthValue {
-        quality["reason"] = reason;
-        return {std::nullopt, quality};
-    };
-    if (mask.core_failure) return rejected(mask.core_failure);
-    std::size_t valid_core = 0, valid_center = 0;
-    const auto value = values_at(depth, mask.bounds, mask.core, &valid_core);
-    for (const auto index : mask.center)
-        valid_center += depth.at<std::uint16_t>(mask.bounds.y+index/mask.bounds.width, mask.bounds.x+index%mask.bounds.width) > 0;
-    quality["core_pixels"] = mask.core.size(); quality["valid_core_pixels"] = valid_core;
-    quality["core_valid_fraction"] = mask.core.empty() ? 0.0 : rounded(static_cast<double>(valid_core)/mask.core.size(), 4);
-    quality["center_pixels"] = mask.center.size(); quality["valid_center_pixels"] = valid_center;
-    if (mask.core.size() < kMinCorePixels || mask.center_size != 9 || mask.center.size() != 9)
-        return rejected("CUP BASE interior is too small for reliable depth.");
-    if (valid_center < static_cast<std::size_t>(std::ceil(9*kValidFraction)))
-        return rejected("CUP BASE has insufficient valid depth at its centre.");
-    if (valid_core < static_cast<std::size_t>(std::ceil(mask.core.size()*kValidFraction)))
-        return rejected("CUP BASE has insufficient valid depth across its interior.");
-    quality["valid"] = true;
-    quality["reason"] = "Finite positive depth covers the centre and interior.";
-    return {value, quality};
 }
 
 std::string base64(const std::vector<unsigned char>& bytes) {
@@ -280,36 +210,24 @@ json segmentation(const MaskGeometry& mask) {
 
 json describe(const std::string& name, double confidence, const MaskGeometry& mask,
               const std::vector<cv::Mat>& depths, const CameraGeometry& camera) {
-    const bool is_base = name == "CUP BASE";
-    auto latest = is_base ? core_depth(mask, depths.back())
-                          : DepthValue{values_at(depths.back(), mask.bounds, mask.inner), nullptr};
-    auto value = latest.value;
-    json frames = json::array(), robot_frames = json::array(), frame_quality = json::array();
+    auto value = values_at(depths.back(), mask.bounds, mask.inner);
+    json frames = json::array(), robot_frames = json::array();
     if (depths.size() > 1) {
-        double low = std::numeric_limits<double>::infinity(), high = -low, sum = 0;
-        bool stable = true, all_valid = true;
+        double sum = 0;
+        std::size_t count = 0;
         for (const auto& depth : depths) {
-            const auto current = is_base ? core_depth(mask, depth)
-                                        : DepthValue{values_at(depth, mask.bounds, mask.inner), nullptr};
-            frames.push_back(measurement(current.value));
-            if (current.value) {
-                low = std::min(low, *current.value); high = std::max(high, *current.value);
-                sum += *current.value;
-                robot_frames.push_back(rounded(camera.robot(mask.u, mask.v, *current.value)[2], 1));
-            } else { stable = false; robot_frames.push_back(nullptr); }
-            if (is_base) { frame_quality.push_back(current.quality); all_valid &= current.quality.at("valid").get<bool>(); }
+            const auto current = values_at(depth, mask.bounds, mask.inner);
+            frames.push_back(measurement(current));
+            if (current) {
+                // V4 averages the logged per-frame mask medians.
+                sum += rounded(*current, 1);
+                ++count;
+                robot_frames.push_back(rounded(camera.robot(mask.u, mask.v, *current)[2], 1));
+            } else {
+                robot_frames.push_back(nullptr);
+            }
         }
-        stable = stable && high-low <= 20.0;
-        value = stable ? std::optional<double>(sum/depths.size()) : std::nullopt;
-        if (is_base) {
-            latest.quality["method"] = "temporal_interior_mean";
-            latest.quality["sample_count"] = depths.size(); latest.quality["frame_quality"] = frame_quality;
-            latest.quality["valid"] = stable && all_valid;
-            latest.quality["reason"] = stable && all_valid
-                ? "All frame cores have stable positive depth."
-                : "CUP BASE depth is missing or varies by more than 20 mm across frames.";
-            if (!(stable && all_valid)) value = std::nullopt;
-        }
+        if (count) value = sum/count;
     }
     json result = {{"class", name}, {"confidence", rounded(confidence, 3)},
         {"x_px", rounded(mask.u, 1)}, {"y_px", rounded(mask.v, 1)},
@@ -325,7 +243,6 @@ json describe(const std::string& name, double confidence, const MaskGeometry& ma
         result["diameter_mm"] = rounded(2*std::sqrt(mask.pixels.size()/std::acos(-1.0))*(*value)/camera.fx, 1);
     }
     if (depths.size() > 1) { result["z_frames_mm"] = frames; result["robot_z_frames_mm"] = robot_frames; }
-    if (is_base) result["depth_quality"] = latest.quality;
     return result;
 }
 
@@ -411,7 +328,7 @@ nlohmann::json describe_objects(const nlohmann::json& detections,
         retained_crop_pixels += size;
         // Detector.analyse skips empty masks without renumbering detections.
         if (!cv::countNonZero(raw)) continue;
-        const auto mask = mask_geometry(raw, x, y, width, height, name == "CUP BASE");
+        const auto mask = mask_geometry(raw, x, y, width, height);
         auto object = describe(name, score, mask, depths, camera);
         object["detection_id"] = index;
         object["bbox_xyxy"] = {rounded(box[0], 1), rounded(box[1], 1), rounded(box[2], 1), rounded(box[3], 1)};

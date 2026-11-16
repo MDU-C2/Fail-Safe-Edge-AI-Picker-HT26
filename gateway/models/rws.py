@@ -228,3 +228,35 @@ class RwsMoveRequest(RwsMotionRequest):
             raise ValueError("Give all of rx, ry and rz, or none of them")
 
         return self
+
+
+class RwsPathPoint(BaseModel):
+    """One path point: tool0 in wobj0, mm and OrientZYX degrees.
+
+    linear selects MoveL instead of a joint move. speed and zone
+    default to the request's values. A zone of 0 stops at the point;
+    the last point always stops (fine), regardless of its zone.
+    """
+
+    x: FiniteFloat
+    y: FiniteFloat
+    z: FiniteFloat
+    rx: FiniteFloat
+    ry: FiniteFloat
+    rz: FiniteFloat
+    linear: bool = False
+    speed: FiniteFloat | None = Field(default=None, ge=1, le=1500)
+    zone: FiniteFloat | None = Field(default=None, ge=0, le=100)
+
+
+class RwsPathRequest(RwsMotionRequest):
+    """Up to eight points run as one job with blended intermediate points.
+
+    speed, acceleration and ramp are as for a move. max_acceleration
+    limits TCP acceleration and deceleration in m/s2 (PathAccLim);
+    leaving it out disables that additional limit.
+    """
+
+    points: list[RwsPathPoint] = Field(min_length=1, max_length=8)
+    zone: FiniteFloat = Field(default=10, ge=0, le=100)
+    max_acceleration: FiniteFloat | None = Field(default=None, ge=0.1, le=20)

@@ -28,8 +28,10 @@ MODULE CommServer
   PROC main()
     move_request_left := FALSE;
     go_home_left := FALSE;
+    path_len_left := 0;
     move_request_right := FALSE;
     go_home_right := FALSE;
+    path_len_right := 0;
     SocketClose server;
     SocketCreate server;
     SocketBind server, SERVER_IP, PORT;
@@ -108,11 +110,13 @@ MODULE CommServer
   ENDPROC
 
   PROC RunMoveLeft()
+    path_len_left := 0;                        ! legacy jobs must not reuse a staged path
     move_request_left := TRUE;                 ! start the job
     SocketSend client \Str:="STARTED";         ! ASYNC: answer at once, don't wait
   ENDPROC
 
   PROC RunMoveRight()
+    path_len_right := 0;                       ! legacy jobs must not reuse a staged path
     move_request_right := TRUE;
     SocketSend client \Str:="STARTED";         ! ASYNC
   ENDPROC

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 from handover_plan import handover_jobs
 from robot_client import RobotClient, RobotCommandError
+from test_gateway_capabilities import schema_fixture
 
 
 def reply(payload):
@@ -94,7 +95,8 @@ class ParallelRobotClientTests(unittest.TestCase):
             return self.response({"success": True, "lease": {"active": True,
                 "session_id": "offline-parallel-session", "client_id": "test",
                 "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()}})
-        self.assertIn(endpoint, {RobotClient.MOVE_ENDPOINT, RobotClient.HOME_ENDPOINT, RobotClient.GRIPPER_ENDPOINT})
+        self.assertIn(endpoint, {RobotClient.MOVE_ENDPOINT, RobotClient.PATH_ENDPOINT,
+                                 RobotClient.HOME_ENDPOINT, RobotClient.GRIPPER_ENDPOINT})
         self.assertEqual(options["headers"]["X-Control-Session"], "offline-parallel-session")
         arm = options["json"]["arm"]
         with self.lock:
@@ -114,6 +116,10 @@ class ParallelRobotClientTests(unittest.TestCase):
             self.returned[name].set()
 
     def get(self, url, **options):
+        if url.endswith("/openapi.json"):
+            result = self.response(schema_fixture(blended_path=True))
+            result.content = b"fixture"
+            return result
         arm = url.split("/")[-2]
         self.assertIn(arm, ("left", "right"))
         self.assertTrue(url.endswith(f"/robot/arms/{arm}/joints"))
@@ -175,9 +181,10 @@ class ParallelRobotClientTests(unittest.TestCase):
         self.assertTrue(all(count <= 1 for count in self.maximum.values()))
 
     @staticmethod
-    def plan():
+    def plan(**settings):
         return handover_jobs({"x": 500, "y": 100, "z": 50, "selectable": True},
-                             place={"id": 1, "x": 450, "y": -260, "z": 230, "occupied": False})
+                             place={"id": 1, "x": 450, "y": -260, "z": 230, "occupied": False},
+                             **settings)
 
     def test_handover_approach_overlaps_but_right_open_waits_for_left(self):
         self.launch(self.plan(), blocked=("left_handover", "right_beside"), client_type=QuickRenewClient)
@@ -195,8 +202,34 @@ class ParallelRobotClientTests(unittest.TestCase):
         self.assertEqual(self.controls.count("/control/acquire"), 1)
         self.assertEqual(self.controls.count("/control/release"), 1)
 
+    def test_path_completion_is_the_handover_barrier(self):
+        def path(name, arm):
+            job = move(name, arm, after=[])
+            body = job["body"]
+            point = {name: body.pop(name) for name in ("x", "y", "z", "rx", "ry", "rz")}
+            body["points"] = [{**point, "linear": True, "zone": 5}, {**point, "zone": 0}]
+            job["endpoint"] = RobotClient.PATH_ENDPOINT
+            return job
+
+        jobs = [path("left_path", "left"), path("right_path", "right"),
+                {"name": "right_grip", "endpoint": RobotClient.GRIPPER_ENDPOINT,
+                 "body": {"arm": "right", "wait": True, "action": "grip"},
+                 "after": ["left_path", "right_path"]}]
+        self.launch(jobs, blocked=("left_path", "right_path"))
+        self.wait_started("left_path")
+        self.wait_started("right_path")
+        self.assertEqual(set(self.sent), {"left_path", "right_path"})
+        self.gates["right_path"].set()
+        self.assertTrue(self.returned["right_path"].wait(1))
+        self.assertFalse(self.started["right_grip"].wait(.03))
+        self.gates["left_path"].set()
+        self.finish()
+        self.assertLess(self.trace.index(("after", "left_path")), self.trace.index(("before", "right_grip")))
+        self.assertEqual(self.sent.count("left_path"), 1)
+        self.assertEqual(self.sent.count("right_path"), 1)
+
     def test_left_home_inflight_does_not_block_right_placement(self):
-        self.launch(self.plan(), blocked=("left_home", "right_place"))
+        self.launch(self.plan(home_after_cup=True), blocked=("left_home", "right_place"))
         self.wait_started("left_home")
         self.wait_started("right_place")
         self.assertFalse(self.returned["left_home"].is_set())

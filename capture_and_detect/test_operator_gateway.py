@@ -42,30 +42,28 @@ class OperatorGatewayTests(unittest.TestCase):
         reply.close.assert_called_once()
         return result
 
-    def test_discovery_is_readonly_and_missing_native_status_blocks_motion(self):
+    def test_discovery_is_readonly_and_never_gates_explicit_controls(self):
         actions = self.discover(schema_fixture())
         self.get.assert_called_once_with("http://gateway.invalid:8000/openapi.json", headers={}, timeout=5,
-                                         allow_redirects=False)
-        self.assertTrue(actions["robot_status"]["supported"])
-        for action in ("home", "open", "grip", "rapid_reset", "rapid_start", "collision_ack"):
-            self.assertFalse(actions[action]["supported"], action)
-            with self.assertRaises(RobotCommandError):
-                self.robot.require_control_action(action)
+                                        allow_redirects=False)
+        self.assertTrue(all(value["supported"] for value in actions.values()))
+        self.assertFalse(actions["rapid_reset"]["advertised_supported"])
+        for action in actions:
+            self.robot.require_control_action(action)
         self.post.assert_not_called()
 
-    def test_lynx_native_reader_enables_motion_but_not_unavailable_reset(self):
+    def test_native_reader_protocol_is_reported_without_gating_other_controls(self):
         self.robot._controller_status = Mock()
         actions = self.discover(schema_fixture())
-        self.assertEqual({action for action, value in actions.items() if value["supported"]},
-                         {"home", "open", "grip", "robot_status", "stop", "collision_status"})
+        self.assertTrue(all(value["supported"] for value in actions.values()))
         self.assertEqual(actions["collision_status"]["protocol"], "native_read_only")
         for action in ("rapid_reset", "rapid_start", "collision_ack"):
-            with self.assertRaises(RobotCommandError):
-                self.robot.control_action(action)
+            self.assertFalse(actions[action]["advertised_supported"])
+            self.robot.require_control_action(action)
         self.post.assert_not_called()
         self.robot._controller_status.read_collision.assert_not_called()
 
-    def test_failed_refresh_discards_support_but_keeps_status_discovery_available(self):
+    def test_failed_refresh_updates_information_without_disabling_controls(self):
         for failure in (requests.Timeout("offline"), response(None), response({}, status=302),
                         response(schema_fixture(), content=b"x" * 2_000_001)):
             with self.subTest(failure=type(failure).__name__):
@@ -73,10 +71,9 @@ class OperatorGatewayTests(unittest.TestCase):
                 self.get.side_effect = failure if isinstance(failure, Exception) else None
                 self.get.return_value = failure
                 result = self.robot.refresh_operator_capabilities()
-                self.assertIsNone(result["robot_status"]["supported"])
-                self.assertFalse(any(value["supported"] for name, value in result.items() if name != "robot_status"))
-                with self.assertRaises(RobotCommandError):
-                    self.robot.require_control_action("home")
+                self.assertTrue(all(value["supported"] for value in result.values()))
+                self.assertIsNone(result["robot_status"]["advertised_supported"])
+                self.robot.require_control_action("home")
         self.post.assert_not_called()
 
     def test_native_fallback_only_for_missing_advertised_collision_route(self):
@@ -115,29 +112,24 @@ class OperatorGatewayTests(unittest.TestCase):
         schema["paths"]["/api/v1/robot/rapid/collision"]["get"]["responses"] = {}
         self.robot._controller_status = Mock()
         actions = self.discover(schema)
-        self.assertFalse(actions["collision_status"]["supported"])
-        self.assertFalse(actions["home"]["supported"])
+        self.assertFalse(actions["collision_status"]["advertised_supported"])
+        self.assertTrue(actions["home"]["supported"])
         self.robot._get_object = Mock(side_effect=[RUNNING, RobotCommandError("invalid collision response")])
         self.assertIsNone(self.robot.read_control_status()["collision_state"])
         self.robot._controller_status.read_collision.assert_not_called()
 
-    def test_native_fallback_requires_gateway_joint_readback_contract(self):
-        for damage in ("missing_route", "missing_angle", "wrong_joints_type"):
-            with self.subTest(damage=damage):
-                schema = schema_fixture()
-                if damage == "missing_route":
+    def test_native_status_uses_runtime_readback_even_when_discovery_is_missing(self):
+        for schema in (None, schema_fixture()):
+            with self.subTest(schema=schema):
+                if schema:
                     del schema["paths"]["/api/v1/robot/arms/{arm}/joints"]
-                elif damage == "missing_angle":
-                    del schema["components"]["schemas"]["Joints"]["properties"]["arm_angle"]
-                else:
-                    schema["components"]["schemas"]["Joints"]["properties"]["joints"] = {"type": "string"}
                 self.robot._controller_status = Mock()
+                self.robot._controller_status.read_collision.return_value = "CONFIRMED"
                 actions = self.discover(schema)
-                for action in ("home", "open", "grip", "collision_status"):
-                    self.assertFalse(actions[action]["supported"], action)
+                self.assertTrue(all(value["supported"] for value in actions.values()))
                 self.robot._get_object = Mock(return_value=RUNNING)
-                self.assertIsNone(self.robot.read_control_status()["collision_state"])
-                self.robot._controller_status.read_collision.assert_not_called()
+                self.assertEqual(self.robot.read_control_status()["collision_state"], "CONFIRMED")
+                self.robot._controller_status.read_collision.assert_called_once_with(self.robot._get_object)
 
     def test_modern_gateway_preserves_all_controls_and_gateway_collision_read(self):
         self.assertTrue(all(value["supported"] for value in self.discover(schema_fixture(native=True, collisions=True)).values()))
@@ -172,36 +164,80 @@ class OperatorCapabilityConfirmationTests(unittest.TestCase):
         self.session.recovery = RecoveryJournal(Path(directory) / "recovery.json")
         self.controls = RobotControls(self.session)
 
-    def test_unsupported_preview_never_creates_proposal_or_recovery_record(self):
-        self.fixture.robot.operator_capabilities["rapid_reset"] = {"supported": False, "reason": "Unavailable on this gateway"}
-        with self.assertRaisesRegex(SelectionError, "Unavailable"):
-            self.controls.propose("rapid_reset", None)
-        self.assertIsNone(self.controls.pending)
+    def test_missing_discovery_still_allows_operator_review(self):
+        self.fixture.robot.operator_capabilities["rapid_reset"] = {"supported": False, "reason": "Not advertised"}
+        self.controls.propose("rapid_reset", None)
+        self.assertEqual(self.controls.pending["action"], "rapid_reset")
         self.assertFalse(self.session.recovery.path.exists())
         self.assertEqual(self.fixture.robot.jobs, [])
 
-    def test_capability_removed_or_changed_after_preview_prevents_confirmation(self):
+    def test_discovery_changes_do_not_invalidate_an_operator_confirmation(self):
         for change in ({"supported": False}, {"supported": True, "protocol": "changed"}):
             self.fixture.robot.operator_capabilities["home"] = {"supported": True, "protocol": "old"}
             self.controls.propose("home", "both")
             token = self.controls.pending["token"]
             self.fixture.robot.operator_capabilities["home"] = change
-            with self.assertRaises(SelectionError):
+            with patch.object(self.session, "execute_control", return_value={"message": "DONE"}) as execute:
                 self.controls.confirm(token)
+                execute.assert_called_once_with("home", "both")
             self.assertIsNone(self.controls.pending)
-            self.assertFalse(self.session.recovery.path.exists())
-            self.assertEqual(self.fixture.robot.jobs, [])
 
-    def test_unsupported_direct_session_control_rejected_before_journal_or_lease(self):
+    def test_runtime_control_failure_is_reported_with_recovery(self):
         robot = RobotClient("http://gateway.invalid/api/v1", {})
         robot._operator_gateway = parse_gateway_capabilities(schema_fixture())
-        robot._take_control = Mock(side_effect=AssertionError("Must not acquire lease"))
+        robot._take_control = Mock(side_effect=RobotCommandError("Gateway unavailable"))
         self.session.robot = robot
-        for action in ("rapid_reset", "rapid_start", "collision_ack"):
-            with self.assertRaises(RobotCommandError):
-                self.session.execute_control(action, None)
-        robot._take_control.assert_not_called()
-        self.assertFalse(self.session.recovery.path.exists())
+        with self.assertRaisesRegex(RobotCommandError, "Gateway unavailable"):
+            self.session.execute_control("rapid_reset", None)
+        robot._take_control.assert_called_once()
+        self.assertTrue(self.session.recovery.path.exists())
+        self.assertTrue(self.session.motion_uncertain)
+
+    def test_missing_openapi_does_not_block_runtime_status_or_confirmed_home(self):
+        from datetime import datetime, timedelta, timezone
+
+        robot = RobotClient("http://gateway.invalid/api/v1", {})
+        self.session.robot = robot
+        requested = []
+
+        def get(url, **_):
+            requested.append(url)
+            if url.endswith("/openapi.json"):
+                return response({})  # Gateway endpoints work without an API description.
+            if url.endswith("/robot/rapid"):
+                return response(RUNNING)
+            if url.endswith("/robot/rapid/collision"):
+                return response({"collision_state": "INIT"})
+            if url.endswith("/joints"):
+                arm = "left" if "/left/" in url else "right"
+                return response({"arm": arm, "joints": list(robot.HOME_JOINTS),
+                                 "arm_angle": robot.HOME_ARM_ANGLES[arm]})
+            raise AssertionError(f"Unexpected GET {url}")
+
+        def post(url, **_):
+            if url.endswith(("/control/acquire", "/control/renew")):
+                payload = {"success": True, "lease": {"active": True, "session_id": "offline-test",
+                    "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()}}
+            elif url.endswith("/control/release"):
+                payload = {"success": True, "lease": {"active": False}}
+            elif url.endswith("/robot/rws/home"):
+                payload = {"accepted": True, "message": "DONE"}
+            else:
+                raise AssertionError(f"Unexpected POST {url}")
+            reply = response(payload)
+            reply.headers = {}
+            return reply
+
+        with patch("robot_client.requests.get", side_effect=get), \
+                patch("robot_client.requests.post", side_effect=post) as sent:
+            robot.configure_operator_controls()
+            self.assertFalse(robot._operator_gateway["schema_valid"])
+            self.assertEqual(robot.read_control_status()["collision_state"], "INIT")
+            self.session.execute_control("home", "both")
+        self.assertEqual(sum(call.args[0].endswith("/robot/rws/home") for call in sent.call_args_list), 2)
+        self.assertTrue(any(url.endswith("/robot/rapid/collision") for url in requested))
+        self.assertFalse(self.session.motion_uncertain)
+        self.assertFalse(self.session.recovery.required())
 
     def test_status_refresh_can_recover_unknown_support_without_motion(self):
         robot = self.fixture.robot

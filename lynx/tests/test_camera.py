@@ -195,10 +195,10 @@ def test_reconnection_requires_a_new_frame(camera):
     assert metadata["sequence"] > baseline
 
 
-def test_changed_intrinsics_during_wait_refuses_observation(camera):
+def test_capture_uses_loaded_intrinsics_without_a_change_gate(camera):
     _, service, _ = camera
-    with pytest.raises(CameraError, match="intrinsics changed"):
-        capture_new(camera, during_wait=lambda: service.set_intrinsics(intrinsics(fx=510.0)))
+    (_, _, metadata), _ = capture_new(camera, during_wait=lambda: service.set_intrinsics(intrinsics(fx=510.0)))
+    assert metadata["sequence"] == 2
 
 
 def test_intrinsics_image_size_mismatch_is_refused(camera):
@@ -297,3 +297,11 @@ def test_invalid_timeout_is_rejected_without_waiting(camera, value):
 def test_invalid_max_age_is_rejected(value):
     with pytest.raises(ValueError, match="positive and finite"):
         LocalCameraClient(None, None, api="local", max_age=value)
+
+
+def test_latest_capture_uses_retained_pair_without_waiting_for_another_frame(camera):
+    client, service, _ = camera
+    _, depth, metadata = client.capture_latest()
+    assert metadata["sequence"] == service.get_status().sequence == 1
+    assert not service.waiting.is_set()
+    np.testing.assert_array_equal(depth, [[0x1234, 0x5678]])

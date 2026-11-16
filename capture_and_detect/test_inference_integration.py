@@ -72,7 +72,7 @@ class ProviderIntegrationTests(unittest.TestCase):
         detector = self.detector(Backend(self.detections), Backend(failures=(1,)))
         self.depth[10:21, 10:21] = 0
         objects, _ = detector.analyse(self.rgb, self.depth)
-        self.assertFalse(objects[0]["depth_quality"]["valid"])
+        self.assertNotIn("depth_quality", objects[0])
         self.assertIsNone(objects[0]["robot_z_mm"])
         self.calibration.to_robot.assert_not_called()
 
@@ -198,10 +198,10 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
         self.assertIsNotNone(robot.operator_capabilities)
         self.assertTrue(robot.operator_capabilities["robot_status"]["supported"])
         for name in ("home", "open", "grip", "collision_status", "rapid_reset", "rapid_start"):
-            self.assertFalse(robot.operator_capabilities[name]["supported"])
+            self.assertTrue(robot.operator_capabilities[name]["supported"])
         self.assertIsNone(robot._controller_status)
 
-    def test_missing_or_mismatched_profile_keeps_collision_dependent_controls_blocked(self):
+    def test_missing_or_mismatched_profile_remains_information_only(self):
         for mismatch in (False, True):
             with self.subTest(mismatched=mismatch):
                 if mismatch:
@@ -210,9 +210,8 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
                         "controller_url": "http://controller.invalid"}))
                 robot = self.create(self.profile)
                 self.assertIsNone(robot._controller_status)
-                self.assertFalse(robot.operator_capabilities["collision_status"]["supported"])
-                with self.assertRaises(RobotCommandError):
-                    robot.require_control_action("home")
+                self.assertFalse(robot.operator_capabilities["collision_status"]["advertised_supported"])
+                robot.require_control_action("home")
         self.assertEqual(self.configure.call_count, 2)
         self.assertEqual(self.get.call_count, 2)
         self.post.assert_not_called()
@@ -226,8 +225,8 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
         self.assertEqual(robot._controller_status.controller_url, "http://controller.invalid")
         self.assertEqual(robot.operator_capabilities["collision_status"]["protocol"], "native_read_only")
         self.assertTrue(robot.operator_capabilities["home"]["supported"])
-        self.assertFalse(robot.operator_capabilities["rapid_reset"]["supported"])
-        self.assertFalse(robot.operator_capabilities["rapid_start"]["supported"])
+        self.assertFalse(robot.operator_capabilities["rapid_reset"]["advertised_supported"])
+        self.assertFalse(robot.operator_capabilities["rapid_start"]["advertised_supported"])
         self.post.assert_not_called()
 
     def test_matching_malformed_profile_rejects_startup_before_any_http(self):
@@ -239,12 +238,12 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
         self.get.assert_not_called()
         self.post.assert_not_called()
 
-    def test_failed_discovery_never_enables_hardware_controls(self):
+    def test_failed_discovery_is_reported_without_disabling_controls(self):
         self.response.json.return_value = {}
         robot = self.create()
-        self.assertIsNone(robot.operator_capabilities["robot_status"]["supported"])
+        self.assertIsNone(robot.operator_capabilities["robot_status"]["advertised_supported"])
         for name in ("home", "open", "grip", "rapid_reset", "rapid_start"):
-            self.assertFalse(robot.operator_capabilities[name]["supported"])
+            self.assertTrue(robot.operator_capabilities[name]["supported"])
         self.get.assert_called_once()
         self.post.assert_not_called()
 

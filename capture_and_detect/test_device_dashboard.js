@@ -46,7 +46,7 @@ function dashboard(initial = snapshot()) {
     deviceChoice: "", deviceSelectionKey: "", deviceOptionsKey: "", dom,
     selectedId: null, selectedCapture: null, imageCapture: null, imageLoaded: false,
     cardsKey: "", placementsKey: "", savedCupsKey: "", saveSelectionKey: "",
-    speedDirty: false, phaseSpeedDirty: false, handoverDirty: false, controlDeadline: 0, proposalDeadline: 0,
+    speedDirty: false, phaseSpeedDirty: false, controlDeadline: 0, proposalDeadline: 0,
     releaseReview: null, quickGeneration: 0, transientError: "", pollNumber: 0, appliedPoll: 0,
     document: { createElement: element, createElementNS: (_, tag) => element(tag) },
     text(id, value) { assert.ok(dom[id]); dom[id].textContent = String(value ?? ""); },
@@ -292,7 +292,7 @@ test("epoch changes invalidate local selections, image bindings and reviewed ack
   for (const change of [{ device_epoch: "epoch-2" }, { instance_id: "router-2" }]) {
     const page = dashboard();
     Object.assign(page.context, { selectedId: 2, selectedCapture: "old", imageCapture: "old", imageLoaded: true,
-      proposalDeadline: 9000, controlDeadline: 9000, speedDirty: true, phaseSpeedDirty: true, handoverDirty: true,
+      proposalDeadline: 9000, controlDeadline: 9000, speedDirty: true, phaseSpeedDirty: true,
       cardsKey: "old", placementsKey: "old", savedCupsKey: "old", saveSelectionKey: "old" });
     page.dom["robot-control-ack"].checked = true; page.dom["recovery-ack"].checked = true;
     page.dom["selection-overlay"].append(element("rect"));
@@ -300,7 +300,7 @@ test("epoch changes invalidate local selections, image bindings and reviewed ack
     page.context.incoming = snapshot(change);
     await page.context.refresh();
     for (const key of ["selectedId", "selectedCapture", "imageCapture"]) assert.equal(page.context[key], null);
-    for (const key of ["imageLoaded", "speedDirty", "phaseSpeedDirty", "handoverDirty"]) assert.equal(page.context[key], false);
+    for (const key of ["imageLoaded", "speedDirty", "phaseSpeedDirty"]) assert.equal(page.context[key], false);
     assert.equal(page.context.proposalDeadline, 0); assert.equal(page.context.controlDeadline, 0);
     assert.equal(page.dom["robot-control-ack"].checked, false); assert.equal(page.dom["recovery-ack"].checked, false);
     assert.equal(page.dom["selection-overlay"].children.length, 0);

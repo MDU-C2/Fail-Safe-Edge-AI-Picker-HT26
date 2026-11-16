@@ -6,6 +6,7 @@ from typing import Callable, Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
+from gateway.models.rws import RwsPathPoint, RwsPathRequest
 from gateway.rws.client import (
     RwsClient,
     RwsError,
@@ -61,6 +62,12 @@ NEWER_VARIABLES = {
 # degrees/s.
 #
 SPEEDDATA_REST = (500.0, 5000.0, 1000.0)
+
+PATH_CAPACITY = 8
+PATH_VARIABLES = frozenset({
+    "path_pos", "path_rot", "path_lin", "path_speed",
+    "path_zone", "path_acc", "path_len",
+})
 
 
 class MotionSpeed(NamedTuple):
@@ -212,6 +219,77 @@ class RwsMotion:
 
         return self._run(arm, values, wait, authorization=authorization)
 
+    def path(
+        self,
+        arm: Arm,
+        points: list[RwsPathPoint],
+        wait: bool = True,
+        speed: MotionSpeed | None = None,
+        zone: float = 10.0,
+        max_acceleration: float | None = None,
+        authorization=None,
+    ) -> CommandResponse:
+        """Stage one path with blending and a mandatory final stop.
+
+        Every waypoint and each intermediate blend-radius envelope
+        must fit inside the configured safe-zone box. As with move(),
+        this is a target check, not a swept-volume collision check.
+        """
+        speed = speed or self.default_speed
+        # Validate direct callers as well as the HTTP route, before
+        # reading or changing any controller state.
+        request = RwsPathRequest(
+            arm=arm, points=points, wait=wait, speed=speed.speed,
+            acceleration=speed.acceleration, ramp=speed.ramp,
+            zone=zone, max_acceleration=max_acceleration,
+        )
+        positions = []
+        rotations = []
+        linear = []
+        speeds = []
+        zones = []
+        for index, point in enumerate(request.points):
+            position = (point.x, point.y, point.z)
+            radius = (
+                0.0 if index == len(request.points) - 1
+                else request.zone if point.zone is None else point.zone
+            )
+            if not all(
+                self.in_safe_zone(tuple(value + offset for value in position))
+                for offset in (-radius, radius)
+            ):
+                return CommandResponse(accepted=False, message="ERR outside safe zone")
+            positions.append(rapid_array(position))
+            rotations.append(rapid_array(orient_zyx(point.rz, point.ry, point.rx)))
+            linear.append("TRUE" if point.linear else "FALSE")
+            speeds.append(speed.speed if point.speed is None else point.speed)
+            zones.append(radius)
+
+        # RAPID array assignments must have the declared eight slots.
+        # Padding cannot execute because path_len selects active points.
+        padding = PATH_CAPACITY - len(request.points)
+        positions.extend(["[0,0,0]"] * padding)
+        rotations.extend(["[1,0,0,0]"] * padding)
+        linear.extend(["FALSE"] * padding)
+        speeds.extend([speed.speed] * padding)
+        zones.extend([0.0] * padding)
+        values = {
+            "go_home": "FALSE",
+            "grip_cmd": '""',
+            **self._speed_values(speed),
+            "path_pos": "[" + ",".join(positions) + "]",
+            "path_rot": "[" + ",".join(rotations) + "]",
+            "path_lin": "[" + ",".join(linear) + "]",
+            "path_speed": rapid_array(tuple(speeds)),
+            "path_zone": rapid_array(tuple(zones)),
+            "path_acc": f"{max_acceleration or 0.0:.6f}",
+            "path_len": str(len(request.points)),
+        }
+        return self._run(
+            arm, values, wait, required=frozenset(values),
+            authorization=authorization,
+        )
+
     def home(
         self,
         arm: Arm,
@@ -329,18 +407,23 @@ class RwsMotion:
             self._client.check_stop_generation(generation)
             values = {"move_request": "FALSE", "go_home": "FALSE", "use_rot": "FALSE",
                       "grip_cmd": '""', "move_ok": "FALSE"}
+            arm_values = {}
             # Validate all required symbols before changing any of them.
             for arm in ARM_TASKS:
                 for name in values:
                     check()
                     self._check_variable(arm, name, f"Missing {name}_{arm}; reset was not performed")
+                check()
+                arm_values[arm] = dict(values)
+                if self._has_variable(arm, "path_len"):
+                    arm_values[arm]["path_len"] = "0"
             with self._client.mastership():
                 for arm in ARM_TASKS:
-                    for name, value in values.items():
+                    for name, value in arm_values[arm].items():
                         check()
                         self._write(arm, name, value)
                 for arm in ARM_TASKS:
-                    for name, value in values.items():
+                    for name, value in arm_values[arm].items():
                         check()
                         if self._read(arm, name).strip().upper() != value:
                             raise MotionConflict(f"Reset could not verify {name}_{arm}; RAPID remains stopped")
@@ -399,13 +482,15 @@ class RwsMotion:
         wait: bool,
         *,
         optional: set[str] | frozenset[str] = frozenset(),
+        required: set[str] | frozenset[str] = frozenset(),
         authorization=None,
     ) -> CommandResponse:
         """Write the job and set move_request.
 
         Of NEWER_VARIABLES, those in optional are left out when the
         program lacks them; any other missing one refuses the job
-        before anything is written.
+        before anything is written. The path protocol also supplies
+        required symbols, all checked before any staging writes.
         """
 
         if not self._busy[arm].acquire(blocking=False):
@@ -425,9 +510,32 @@ class RwsMotion:
 
             values = dict(values)
 
-            for name, description in NEWER_VARIABLES.items():
-                if name not in values:
+            # A failed/aborted path may leave its selector set. Single
+            # moves must never accidentally replay that path. Older
+            # controller programs have no selector and remain supported.
+            if "path_len" not in values:
+                check()
+                if self._has_variable(arm, "path_len"):
+                    values = {"path_len": "0", **values}
+
+            # Preflight the complete path protocol (and its speed and
+            # dispatch selectors) before staging anything. No partial
+            # compatibility fallback is safe for a path command.
+            for name in values:
+                if name not in required:
                     continue
+                check()
+                self._check_variable(
+                    arm, name,
+                    f"The RAPID program in {ARM_TASKS[arm]} has no "
+                    f"path support (no {name}_{arm}); load the path-enabled RAPID program",
+                )
+
+            for name, description in NEWER_VARIABLES.items():
+                if name not in values or name in required:
+                    continue
+
+                check()
 
                 if name in optional:
                     if not self._has_variable(arm, name):
@@ -442,6 +550,13 @@ class RwsMotion:
                     f"{description} (no {name}_{arm}); upload rapid/ "
                     f"again (rapidctl.py upload)",
                 )
+
+            if "path_len" in required:
+                # Disable a selector left by an interrupted earlier path
+                # before replacing its arrays. The active length is staged
+                # last below, immediately before guarded dispatch.
+                check()
+                self._write(arm, "path_len", "0")
 
             for name, value in values.items():
                 check()

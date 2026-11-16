@@ -43,7 +43,7 @@ class BatchSelectionTests(unittest.TestCase):
         confidence_by_pixel = {100: 0.7, 200: 0.95, 300: 0.85, 400: 0.99}
         for cup in result["cups"]:
             cup["confidence"] = confidence_by_pixel.get(cup["pixel"]["u"], 0.99)
-        return result, 99
+        return result, self.session.clock()
 
     def scan(self):
         return self.session.scan()["capture"]
@@ -65,7 +65,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertEqual(self.robot.jobs, [])
         self.assertEqual(self.capture_count, 1)
 
-    def test_batch_executes_only_confirmed_cups_with_distinct_places_and_current_rechecks(self):
+    def test_batch_executes_only_snapshot_cups_with_distinct_places_without_recapture(self):
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
 
@@ -80,13 +80,13 @@ class BatchSelectionTests(unittest.TestCase):
                          [550, 600, 500])
         self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "right_place"],
                          [420, 500, 580])
-        self.assertEqual(self.capture_count, 4)
+        self.assertEqual(self.capture_count, 1)
         self.assertEqual(self.capture_trace,
-                         [("scan", 0), ("verification", 0), ("verification", TRANSFER_JOB_COUNT), ("verification", 2 * TRANSFER_JOB_COUNT)])
+                         [("scan", 0)])
         self.assertEqual(self.session.inventory["batch_execution"]["completed_cups"], [2, 3, 1])
         self.assertEqual(self.session.inventory["batch_execution"]["state"], "completed")
         self.assertTrue(all(cup["status"] == "placed" for cup in self.session.inventory["cups"][:3]))
-        self.assertFalse(self.session.scan_usable)
+        self.assertTrue(self.session.scan_usable)
         self.assertFalse(self.session.motion_uncertain)
         for place in self.locations():
             self.assertTrue(place["occupied"])
@@ -102,15 +102,17 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertEqual(self.grid.path.read_bytes(), original)
         self.assertFalse(self.session.motion_uncertain)
 
-    def test_failed_dry_run_invalidates_scan_until_new_scan(self):
+    def test_failed_dry_run_invalidates_scan_without_reserving_destinations(self):
         self.robot.dry_run = True
         capture_id = self.scan()
-        self.transform = lambda kind, objects: [item for item in objects if item["x_px"] != 100]
-        with self.assertRaises(SelectionError):
+        self.robot.execute_jobs = Mock(side_effect=RobotCommandError("Preview execution failed"))
+        with self.assertRaisesRegex(RobotCommandError, "Preview execution failed"):
             self.session.execute_selection(action="goto", capture_id=capture_id, cup_id=1)
         self.assertFalse(self.session.scan_usable)
+        self.assertFalse(self.session.motion_uncertain)
         self.assertEqual(self.robot.jobs, [])
         self.assertFalse(any(place["occupied"] for place in self.locations()))
+        self.assertEqual(self.capture_count, 1)
 
     def test_new_scan_clears_previous_batch_progress(self):
         self.robot.dry_run = True
@@ -173,21 +175,21 @@ class BatchSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "changed"):
             self.execute(capture_id, preview)
         self.assertEqual([job["name"] for job in self.robot.jobs],
-                         ["right_close_travel", "right_home_start", "left_close_travel", "left_ready"])
+                         ["right_close_travel", "left_close_travel", "left_ready"])
         self.assertTrue(self.session.motion_uncertain)
         self.assertFalse(self.session.scan_usable)
-        self.assertEqual(self.capture_trace, [("scan", 0), ("verification", 0)])
+        self.assertEqual(self.capture_trace, [("scan", 0)])
 
-    def test_first_observation_failure_does_not_reserve_grid_or_move(self):
+    def test_invalid_source_coordinates_cannot_reserve_grid_or_move(self):
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
         before = self.grid.path.read_bytes()
-        self.transform = lambda kind, objects: [item for item in objects if item["x_px"] != 200]
-        with self.assertRaisesRegex(SelectionError, "moved|disappeared|ambiguous"):
+        self.session.inventory["cups"][1]["x"] = float("nan")
+        with self.assertRaises(SelectionError):
             self.execute(capture_id, preview)
         self.assertEqual(self.robot.jobs, [])
         self.assertEqual(self.grid.path.read_bytes(), before)
-        self.assertEqual(self.capture_trace, [("scan", 0), ("verification", 0)])
+        self.assertEqual(self.capture_trace, [("scan", 0)])
 
     def test_robot_failure_keeps_all_unfinished_places_reserved_and_stops_batch(self):
         self.robot.error = RobotCommandError("right grip was not confirmed")
@@ -197,45 +199,46 @@ class BatchSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(RobotCommandError, "not confirmed"):
             self.execute(capture_id, preview)
         self.assertEqual(self.robot.jobs[-1]["name"], "right_grip")
-        self.assertEqual(sum(job["name"] == "right_home_start" for job in self.robot.jobs), 1)
+        self.assertEqual(sum(job["name"] == "grip_cup" for job in self.robot.jobs), 1)
+        self.assertFalse(any(job["endpoint"].endswith("/home") for job in self.robot.jobs))
         self.assertNotIn("left_release", [job["name"] for job in self.robot.jobs])
         self.assertTrue(self.session.motion_uncertain)
         for place in self.locations():
             self.assertTrue(place["occupied"])
             self.assertTrue(place["reserved"])
 
-    def test_next_cup_disappearing_stops_after_completed_cup_without_substitution(self):
+    def test_second_cup_robot_failure_keeps_completed_slot_and_remaining_reservations(self):
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
-        self.transform = lambda kind, objects: (
-            [item for item in objects if item["x_px"] != 300] if len(self.robot.jobs) >= TRANSFER_JOB_COUNT else objects)
-        with self.assertRaisesRegex(SelectionError, "moved|disappeared|ambiguous"):
+        def fail_second_receive(_):
+            if len(self.robot.jobs) > TRANSFER_JOB_COUNT and self.robot.jobs[-1]["name"] == "right_take":
+                raise RobotCommandError("Second cup receive unconfirmed")
+        self.robot.after_move = fail_second_receive
+        with self.assertRaisesRegex(RobotCommandError, "Second cup receive unconfirmed"):
             self.execute(capture_id, preview)
-        self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
+        self.assertGreater(len(self.robot.jobs), TRANSFER_JOB_COUNT)
+        self.assertLess(len(self.robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertEqual(self.session.inventory["batch_execution"]["completed_cups"], [2])
+        self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"], [550, 600])
         locations = self.locations()
         self.assertTrue(locations[0]["occupied"])
         self.assertFalse(locations[0].get("reserved", False))
         self.assertTrue(all(place["occupied"] and place["reserved"] for place in locations[1:]))
         self.assertFalse(self.session.scan_usable)
-        self.assertEqual(self.capture_trace, [("scan", 0), ("verification", 0), ("verification", TRANSFER_JOB_COUNT)])
+        self.assertTrue(self.session.motion_uncertain)
+        self.assertEqual(self.capture_trace, [("scan", 0)])
 
-    def test_verification_frame_cannot_be_reused_for_later_batch_cup(self):
+    def test_all_cups_reuse_saved_frame_without_requesting_new_sequences(self):
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
-        normal_capture = self.session.capture
-
-        def repeated_frame(kind):
-            result, started = normal_capture(kind)
-            if len(self.robot.jobs) >= TRANSFER_JOB_COUNT:
-                result["frame"]["sequence"] = 2  # Previous cup's single verification.
-            return result, started
-
-        self.session.capture = repeated_frame
-        with self.assertRaisesRegex(SelectionError, "advance|sequence|restarted"):
-            self.execute(capture_id, preview)
-        self.assertEqual(len(self.robot.jobs), TRANSFER_JOB_COUNT)
-        self.assertEqual(self.session.inventory["batch_execution"]["completed_cups"], [2])
+        frame = copy.deepcopy(self.session.inventory["frame"])
+        self.session.capture = Mock(side_effect=AssertionError("Batch requested a new frame"))
+        self.execute(capture_id, preview)
+        self.session.capture.assert_not_called()
+        self.assertEqual(len(self.robot.jobs), 3 * TRANSFER_JOB_COUNT)
+        for cup in self.session.inventory["cups"][:3]:
+            self.assertEqual(cup["last_verification"]["frame"], frame)
+            self.assertEqual(cup["last_verification"]["source"], "saved_scan")
 
     def test_confirmed_cup_list_cannot_be_reordered_or_expanded(self):
         capture_id = self.scan()
@@ -264,14 +267,18 @@ class BatchSelectionTests(unittest.TestCase):
         self.session.recovery = journal
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
-        self.transform = lambda kind, objects: (
-            [item for item in objects if item["x_px"] != 300] if len(self.robot.jobs) >= TRANSFER_JOB_COUNT else objects)
-        with self.assertRaises(SelectionError):
+        def fail_second_pick(_):
+            if len(self.robot.jobs) > TRANSFER_JOB_COUNT and self.robot.jobs[-1]["name"] == "grip_cup":
+                raise RobotCommandError("Second cup grip unconfirmed")
+        self.robot.after_move = fail_second_pick
+        with self.assertRaisesRegex(RobotCommandError, "Second cup grip unconfirmed"):
             self.execute(capture_id, preview)
         restarted = CupSession(self.capture, Mock(), RobotDouble(), "cal-1", clock=lambda: 100,
                                placing_grid=self.grid, recovery=RecoveryJournal(journal.path))
         self.assertTrue(restarted.motion_uncertain)
         self.assertTrue(journal.required())
+        self.assertEqual(self.session.batch_progress["completed_cups"], [2])
+        self.assertEqual(self.capture_count, 1)
 
     def test_missing_grid_blocks_pick_and_batch_but_allows_hover(self):
         self.session.placing_grid = None
@@ -285,7 +292,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertEqual(preview["cup_ids"], [1])
         self.assertEqual(self.robot.jobs, [])
 
-    def test_selected_place_is_reserved_before_first_command_and_complete_only_after_homing(self):
+    def test_selected_place_is_reserved_before_first_command_and_complete_only_after_clearance(self):
         seen = []
 
         def inspect_grid(count):
@@ -297,7 +304,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.session.execute_selection(action="goto", capture_id=capture_id, cup_id=1,
                                        placement=preview["placement"])
         self.assertEqual(len(seen), TRANSFER_JOB_COUNT)
-        self.assertEqual(seen[-1][0], "right_home")
+        self.assertEqual(seen[-1][0], "right_clear")
         self.assertTrue(all(places[0]["occupied"] and places[0]["reserved"] for _, places in seen))
         self.assertTrue(self.locations()[0]["occupied"])
         self.assertFalse(self.locations()[0].get("reserved", False))

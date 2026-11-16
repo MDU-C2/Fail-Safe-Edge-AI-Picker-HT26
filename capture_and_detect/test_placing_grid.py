@@ -463,12 +463,11 @@ class PlacingGridTests(unittest.TestCase):
 
     def test_invalid_or_duplicate_locations_fail_closed_even_if_occupied(self):
         bad = [location(True), location(0), location(2, occupied=1),
-               location(2, x=float("nan")), location(2, x=True), location(2, y=-401),
-               location(2, z=621), location(2, z=89),
+               location(2, x=float("nan")), location(2, x=True), location(2, z=float("inf")),
                location(2, reserved=True), location(2, reserved="false"),
                location(2, vision_blocked="false"), location(2, vision_blocked=0),
                location(2, vision_blocked=None),
-               location(2, reservation_id="unattached"), location(2, occupied=True, x=900)]
+               location(2, reservation_id="unattached"), location(2, occupied=True, x="900")]
         for candidate in bad:
             self.data["locations"] = [candidate]
             self.write(self.data)
@@ -479,22 +478,22 @@ class PlacingGridTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "Duplicate"):
             self.grid.snapshot()
 
-    def test_placement_can_descend_below_tray_clearance_with_clear_approach(self):
-        for height in (119, 198, 199, 230, 620):
-            candidate = location(1, z=height)
+    def test_finite_coordinates_are_stored_without_a_motion_workspace_filter(self):
+        for height in (49, 118, 119, 198, 199, 230, 620, 620.1, 701):
+            candidate = location(1, x=900, y=-401, z=height)
             with self.subTest(height=height):
                 self.assertEqual(validate_place(candidate), candidate)
-        for height in (49, 118, 620.1, 701):
-            with self.subTest(height=height), self.assertRaises(SelectionError):
-                validate_place(location(1, z=height))
+        for value in (None, True, "230", float("nan"), float("inf")):
+            with self.subTest(value=value), self.assertRaises(SelectionError):
+                validate_place(location(1, z=value))
 
-    def test_validate_place_returns_copy_and_checks_raised_target(self):
-        source = location(10, y=-360)
+    def test_validate_place_returns_a_copy_without_mutating_saved_coordinates(self):
+        source = location(10, y=-360, z=650)
         result = validate_place(source)
         result["x"] = 0
+        result["z"] = 0
         self.assertEqual(source["x"], 600)
-        with self.assertRaisesRegex(SelectionError, "above place"):
-            validate_place(location(2, z=650))
+        self.assertEqual(source["z"], 650)
 
     def test_duplicate_coordinates_rejected_even_for_different_ids_or_occupied_slots(self):
         for occupied in (False, True):

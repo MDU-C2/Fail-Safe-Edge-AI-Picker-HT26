@@ -28,7 +28,7 @@ function allText(node) { return [node.textContent, ...node.children.map(allText)
 function buttons(node) { return node.children.flatMap((child) => [...(child.tag === "button" ? [child] : []), ...buttons(child)]); }
 function nodes(node, className) { return node.children.flatMap((child) => [...(child.className === className ? [child] : []), ...nodes(child, className)]); }
 const suggestion = (action = "select", extra = {}) => ({ message: "I can pick Cup 2.", action, cup_ids: action === "pick_saved" ? [] : [2], proposal_id: "draft-1", ...extra });
-const realProposal = (extra = {}) => ({ assistant_request_id: "draft-1", token: "abcdef12", capture_id: "scan-1", cup_id: 2, action: "goto", cup_ids: [2], placements: [{ id: 10, x: 480, y: -360, z: 230 }], description: "Pick, hand over, place and return home.", expires_in: 60, ...extra });
+const realProposal = (extra = {}) => ({ assistant_request_id: "draft-1", token: "abcdef12", capture_id: "scan-1", cup_id: 2, action: "goto", cup_ids: [2], placements: [{ id: 10, x: 480, y: -360, z: 230 }], home_after_cup: false, description: "Pick, hand over, place and finish at clearance poses.", expires_in: 60, ...extra });
 const actionButton = (p, label) => buttons(p.dom["assistant-messages"]).filter((button) => button.textContent === label).at(-1);
 const managedMac = (extra = {}) => ({ assistant_available: true, device_epoch: "epoch-1", devices: { active_id: "mac", selected_id: "mac", switching: false }, ...extra });
 
@@ -450,9 +450,20 @@ test("saved-cup matching automatically prepares a text-safe reference review", a
 test("real review includes the current scan and controller movement settings", async () => {
   const p=await page({answer:suggestion("pick_saved"),state:{inventory:{capture:"scan-1",image_url:"/api/image/scan-1"},motion:{acceleration:50,flip_acceleration:20}},proposal:{speed:250,flip_speed:100,home_speed:200,handover:{receive_mm:{x:330,y:-115,z:316},offset_mm:{x:1,y:2,z:3},approach_speed:25},saved_cup:{name:"Kasun's cup"}}});
   await p.ask("Pick Kasun's cup"); const text=allText(p.dom["assistant-messages"]);
-  assert.match(text,/Current scan · scan-1/); assert.match(text,/Normal: 250 mm\/s · Cup flip: 100 mm\/s · Return home: 200 mm\/s/);
+  assert.match(text,/Current scan · scan-1/); assert.match(text,/Normal: 250 mm\/s · Cup flip: 100 mm\/s · Automatic home off/);
+  assert.match(text,/finish at clearance poses/); assert.doesNotMatch(text,/Return home:|return home\./);
   assert.match(text,/Right receiving target: X 330, Y -115, Z 316 mm/); assert.match(text,/Offset: X 1, Y 2, Z 3 mm/);
   assert.equal(nodes(p.dom["assistant-messages"],"assistant-pick-scan")[0].open,true);
+});
+
+test("explicit automatic Home remains visible in the captured assistant review", async () => {
+  const p = await page({ answer: suggestion(), state: { motion: { home_after_cup: false } },
+    proposal: { home_after_cup: true, home_speed: 175, description: "" } });
+  await p.ask("Pick cup 2");
+  const review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /Pick, hand over, place and return home/);
+  assert.match(review, /Return home: 175 mm\/s/);
+  assert.doesNotMatch(review, /Automatic home off|clearance poses/);
 });
 
 test("review uses the preview stage speeds, never fresh settings or another confirmation", async () => {

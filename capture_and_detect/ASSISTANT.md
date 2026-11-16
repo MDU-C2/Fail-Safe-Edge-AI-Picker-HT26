@@ -18,9 +18,9 @@ Open `http://localhost:8087`, click **Scan** in **Pick cups**, then open **Assis
 - On the Mac, open **Settings**, paste an OpenAI API key, then use **Save settings** and **Test connection**. This uses the real `gpt-6-astra` model with the synthetic scene, while robot operations remain simulated. The sample illustration is represented by explicit sample attributes; actual camera scans include their bounded PNG/JPEG image when available.
 - A picking request automatically prepares a review inside **Assistant**. Review the selected cups and grid destinations, then click its confirmation button once. The language model never confirms movement; there is no second confirmation in Pick cups.
 
-For a scene-dependent request, Assistant takes one camera-only scan when the current photo is missing, unusable or more than 30 seconds old. You do not need to press Scan first. `Take a photo of the workspace` explicitly refreshes the image, without an Astra call. The resulting photo appears in Assistant. Scanning does not move the robot, clear recovery or replace an existing pick/control preview; finish or cancel a preview first. Camera work has a 45-second wait limit and is never automatically retried.
+For a scene-dependent request, Assistant takes one camera-only scan when the current photo is missing or unusable. You do not need to press Scan first. `Take a photo of the workspace` explicitly refreshes the image, without an Astra call. The resulting photo appears in Assistant. Scanning does not move the robot, clear recovery or replace an existing pick/control preview; finish or cancel a preview first. Camera work has a 45-second wait limit and is never automatically retried.
 
-Cup numbers can change between scans. If a numbered request needs a new photo, Assistant shows the new photo and asks you to check the number again, without selecting a cup. `Remember cup 2 as …` deliberately uses the displayed photo. A saved-name pick already takes its fresh matching scan during preparation, so it does not trigger a duplicate initial scan.
+Cup numbers can change between scans. If a numbered request needs a new photo, Assistant shows the new photo and asks you to check the number again, without selecting a cup. `Remember cup 2 as …` deliberately uses the displayed photo. A saved-name pick reuses the current usable snapshot; it scans only when no usable snapshot exists.
 
 Give a complete request each time: conversation history is displayed for reference but is not submitted as context. A suggestion expires after two minutes and is invalidated by a new scan, device change, recovery/stop state or changed movement settings.
 
@@ -30,7 +30,7 @@ To try naming in the demo, send `Remember cup 2 as Kasun's cup`, click **Save cu
 
 The assistant can explain the recorded scene, match a description to a detected cup, and prepare a selected-cup or all-available-cups preview. It can suggest groups by appearance. **Grouping does not change placement destinations or execute a sorting routine**; placement keeps the existing grid order. Requests for a subset of several cups should be made one cup at a time.
 
-Home, gripper controls, Stop, calibration and recovery use their existing dashboard controls. The language model cannot send arbitrary positions, alter motion parameters, confirm actions or clear reservations. The operator's confirmation button inside Assistant uses the same guarded confirmation as the manual picker. A visual answer is an interpretation of a saved observation; the existing fresh camera checks remain part of real picking.
+Home, gripper controls, Stop, calibration and recovery use their existing dashboard controls. The language model cannot send arbitrary positions, alter motion parameters, confirm actions or clear reservations. The operator's confirmation button inside Assistant uses the same guarded confirmation as the manual picker. A visual answer is an interpretation of a saved observation; picking uses the reviewed snapshot without another capture.
 
 ## Remember and find a named cup
 
@@ -38,11 +38,16 @@ After scanning, use a displayed cup number to save a reference:
 
 - `Remember cup 2 as Kasun's cup` or `Save cup 2 as Kasun's cup` proposes a name and reference photo. Click **Save cup reference** to save it; this sends no movement command.
 - `Saved cups` lists the selected picker's references.
-- `Pick Kasun's cup` or `Pick saved Kasun's cup` chooses an existing reference, then takes a new scan and compares it with the current cups. Inspect the matched cup, reference photo and destination in the inline **Assistant** review, then confirm there once.
+- `Pick Kasun's cup` or `Pick saved Kasun's cup` chooses an existing reference, then compares it with the current snapshot's cups. Inspect the matched cup, reference photo and destination in the inline **Assistant** review, then confirm there once.
 
 Exact save/list commands and selecting an existing saved name run locally. Saving a reference sends no movement or paid API request. More flexible wording uses GPT-6 Astra to propose a name or choose a supplied saved reference.
 
-Requesting a real saved-cup pick takes a fresh scan and asks Astra to compare the reference photo with the current cups before showing the inline review. This requires your configured OpenAI API key and can incur API charges. An ambiguous or missing match prevents a preview. When you confirm, the normal picker takes fresh camera data and checks the reference identity again through Astra before movement. A previous scan is not needed to request a saved cup because finding it takes a new scan. Demo matching remains explicitly scripted and makes no model calls for these comparisons.
+Requesting a real saved-cup pick asks Astra to compare the reference photo with
+the current usable snapshot before showing the inline review. If no usable
+snapshot exists, the app takes one scan. This requires the configured API key.
+An ambiguous or missing match prevents a preview. Confirmation checks the
+reference identity against that same saved snapshot and sends no new camera
+request. Demo matching remains scripted and makes no model calls for comparisons.
 
 In camera mode, the name and cropped reference photo are stored in the picker's `saved_cups.json` under its output directory and survive restart when that directory is retained. They are independent of the API key and chat history. Names are unique, start with a letter, and allow up to 48 characters using ASCII letters, digits, spaces, apostrophes, underscores and hyphens. Straight and curly apostrophes are treated as the same spelling. The library holds up to 32 references. Use **Forget** in **Pick cups → Saved cup references** before replacing an existing name.
 
@@ -56,7 +61,7 @@ The integration uses OpenAI directly, with a fixed HTTPS API origin and model `g
 
 At implementation time, OpenAI lists Astra at $10 per million input tokens and $50 per million output tokens. Flex is half those token prices and can be slower or unavailable. Standard is the default; Low reasoning limits unnecessary reasoning work. Messages interpreted by GPT, **Test connection**, and real saved-cup visual checks can incur API charges. Exact saving/listing requests stay local. Images and reasoning affect usage. There is no continuous upload or automatic paid retry. See [OpenAI pricing](https://developers.openai.com/api/docs/pricing) and [Astra's model page](https://developers.openai.com/api/docs/models/gpt-6-astra).
 
-Requests have bounded timeouts and share one client, which prevents overlapping API requests. A timed-out request may still have incurred provider usage; a late result is discarded. Stop stays available independently of the assistant. The MacBook web dashboard allows a verification image age of up to **30 seconds** by default, including time spent verifying a named cup; older images still block movement. `--max-result-age` can override this limit.
+Requests have bounded timeouts and share one client, which prevents overlapping API requests. A timed-out request may still have incurred provider usage; a late result is discarded. Stop stays available independently of the assistant. The saved snapshot has no age expiry. Movement confirmation still expires after 60 seconds.
 
 ## Key and data handling
 

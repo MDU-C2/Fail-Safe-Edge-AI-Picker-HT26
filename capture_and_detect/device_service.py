@@ -206,7 +206,7 @@ def python_factory(args, *, runtime_paths=None, prefer_environment_token=False):
             execution_lock_held=True, discover_operator_controls=True)
         return hardware_factory(options)(controller)
     factory.metadata = lambda: {"backend": "python", "model": args.model.name,
-                                "max_result_age_s": args.max_result_age, "depth_frames": args.depth_frames}
+                                "workflow": "v4_snapshot", "per_cup_capture": False, "depth_frames": args.depth_frames}
     factory.configure_motion = configure_motion
     return factory
 
@@ -255,7 +255,8 @@ def arguments(argv=None):
     parser.add_argument("--worker", default="/usr/local/bin/lynx-ncnn-worker")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=5)
-    parser.add_argument("--max-result-age", type=float, default=60.0)
+    parser.add_argument("--max-result-age", type=float, default=60.0,
+                        help="Legacy compatibility option; snapshot picking has no image-age limit")
     parser.add_argument("--inference-timeout", type=float, default=30.0)
     parser.add_argument("--threads", type=int, default=3)
     parser.add_argument("--speed", type=float)

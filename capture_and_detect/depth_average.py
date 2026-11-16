@@ -86,18 +86,21 @@ def mask_depth(depth, mask, edge_px=EDGE_PX):
 
 
 def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
-    """Collect bounded, distinct aligned pairs through the strict CameraClient.
+    """Collect available distinct aligned pairs for V4 coordinate averaging.
 
     Return newest RGB and its RAW depth, metadata, and the individual depths.
     The samples are for object-coordinate averaging only. Placement evidence
     must remain the last raw aligned image; a mean could hide holes/obstacles.
-    Age includes the oldest sample, and a restart/frozen stream aborts the set.
+    As in V4, a stopped frame stream ends the burst with the samples collected.
+    Transport and malformed-frame failures still propagate. Placement vision
+    keeps the latest raw aligned pair, independently of coordinate averaging.
     """
-    from camera_client import CameraError
+    from camera_client import CameraError, NoNewCameraFrame
     if type(count) is not int or not 1 <= count <= 9:
         raise ValueError("Depth frame count must be an integer from 1 to 9")
+    initial_capture = getattr(camera, "capture_latest", camera.capture)
     if count == 1:
-        rgb, depth, frame = camera.capture()
+        rgb, depth, frame = initial_capture()
         return rgb, depth, frame, (depth,)
     deadline = time.monotonic() + timeout_s
     samples, metadata = [], []
@@ -105,11 +108,23 @@ def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
     for _ in range(count):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if samples:
+                break
             raise CameraError("Depth sample collection timed out")
-        rgb, depth, frame = camera.capture(timeout_s=remaining)
+        try:
+            capture = camera.capture if samples else initial_capture
+            pair = capture(timeout_s=min(remaining, NEW_FRAME_WAIT) if samples else remaining)
+        except NoNewCameraFrame:
+            if samples:
+                break
+            raise
+        next_rgb, next_depth, frame = pair
         sequence = frame.get("sequence")
-        if type(sequence) is not int or (metadata and sequence <= metadata[-1]["sequence"]):
-            raise CameraError("Depth samples must have strictly increasing frame sequences; scan again")
+        if type(sequence) is not int:
+            raise CameraError("Depth sample has no valid frame sequence")
+        if metadata and sequence == metadata[-1]["sequence"]:
+            break
+        rgb, depth = next_rgb, next_depth
         if (depth.ndim != 2 or depth.dtype != np.uint16 or rgb.ndim != 3
                 or rgb.shape[2] != 3 or depth.shape != rgb.shape[:2]
                 or depth.size > 8_400_000 or (shape is not None and depth.shape != shape)):
@@ -119,7 +134,7 @@ def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
         metadata.append(dict(frame))
     result = dict(metadata[-1])
     result["observation_started_monotonic"] = metadata[0]["observation_started_monotonic"]
-    result["depth_sampling"] = {"count": count, "method": "mean_of_stable_object_core_depths",
+    result["depth_sampling"] = {"count": len(samples), "method": "mean_of_available_eroded_mask_depths",
                                 "sequences": [item["sequence"] for item in metadata],
                                 "timestamps": [item.get("timestamp") for item in metadata],
                                 "grid_evidence": "latest_raw_aligned_frame"}

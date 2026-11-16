@@ -59,7 +59,7 @@ function dashboard() {
       return { ok: true, json: async () => ({ accepted: true }) }; },
   });
   const code = section("  const idle =", "  const isStop =")
-    + section("  // Only explicit server capabilities", "\n  function cancelReleaseReview(")
+    + section("  // Discovery describes the gateway", "\n  function cancelReleaseReview(")
     + section("  function updateControlCountdown()", "\n  function updateCountdown()")
     + section("  async function post(", "\n  async function showQuick(")
     + section('  dom["robot-status-button"].addEventListener', '  dom["camera-image"].addEventListener');
@@ -71,162 +71,46 @@ function dashboard() {
   };
 }
 
-test("only explicitly supported actions appear, and local settings remain", () => {
+test("discovery is informational and never hides implemented controls", () => {
   const page = dashboard();
-  const caps = capabilities({ grip: { supported: false }, collision_ack: { supported: false }, rapid_reset: { supported: false } });
-  page.render(snapshot({ robot_controls: { capabilities: caps } }));
-  for (const button of page.buttons) {
-    const supported = caps[button.dataset.robotAction].supported;
-    assert.equal(button.hidden, !supported);
-    assert.equal(button.disabled, !supported);
-  }
-  assert.equal(page.dom["robot-home-tool"].hidden, false);
-  assert.equal(page.dom["robot-gripper-tool"].hidden, false);
-  assert.equal(page.dom["robot-speed-input"].disabled, false);
-  assert.equal(page.dom["robot-local-recovery-button"].hidden, false);
-  assert.match(page.dom["robot-capability-notice"].textContent, /Only controls supported/);
-});
-
-test("missing or malformed capabilities hide hardware actions even in demo", () => {
-  const page = dashboard();
-  for (const map of [undefined, null, [], {}, { home: { supported: "true" } }, { home: true }]) {
-    page.render(snapshot({ mode: "demo", robot_controls: { capabilities: map } }));
-    assert.ok(page.buttons.every((el) => el.hidden && el.disabled));
-    assert.equal(page.dom["robot-home-tool"].hidden, true);
-    assert.equal(page.dom["robot-gripper-tool"].hidden, true);
-    assert.equal(page.dom["robot-speed-input"].disabled, false);
-  }
-  page.render(snapshot({ mode: "demo" }));
-  assert.ok(page.buttons.every((el) => !el.hidden && !el.disabled));
-});
-
-test("hardware actions are hidden before the first state arrives", () => {
-  const page = dashboard();
-  assert.ok(page.buttons.every((el) => el.hidden && el.disabled));
-});
-
-test("Home, grippers and manual discovery are outside collapsed settings", () => {
-  const settingsStart = html.indexOf('<details id="robot-controls-panel"');
-  for (const id of ["robot-status-button", "robot-capability-notice", "robot-home-tool", "robot-gripper-tool"]) {
-    const index = html.indexOf(`id="${id}"`);
-    assert.ok(index > 0 && index < settingsStart, `${id} must remain visible without opening settings`);
-  }
-});
-
-test("unread and failed discovery explain unverified support without claiming unsupported", async () => {
-  const page = dashboard();
-  for (const reason of ["Robot control support has not been read. Refresh robot status.", "Gateway capability read failed: connection unavailable."]) {
-    const caps = capabilities(Object.fromEntries(["home", "open", "grip", "collision_ack", "rapid_reset", "rapid_start", "robot_status", "stop"]
-      .map((action) => [action, { supported: action === "robot_status" ? null : false, reason }])));
-    page.render(snapshot({ robot_controls: { capabilities: caps } }));
-    assert.match(page.dom["robot-capability-notice"].textContent, /not been verified/);
-    assert.ok(page.dom["robot-capability-notice"].textContent.includes(reason));
-    assert.doesNotMatch(page.dom["robot-capability-notice"].textContent, /No robot actions are available/);
+  for (const map of [undefined, null, [], {}, capabilities({ home: { supported: false }, grip: { supported: false } })]) {
+    page.render(snapshot({ robot_controls: { capabilities: map } }));
+    assert.ok(page.buttons.every((el) => !el.hidden && !el.disabled));
     assert.equal(page.dom["robot-status-button"].hidden, false);
-    assert.equal(page.dom["robot-status-button"].disabled, false);
-    assert.ok(page.buttons.every((button) => button.hidden && button.disabled));
+    assert.match(page.dom["robot-capability-notice"].textContent, /informational/);
   }
-  assert.equal(page.requests.length, 0, "Rendering never starts discovery automatically");
-  page.dom["robot-status-button"].click(); await page.settle();
-  assert.deepEqual(page.requests.map((request) => request.url), ["/api/robot_status"]);
-});
-
-test("advertised but blocked controls remain discoverable without acquiring permission", async () => {
-  const page = dashboard();
-  const reason = "A verified controller status connection is required before moving this robot.";
-  const caps = capabilities({ home: { supported: false, advertised: true, reason }, open: { supported: false, advertised: true, reason },
-    grip: { supported: false, advertised: true, reason }, rapid_reset: { supported: false, advertised: false, reason: "Route unavailable" } });
-  page.render(snapshot({ robot_controls: { capabilities: caps } }));
-  for (const action of ["home", "open", "grip"]) {
-    const button = page.button(action, "left");
-    assert.equal(button.hidden, false); assert.equal(button.disabled, true); assert.equal(button.title, reason);
-    button.disabled = false; button.click();
-    await page.context.send("/api/control_preview", { action, arm: "left" });
-  }
-  assert.equal(page.dom["robot-home-tool"].hidden, false);
-  assert.equal(page.dom["robot-gripper-tool"].hidden, false);
-  assert.equal(page.dom["robot-home-reason"].textContent, reason);
-  assert.equal(page.dom["robot-gripper-reason"].textContent, reason);
-  assert.match(page.dom["robot-capability-notice"].textContent, /advertised.*cannot be used/);
-  assert.equal(page.button("rapid_reset").hidden, true);
-  await page.settle(); assert.equal(page.requests.length, 0);
-});
-
-test("confirmed absence remains distinct from unknown or blocked support", () => {
-  const page = dashboard();
-  const caps = capabilities(Object.fromEntries(["home", "open", "grip", "collision_ack", "rapid_reset", "rapid_start"]
-    .map((action) => [action, { supported: false, advertised: false }])));
-  page.render(snapshot({ robot_controls: { capabilities: caps } }));
-  assert.ok(page.buttons.every((button) => button.hidden && button.disabled));
-  assert.match(page.dom["robot-capability-notice"].textContent, /No robot actions are available/);
-});
-
-test("unsupported clicks cannot send previews even after DOM tampering", async () => {
-  const page = dashboard();
-  page.render(snapshot({ robot_controls: { capabilities: {} } }));
-  const button = page.button("home", "left");
-  button.disabled = false; button.hidden = false;
-  button.click();
-  await page.context.send("/api/control_preview", { action: "home", arm: "left" });
-  await page.settle();
   assert.equal(page.requests.length, 0);
 });
 
-test("a capability disappearing between render and click blocks dispatch", async () => {
-  const page = dashboard(); page.render();
-  page.context.state.robot_controls.capabilities.home.supported = false;
-  page.button("home", "left").click();
-  await page.settle();
-  assert.equal(page.requests.length, 0);
-});
-
-test("supported action sends its reviewed action and arm exactly once", async () => {
-  const page = dashboard(); page.render();
-  page.button("home", "right").click();
-  await page.settle();
+test("failed discovery remains visible while reviewed Home is available", async () => {
+  const page = dashboard();
+  const reason = "Gateway capability read failed: connection unavailable.";
+  page.render(snapshot({ robot_controls: { capabilities: capabilities({ robot_status: { supported: false, reason } }) } }));
+  assert.ok(page.dom["robot-capability-notice"].textContent.includes(reason));
+  page.button("home", "right").click(); await page.settle();
   assert.equal(page.requests.length, 1);
   assert.equal(page.requests[0].url, "/api/control_preview");
   assert.equal(page.requests[0].body.action, "home");
   assert.equal(page.requests[0].body.arm, "right");
 });
 
-test("confirmation loses permission when support disappears, but cancel remains local", async () => {
+test("only the built-in action allowlist can request previews", async () => {
+  const page = dashboard(); page.render();
+  await page.context.send("/api/control_preview", { action: "raw_move", arm: "left" });
+  assert.equal(page.requests.length, 0);
+});
+
+test("discovery changes do not invalidate an otherwise current confirmation", async () => {
   const page = dashboard(); const state = snapshot();
   state.robot_controls.proposal = { action: "rapid_reset", token: "reviewed", description: "Leave stopped." };
+  state.robot_controls.capabilities.rapid_reset.supported = false;
   page.dom["robot-control-ack"].checked = true; page.render(state);
   assert.equal(page.dom["robot-control-confirm"].disabled, false);
-  state.robot_controls.capabilities.rapid_reset = { supported: false, reason: "This gateway cannot leave the program stopped." };
-  page.render(state);
-  assert.equal(page.dom["robot-control-confirm"].hidden, true);
-  assert.equal(page.dom["robot-control-ack"].checked, false);
-  assert.equal(page.dom["robot-control-cancel"].disabled, false);
-  assert.match(page.dom["robot-control-description"].textContent, /cannot leave the program stopped/);
-  page.dom["robot-control-confirm"].disabled = false; page.dom["robot-control-ack"].checked = true;
-  page.dom["robot-control-confirm"].click();
-  await page.context.send("/api/control_confirm", { token: "reviewed", acknowledged: true });
-  assert.equal(page.requests.length, 0);
-  page.dom["robot-control-cancel"].click(); await page.settle();
-  assert.equal(page.requests[0].url, "/api/control_cancel");
+  page.dom["robot-control-confirm"].click(); await page.settle();
+  assert.equal(page.requests[0].url, "/api/control_confirm");
 });
 
-test("backend reset labels and descriptions remain plain text, distinct from app recovery", () => {
-  const page = dashboard(); const state = snapshot();
-  state.robot_controls.capabilities.rapid_start = { supported: true, reason: "Available",
-    label: "Reset and initialize RAPID", description: "Starts a fresh program; may initialize grippers." };
-  state.robot_controls.capabilities.rapid_reset.supported = false;
-  state.robot_controls.proposal = { action: "rapid_start", token: "reviewed", description: "<b>Fresh initialization, not resume.</b>" };
-  page.render(state);
-  assert.equal(page.button("rapid_start").textContent, "Reset and initialize RAPID");
-  assert.equal(page.button("rapid_start").title, "Starts a fresh program; may initialize grippers.");
-  assert.equal(page.dom["robot-control-proposal-heading"].textContent, "Reset and initialize RAPID");
-  assert.equal(page.dom["robot-control-description"].textContent, "<b>Fresh initialization, not resume.</b>");
-  assert.match(html, />Acknowledge app recovery<\/button>/);
-  assert.doesNotMatch(html, /Reset and initialize RAPID separately/);
-  assert.equal(page.button("home", "both").textContent, "Right, then left home");
-  assert.match(html, /Both home moves the right arm, then the left\./);
-});
-
-test("disconnect, busy, recovery and Stop retain existing action interlocks", () => {
+test("disconnect, busy, recovery and Stop retain action interlocks", () => {
   const page = dashboard();
   for (const state of [snapshot({ busy: true }), snapshot({ recovery_required: true }), snapshot({ stop_requested: true })]) {
     page.render(state); assert.ok(page.buttons.every((el) => !el.hidden && el.disabled));
@@ -234,39 +118,34 @@ test("disconnect, busy, recovery and Stop retain existing action interlocks", ()
   page.render(snapshot(), false); assert.ok(page.buttons.every((el) => el.disabled));
 });
 
-test("unknown support permits read-only discovery and best-effort Stop", async () => {
+test("confirmation still requires acknowledgement and an unexpired preview", () => {
+  const page = dashboard(); const state = snapshot();
+  state.robot_controls.proposal = { action: "home", arm: "left", token: "reviewed", description: "Home left." };
+  page.render(state); assert.equal(page.dom["robot-control-confirm"].disabled, true);
+  page.dom["robot-control-ack"].checked = true; page.render(state);
+  assert.equal(page.dom["robot-control-confirm"].disabled, false);
+  page.context.controlDeadline = 0; page.render(state);
+  assert.equal(page.dom["robot-control-confirm"].disabled, true);
+});
+
+test("read-only status and best-effort Stop remain available without discovery", async () => {
   const page = dashboard(); page.render(snapshot({ busy: true, robot_controls: {} }));
   assert.equal(page.context.stopAllowed(), true);
   await page.context.send("/api/stop");
-  assert.equal(page.requests[0].url, "/api/stop");
   page.context.localStopInhibit = false;
   page.render(snapshot({ robot_controls: {} }));
-  assert.equal(page.dom["robot-status-button"].hidden, false);
   page.dom["robot-status-button"].click(); await page.settle();
-  assert.equal(page.requests[1].url, "/api/robot_status");
+  assert.deepEqual(page.requests.map((request) => request.url), ["/api/stop", "/api/robot_status"]);
 });
 
-test("explicitly unsupported status is hidden and cannot be requested", async () => {
+test("backend descriptions remain plain text", () => {
   const page = dashboard(); const state = snapshot();
-  state.robot_controls.capabilities.robot_status = { supported: false, reason: "Status unavailable" };
+  state.robot_controls.proposal = { action: "rapid_start", token: "reviewed", description: "<b>Initialize RAPID.</b>" };
   page.render(state);
-  assert.equal(page.dom["robot-status-button"].hidden, true);
-  await page.context.send("/api/robot_status");
-  assert.equal(page.requests.length, 0);
+  assert.equal(page.dom["robot-control-description"].textContent, "<b>Initialize RAPID.</b>");
 });
 
-test("local speed and alignment settings need no hardware capability", async () => {
-  const page = dashboard(); page.render(snapshot({ robot_controls: {} }));
-  await page.context.send("/api/speed", { speed: 250 });
-  await page.context.send("/api/handover_offset", { x: 0, y: 0, z: 0 });
-  assert.deepEqual(page.requests.map((request) => request.url), ["/api/speed", "/api/handover_offset"]);
-});
-
-test("an explicit unsupported Stop capability never hides the best-effort Stop request", async () => {
-  const page = dashboard(); const state = snapshot({ busy: true });
-  state.robot_controls.capabilities.stop.supported = false;
-  page.render(state);
-  assert.equal(page.context.stopAllowed(), true);
-  await page.context.send("/api/stop");
-  assert.equal(page.requests[0].url, "/api/stop");
+test("receiving-alignment adjustment controls are removed", () => {
+  assert.doesNotMatch(html, /id="robot-handover-(?:form|x|y|z|apply|reset)"/);
+  assert.doesNotMatch(script, /\/api\/handover_offset/);
 });

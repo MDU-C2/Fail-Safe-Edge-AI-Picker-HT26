@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from camera_client import CameraError
+from test_web_controller import WebFixture
 from web_app import hardware_factory, main
 from web_controller import WebController
 
@@ -99,6 +100,45 @@ class WebStartupTests(unittest.TestCase):
         self.assertEqual(state["error"], expected)
         self.assertEqual(state["events"][-1]["message"], f"Startup failed: {expected}")
         self.assertEqual(output, f"Startup failed: {expected}\n")
+
+    def test_hardware_factory_handover_finishes_at_clearance_without_automatic_home(self):
+        fixture = WebFixture(Path(self.args.placing_grid).parent / "fixture")
+        self.args.placing_grid = str(fixture.session.placing_grid.path)
+        self.args.output = str(Path(self.args.placing_grid).parent / "captures")
+        self.args.grid_table_z, self.args.grid_cell_size = 0, 80
+        self.args.speed, self.args.max_result_age = None, 30
+        self.args.match_mm, self.args.match_px = 20, 40
+        self.args.verification_frames = 1
+        calibration = SimpleNamespace(digest="cal-1", offset=(0, 0, 0))
+        captures = Mock()
+        def capture(purpose):
+            import copy
+            import test_placement_verification as placement_fixture
+            result, _ = fixture.capture(purpose)
+            observation = placement_fixture.PlacementVerificationTests.observed()["placement_observation"]
+            observation["grid_snapshot"] = fixture.session.placing_grid.snapshot()
+            prototype = observation["slots"][0]
+            observation["slots"] = [dict(copy.deepcopy(prototype), id=slot["id"])
+                                    for slot in observation["grid_snapshot"]["locations"]]
+            result["placement_observation"] = observation
+            return result, time.monotonic()
+        captures.capture.side_effect = capture
+        with patch("capture_and_detect.load_token", return_value="offline-token"), \
+                patch("capture_and_detect.Calibration", return_value=calibration), \
+                patch("camera_client.CameraClient"), \
+                patch("inference_integration.create_detector", return_value=(Mock(), "offline.pt")), \
+                patch("inference_integration.create_robot", return_value=fixture.robot), \
+                patch("capture_and_detect.CaptureService", return_value=captures), \
+                redirect_stdout(io.StringIO()):
+            session, _ = hardware_factory(self.args)(Mock())
+            self.assertFalse(session.home_after_cup)
+            self.assertFalse(session.motion_settings()["home_after_cup"])
+            scan = session.scan()
+            session.execute_selection(action="goto", capture_id=scan["capture"], cup_id=1)
+        self.assertEqual(fixture.robot.jobs[-1]["name"], "right_clear")
+        self.assertIn("left_clear", [job["name"] for job in fixture.robot.jobs])
+        self.assertFalse(any("home" in job["name"] for job in fixture.robot.jobs))
+        self.request.assert_not_called()
 
 
 class ManagedStartupCleanupTests(unittest.TestCase):

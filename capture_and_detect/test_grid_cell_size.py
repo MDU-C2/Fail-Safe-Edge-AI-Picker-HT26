@@ -99,7 +99,7 @@ class GridCellSizeTests(unittest.TestCase):
 
         with patch.object(PlacementVision, "assess", observe):
             result, _ = service.capture("scan")
-        self.assertEqual(sizes, [90, 90, 90])
+        self.assertEqual(sizes, [90])
         self.assertEqual(result["placement_observation"]["grid_snapshot"]["cell_size_mm"], 90)
         self.assert_floor_width(result, 90)
         self.assertEqual(self.path.read_bytes(), before)

@@ -94,7 +94,7 @@ def test_native_agent_reactivation_creates_fresh_worker_and_restores_handoff_set
     assert agent.controller is not old_controller
     restored = agent.controller.session
     assert (restored.speed, restored.home_speed, restored.camera_z) == (80, 70, True)
-    assert restored.handover_offset == (1.0, 2.0, 3.0)
+    assert restored.handover_offset == (0.0, 0.0, 0.0)
     assert not restored.scan_usable and restored.inventory is None
     assert state["state"]["robot_controls"]["proposal"] is None
     assert json.loads(rig.grid.path.read_text()) == original_grid
@@ -159,7 +159,7 @@ def test_transferred_camera_height_is_applied_before_immutable_session_construct
     session = agent.controller.session
     assert session.camera_z is True and rig.args.camera_z is False
     assert (session.speed, session.home_speed) == (90, 75)
-    assert session.handover_offset == (2.0, -1.0, 3.0)
+    assert session.handover_offset == (0.0, 0.0, 0.0)
     assert state["health"]["metadata"]["policy"]["camera_z"] is True
     assert len(rig.workers) == 1 and not rig.workers[0].calls and rig.camera.calls == 0
 

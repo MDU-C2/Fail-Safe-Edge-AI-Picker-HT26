@@ -363,10 +363,10 @@ def hardware_factory(args):
         captures = CaptureService(camera, detector, store, weights, placing_grid=grid,
                                   grid_table_z=args.grid_table_z, grid_cell_size=args.grid_cell_size,
                                   depth_frames=getattr(args, "depth_frames", 5),
-                                  scan_observations=getattr(args, "scan_observations", 3))
+                                  scan_observations=getattr(args, "scan_observations", 1))
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
         def capture(purpose):
-            controller.event("Capturing and detecting cups…" if purpose == "scan" else "Rechecking the selected cup with a fresh camera observation…")
+            controller.event("Capturing and detecting cups…" if purpose == "scan" else "Capturing a requested workspace observation…")
             return captures.capture(purpose)
         def save(inventory):
             store.save(inventory)
@@ -375,8 +375,9 @@ def hardware_factory(args):
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
                      recovery=recovery, placing_grid=grid,
-                     verification_frames=getattr(args, "verification_frames", 3),
-                     strict_single_verification=getattr(args, "strict_single_verification", False),
+                     verification_frames=getattr(args, "verification_frames", 1),
+                     strict_single_verification=getattr(args, "strict_single_verification",
+                                                        getattr(args, "verification_frames", 1) == 1),
                      camera_z=getattr(args, "camera_z", False))
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
         return session, LanguageController(session, NoLanguage(), audit_dir=store.folder / "language",
@@ -435,9 +436,11 @@ def main(argv=None):
                         help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
                              f"normal {DEFAULT_SPEED}, automatic home {HOME_SPEED}; cup flips are capped at 100")
     parser.add_argument("--max-result-age", type=float, default=30,
-                        help="Maximum verification image age before approach, descent and grip, seconds (default 30)")
-    parser.add_argument("--match-mm", type=float, default=20)
-    parser.add_argument("--match-px", type=float, default=40)
+                        help="Legacy compatibility option; snapshot picking has no image-age limit")
+    parser.add_argument("--match-mm", type=float, default=20,
+                        help="Legacy compatibility option; snapshot picking does not rematch cup positions")
+    parser.add_argument("--match-px", type=float, default=40,
+                        help="Legacy compatibility option; snapshot picking does not rematch cup pixels")
     add_inference_arguments(parser)
     args = parser.parse_args(argv)
     if args.output is None:

@@ -94,7 +94,7 @@ def test_reset_clears_and_verifies_both_arms_then_leaves_stopped():
     assert c.execution == "stopped"
     assert all(value in {"FALSE", '""'} for value in c.symbols.values())
     assert {task for task, _ in c.reads} == {"T_ROB_L", "T_ROB_R"}
-    assert len(c.reads) == 20
+    assert len(c.reads) == 22  # Includes optional path selector checks on both arms.
     assert any(action == "resetpp" for _, action, _ in c.calls)
     assert not any(action == "start" for _, action, _ in c.calls)
 

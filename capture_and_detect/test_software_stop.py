@@ -272,7 +272,7 @@ class SoftwareStopTests(unittest.TestCase):
         robot.latch_stop = Mock()
         robot.request_stop = Mock(return_value={"dry_run": False, "stopped": True, "message": "Stopped"})
         session = self.session(robot=robot, recovery=journal)
-        robot.after_move = lambda count: session.request_stop() if count == 25 else None
+        robot.after_move = lambda count: session.request_stop() if robot.jobs[-1]["name"] == "right_clear" else None
         with self.assertRaisesRegex(SelectionError, "Software stop"):
             session.execute_selection(action="goto", capture_id="scan-10", cup_id=1)
         self.assertTrue(journal.required())

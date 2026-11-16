@@ -64,7 +64,7 @@
 
             <details class="secondary-details saved-reference-tools"><summary>Saved cup references</summary><form id="save-cup-form" class="save-cup-form" aria-describedby="save-cup-hint"><label for="save-cup-name">Remember this cup</label><div class="save-cup-entry"><input id="save-cup-name" type="text" maxlength="48" placeholder="Kasun mug" autocomplete="off" required disabled><button id="save-cup-button" class="button button-secondary" type="submit" disabled>Save cup</button></div><p id="save-cup-hint" class="fine-print">Save a name and reference image locally. Saving sends no movement command.</p></form><section id="saved-cups-panel" class="panel saved-cups-panel" aria-labelledby="saved-cups-heading">
             <div class="panel-heading"><div><p class="eyebrow">YOUR CUP REFERENCES</p><h2 id="saved-cups-heading">Saved cups <span id="saved-cup-count" class="count-pill">0</span></h2></div><span class="small-icon" aria-hidden="true">↳</span></div>
-            <p class="panel-description">Names and reference images stay saved locally after restart. A cup can move to a new position; Find scans again and compares its appearance.</p>
+            <p class="panel-description">Names and reference images stay saved locally after restart. Find compares the reference with the current workspace snapshot. Scan again when the scene changes.</p>
             <p id="saved-cups-status" class="saved-cups-status" role="status">Loading saved cups…</p>
             <div id="saved-cup-list" class="saved-cup-list"><p class="saved-cups-empty">Scan, select a cup, and save it with a name to find it again later.</p></div>
             <p class="fine-print">Find only prepares a pick preview. Inspect the matched cup and confirm before movement. Forget removes the saved reference.</p>
@@ -83,7 +83,7 @@
         <section class="panel assistant-chat" aria-labelledby="assistant-heading">
           <div class="assistant-chat-heading"><div><p class="eyebrow">PLAN YOUR NEXT ACTION</p><h2 id="assistant-heading">Workspace assistant</h2></div><span id="assistant-state" class="assistant-state" role="status">Connecting</span></div>
           <div class="assistant-context"><div><span class="assistant-context-dot" aria-hidden="true"></span><strong id="assistant-context-label">Waiting for workspace context.</strong></div><p id="assistant-source">GPT-6 Astra · OpenAI</p></div>
-          <p id="assistant-context-note" class="assistant-context-note">Takes a fresh photo when needed. Review your pick here, then confirm once.</p>
+          <p id="assistant-context-note" class="assistant-context-note">Uses the current snapshot. Scan again when the scene changes, then review and confirm your pick.</p>
           <p id="assistant-error" class="assistant-notice" role="alert" hidden></p>
           <div id="assistant-messages" class="assistant-messages" role="log" aria-label="Assistant conversation" aria-live="polite" aria-relevant="additions text">
             <div id="assistant-empty" class="assistant-welcome"><span class="assistant-welcome-mark" aria-hidden="true">✦</span><h3>What would you like to do?</h3><p>Understand the scene, remember a cup, or choose your next pick.</p><div class="assistant-examples" aria-label="Example questions"><button type="button" data-assistant-example="Which cups are available?"><strong>Find available cups</strong><span>See what is ready to pick</span></button><button type="button" data-assistant-example="Remember cup 2 as Kasun's cup"><strong>Remember a cup</strong><span>Save Cup 2 as Kasun's cup</span></button><button type="button" data-assistant-example="Why is P10 blocked?"><strong>Explain a blocked location</strong><span>Understand the placement checks</span></button><button type="button" data-assistant-example="Pick Kasun's cup"><strong>Pick a remembered cup</strong><span>Review Kasun's cup before picking</span></button></div></div>
@@ -104,7 +104,7 @@
           <section class="panel assistant-phone" aria-labelledby="assistant-phone-heading"><div class="settings-card-heading"><div><p class="eyebrow">SAME WI-FI</p><h3 id="assistant-phone-heading">Phone access</h3></div><span class="assistant-phone-symbol" aria-hidden="true">↗</span></div><p id="assistant-phone-note" class="assistant-helper">Open this dashboard on your phone and enter the pairing code shown on the dashboard computer. Both devices use the same workspace.</p><div id="assistant-phone-setup" class="assistant-phone-setup" hidden><p class="assistant-helper">Dashboard address</p><a id="assistant-phone-link" target="_blank" rel="noopener noreferrer"></a><div id="assistant-phone-code-row" class="assistant-phone-code-row" hidden><span>Pairing code</span><strong id="assistant-phone-code"></strong></div></div><p id="assistant-phone-unavailable" class="assistant-helper">The phone address will appear when local network access is enabled.</p><p class="assistant-helper assistant-phone-footnote">The API key is managed on the dashboard computer. You can ask questions and review cup actions from your phone.</p></section>
         </div>
 
-        <div class="settings-section-heading"><h3>Robot settings</h3><p>Movement, handover alignment and placement records.</p></div>
+        <div class="settings-section-heading"><h3>Robot settings</h3><p>Movement speeds and placement records.</p></div>
         <div class="settings-grid"><section class="panel robot-tool settings-speed" aria-labelledby="robot-speed-heading">
           <div class="robot-tool-heading"><h3 id="robot-speed-heading">Movement speeds</h3></div>
           <form id="robot-speed-form"><label for="robot-speed-input">Overall speed <span>mm/s</span></label><div class="robot-speed-entry"><input id="robot-speed-input" type="number" min="1" max="1500" step="any" inputmode="decimal" required disabled><button id="robot-speed-button" class="button button-secondary" type="submit" disabled>Apply overall</button></div></form>
@@ -135,23 +135,7 @@
               <div class="robot-confirm-actions"><button id="release-locations-confirm" class="button button-primary" type="button" disabled>Confirm all locations available</button><button id="release-locations-cancel" class="cancel-button" type="button" disabled>Cancel</button></div>
               <p class="robot-tool-copy">Pending previews are cancelled. Scan again before picking; a new camera observation may mark locations occupied or blocked again. Stop and recovery blocks remain in place.</p>
             </section>
-          </section></div><section class="panel robot-tool robot-handover-tool" aria-labelledby="robot-handover-heading">
-            <div class="robot-tool-heading"><h3 id="robot-handover-heading">Handover alignment</h3></div>
-            <div class="robot-handover-layout">
-              <form id="robot-handover-form" aria-describedby="robot-handover-reference robot-handover-note">
-                <p id="robot-handover-reference" class="robot-tool-copy">Offsets use robot-base axes, not camera axes. The current receiving target is shown below.</p>
-                <div class="robot-handover-inputs">
-                  <div><label for="robot-handover-x">X offset <span>mm</span></label><input id="robot-handover-x" type="number" min="-20" max="20" step="0.5" inputmode="decimal" required disabled></div>
-                  <div><label for="robot-handover-y">Y offset <span>mm</span></label><input id="robot-handover-y" type="number" min="-20" max="20" step="0.5" inputmode="decimal" required disabled></div>
-                  <div><label for="robot-handover-z">Z offset <span>mm</span></label><input id="robot-handover-z" type="number" min="-20" max="20" step="0.5" inputmode="decimal" required disabled></div>
-                </div>
-                <div class="robot-handover-actions"><button id="robot-handover-apply" class="button button-secondary" type="submit" disabled>Apply alignment</button><button id="robot-handover-reset" class="button button-secondary" type="button" disabled>Reset alignment</button></div>
-                <p id="robot-handover-status" class="robot-tool-copy" role="status" aria-live="polite">Applied alignment unavailable.</p>
-              </form>
-              <div class="robot-handover-readback"><p class="eyebrow">APPLIED TO FUTURE CUP TRANSFERS</p><p id="robot-handover-current" class="robot-tool-copy">Applied offset unavailable.</p><p id="robot-handover-target" class="robot-handover-target">Right receiving target unavailable.</p><p id="robot-handover-speed" class="robot-tool-copy">Receiving approach speed unavailable.</p><p id="robot-handover-note" class="robot-tool-copy">Apply and Reset send no movement command. Changes cancel pending previews and require a fresh scan. Offsets last until app restart.</p></div>
-            </div>
-            <p class="robot-tool-copy">Teach and verify each robot-base axis direction at the robot before applying a small correction. Range: −20 to +20 mm per axis. This does not change finger force.</p>
-          </section><section id="inference-panel" class="panel inference-panel" aria-labelledby="inference-heading" hidden>
+          </section></div><section id="inference-panel" class="panel inference-panel" aria-labelledby="inference-heading" hidden>
         <div class="inference-heading"><div><p class="eyebrow">PERCEPTION SERVICE</p><h2 id="inference-heading">Inference source</h2></div><span id="inference-badge" class="inference-badge" role="status" aria-live="polite">CONNECTING</span></div>
         <p id="inference-stale" class="inference-stale" role="alert" hidden>STALE SNAPSHOT — controller disconnected. Source, counters and events below are the last received values.</p>
         <div class="inference-overview">

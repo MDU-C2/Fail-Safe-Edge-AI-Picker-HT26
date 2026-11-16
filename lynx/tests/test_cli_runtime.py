@@ -231,6 +231,8 @@ def test_empty_enter_does_not_capture_and_launcher_selects_single_verification(o
     assert rig.session.verification_frames == 1
     assert rig.session.strict_single_verification is True
     assert rig.session.max_result_age == 60.0
+    assert rig.session.home_after_cup is False
+    assert rig.session.motion_settings()["home_after_cup"] is False
     assert not rig.started.is_set() and rig.stop_calls == 0
     assert rig.worker_closed
     assert_launcher_created_no_lock(rig)

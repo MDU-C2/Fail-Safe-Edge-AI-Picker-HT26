@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from cup_inventory import SelectionError, _motion_flange_problem, atomic_json, finite_number
+from cup_inventory import SelectionError, atomic_json, finite_number
 
 
 PLACE_ABOVE = 80
@@ -27,12 +27,7 @@ _GRID_UPDATES = threading.RLock()
 
 
 def validate_place(location):
-    """Return a copy after checking a grid slot and its derived flange targets.
-
-    These are coarse coordinate checks, not collision/reachability guarantees.
-    The planner additionally checks the turning midpoint using the selected
-    receiving offset; the grid itself only owns the place and raised-place.
-    """
+    """Validate placement records; the gateway/controller enforce motion bounds."""
     if not isinstance(location, dict):
         raise SelectionError("Each placement location must be an object.")
     if type(location.get("id")) is not int or location["id"] < 1:
@@ -52,12 +47,6 @@ def validate_place(location):
             raise SelectionError(f"Placement location {location['id']}: invalid reservation metadata.")
     if not all(finite_number(location.get(axis)) for axis in ("x", "y", "z")):
         raise SelectionError(f"Placement location {location['id']}: coordinates must be finite numbers.")
-    place = tuple(location[axis] for axis in ("x", "y", "z"))
-    above = (place[0], place[1], place[2] + PLACE_ABOVE)
-    for label, target, pick in (("place", place, True), ("above place", above, False)):
-        problem = _motion_flange_problem(target, pick=pick)
-        if problem:
-            raise SelectionError(f"Placement location {location['id']} ({label}): {problem}.")
     return copy.deepcopy(location)
 
 

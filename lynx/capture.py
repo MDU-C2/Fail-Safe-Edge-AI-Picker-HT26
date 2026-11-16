@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import time
 
-from camera_client import CameraError
+from camera_client import CameraError, NoNewCameraFrame
 from cup_inventory import (SelectionError, atomic_json, build_inventory,
                            normalize_offset, save_inventory)
 from table_reference_contract import validate_reference, _identity
@@ -146,7 +146,6 @@ class CaptureService:
         self._config(grid.snapshot())
 
     def _check_identity(self):
-        self.calibration.ensure_unchanged()
         if bounded_read(self.reference_path) != self.reference_raw:
             raise SelectionError("Empty-table reference changed. Restart and scan again.")
 
@@ -161,39 +160,44 @@ class CaptureService:
 
     def _observe(self, config):
         self._check_identity()
-        if self.camera.intrinsics() != self.K:
-            raise CameraError("Camera intrinsics changed. Restart and scan again.")
         deadline, samples, metadata = time.monotonic() + 10.0, [], []
         for index in range(self.depth_frames):
-            if index:
-                del rgb, depth
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if samples:
+                    break
                 raise CameraError("Depth sample collection timed out.")
-            rgb, depth, frame = self.camera.capture_raw(timeout_s=remaining)
+            try:
+                capture = (self.camera.capture_raw if samples else
+                           getattr(self.camera, "capture_latest_raw", self.camera.capture_raw))
+                pair = capture(timeout_s=min(remaining, 2.0) if samples else remaining)
+            except NoNewCameraFrame:
+                if samples:
+                    break
+                raise
+            next_rgb, next_depth, frame = pair
             sequence = frame.get("sequence")
-            if type(sequence) is not int or (metadata and sequence <= metadata[-1]["sequence"]):
-                raise CameraError("Depth samples must have advancing frame sequences; scan again.")
+            if type(sequence) is not int:
+                raise CameraError("Depth sample has no valid frame sequence.")
+            if metadata and sequence == metadata[-1]["sequence"]:
+                break
             if (frame.get("width"), frame.get("height")) != (self.K["width"], self.K["height"]):
                 raise CameraError("Image dimensions do not match the camera intrinsics.")
+            rgb, depth = next_rgb, next_depth
             samples.append(depth)
             metadata.append(frame)
         frame = dict(metadata[-1])
         frame["observation_started_monotonic"] = metadata[0]["observation_started_monotonic"]
-        if len(samples) > 1:
+        if self.depth_frames > 1:
             frame["depth_sampling"] = {
-                "count": len(samples), "method": "mean_of_stable_object_core_depths",
+                "count": len(samples), "method": "mean_of_available_eroded_mask_depths",
                 "sequences": [item["sequence"] for item in metadata],
                 "timestamps": [item["timestamp"] for item in metadata],
                 "grid_evidence": "latest_raw_aligned_frame"}
-        if self.camera.intrinsics() != self.K:
-            raise CameraError("Camera intrinsics changed during the depth burst. Restart and scan again.")
         self._check_identity()
         # observe consumes samples. The latest depth alone remains for auditing.
         result = self.worker.observe(rgb, samples, config)
         self._check_identity()
-        if self.camera.intrinsics() != self.K:
-            raise CameraError("Camera intrinsics changed during perception. Restart and scan again.")
         return rgb, depth, frame, result
 
     def capture(self, purpose):

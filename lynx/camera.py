@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from camera_client import CameraError
+from camera_client import CameraError, NoNewCameraFrame
 
 
 class LocalCameraClient:
@@ -32,7 +32,7 @@ class LocalCameraClient:
                 raise CameraError("Invalid camera intrinsics.")
         return data
 
-    def capture(self, timeout_s=10):
+    def capture(self, timeout_s=10, *, fresh=True):
         if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)) or not math.isfinite(timeout_s) or timeout_s <= 0:
             raise CameraError("Capture timeout must be positive and finite.")
         try:
@@ -49,40 +49,45 @@ class LocalCameraClient:
         if not status.connected or type(status.sequence) is not int or status.sequence < 1:
             raise CameraError("The Lynx camera has not published a frame.")
         intrinsics = self.intrinsics()
-        wait = self.service.wait_for_frame_set(status.sequence, timeout_s)
-        try:
-            pending = asyncio.run_coroutine_threadsafe(wait, self.loop)
-        except RuntimeError as error:
-            wait.close()
-            raise CameraError("The camera event loop stopped before capture.") from error
-        try:
-            pair = pending.result(timeout=timeout_s + 0.1)
-        except FutureTimeout as error:
-            pending.cancel()
-            raise CameraError("Timed out waiting for a new camera frame.") from error
-        except FutureCancelled as error:
-            raise CameraError("Camera capture was cancelled during shutdown.") from error
-        if pair is None or not self.service.is_connected():
-            raise CameraError("No fresh camera frame; camera disconnected or timed out.")
+        if fresh:
+            wait = self.service.wait_for_frame_set(status.sequence, timeout_s)
+            try:
+                pending = asyncio.run_coroutine_threadsafe(wait, self.loop)
+            except RuntimeError as error:
+                wait.close()
+                raise CameraError("The camera event loop stopped before capture.") from error
+            try:
+                pair = pending.result(timeout=timeout_s + 0.1)
+            except FutureTimeout as error:
+                pending.cancel()
+                raise NoNewCameraFrame("Timed out waiting for a new camera frame.") from error
+            except FutureCancelled as error:
+                raise CameraError("Camera capture was cancelled during shutdown.") from error
+        else:
+            pair = self.service.get_latest_frame_set()
+        if not self.service.is_connected():
+            raise CameraError("No fresh camera frame; camera disconnected.")
+        if pair is None:
+            raise NoNewCameraFrame("No fresh camera frame; camera timed out.")
         rgb, depth = pair.rgb, pair.depth
         if rgb is None or depth is None:
             raise CameraError("The camera pair is incomplete.")
-        if any(type(value) is not int for value in (pair.sequence, rgb.sequence, depth.sequence)) or pair.sequence <= status.sequence or rgb.sequence != pair.sequence or depth.sequence != pair.sequence:
+        if (any(type(value) is not int for value in (pair.sequence, rgb.sequence, depth.sequence))
+                or fresh and pair.sequence <= status.sequence
+                or rgb.sequence != pair.sequence or depth.sequence != pair.sequence):
             raise CameraError("RGB and depth sequences do not match a new observation.")
         if rgb.timestamp != pair.timestamp or depth.timestamp != pair.timestamp:
             raise CameraError("RGB and depth timestamps do not match.")
         if not isinstance(pair.timestamp, datetime) or pair.timestamp.tzinfo is None or pair.timestamp.utcoffset() is None:
             raise CameraError("Camera timestamp has no timezone.")
         age = (datetime.now(timezone.utc) - pair.timestamp).total_seconds()
-        if not 0 <= age <= self.max_age:
+        if fresh and not 0 <= age <= self.max_age:
             raise CameraError("The camera frame is stale or has a future timestamp.")
         if (rgb.width, rgb.height) != (depth.width, depth.height):
             raise CameraError("RGB and aligned depth dimensions do not match.")
         width, height = rgb.width, rgb.height
         if type(width) is not int or type(height) is not int or not 0 < width <= 1920 or not 0 < height <= 1080:
             raise CameraError("Unsupported camera dimensions.")
-        if self.intrinsics() != intrinsics:
-            raise CameraError("Camera intrinsics changed during capture. Restart and scan again.")
         if (width, height) != (intrinsics["width"], intrinsics["height"]):
             raise CameraError("Image dimensions do not match the camera intrinsics.")
         if rgb.pixel_format != "BGR888p" or depth.pixel_format != "RAW16":
@@ -101,3 +106,7 @@ class LocalCameraClient:
             "observed_at": observed.isoformat(), "received_monotonic": time.monotonic(),
             "observation_started_monotonic": started,
         }
+
+    def capture_latest(self, timeout_s=10):
+        """Use the current matched pair for the first V4-style scan sample."""
+        return self.capture(timeout_s=timeout_s, fresh=False)

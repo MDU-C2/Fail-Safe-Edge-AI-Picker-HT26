@@ -16,6 +16,7 @@ from gateway.models.rws import (
     RwsGripperRequest,
     RwsMotionRequest,
     RwsMoveRequest,
+    RwsPathRequest,
 )
 from gateway.robot.service import COMMAND_STATES
 from gateway.rws.client import RwsError
@@ -178,6 +179,44 @@ async def move(
         rotation,
         request.wait,
         motion_speed(request),
+    )
+
+
+@router.post(
+    "/path",
+    response_model=CommandResponse,
+    summary="Run a blended path for one arm over Robot Web Services",
+    description=(
+        "Runs 1..8 points as one RAPID job. Each point supplies tool0 "
+        "position in wobj0 (mm) and rx/ry/rz (degrees). linear selects "
+        "MoveL instead of a joint move. Point speed and zone override "
+        "request defaults; zone 0 stops there and the last point always "
+        "stops (fine). Every target and intermediate blend-radius "
+        "envelope must be inside the configured safe zone. This does "
+        "not check the swept volume of joint moves. max_acceleration "
+        "optionally limits path acceleration/deceleration in m/s2. "
+        "Requires the path-enabled RAPID program; missing variables "
+        "reject the entire job before any writes. Lease, wait, errors "
+        "and speed settings are as for /move."
+    ),
+)
+async def path(
+    request: RwsPathRequest,
+    identity: Annotated[
+        Identity,
+        Depends(require_control("robot.control")),
+    ],
+) -> CommandResponse:
+    return await run_authorized(
+        identity,
+        request,
+        rws_motion.path,
+        request.arm,
+        request.points,
+        request.wait,
+        motion_speed(request),
+        request.zone,
+        request.max_acceleration,
     )
 
 

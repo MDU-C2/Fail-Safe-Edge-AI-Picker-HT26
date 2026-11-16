@@ -89,7 +89,7 @@ class AssistantNamedCupHttpTests(unittest.TestCase):
         state = self.prepare(answer)
         proposal = state["proposal"]
         self.assertIsNone(state["error"])
-        self.assertEqual(self.fixture.captures, ["scan", "scan"])
+        self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual(proposal["cup_id"], 2)
         self.assertEqual(proposal["saved_cup"]["id"], saved["id"])
         self.assertEqual(self.fixture.robot.jobs, [])

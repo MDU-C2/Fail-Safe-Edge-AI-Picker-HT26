@@ -2,12 +2,12 @@
 
 Each arm advances only after its previous job reports DONE. Handover jobs add
 explicit cross-arm dependencies for the original overlapping choreography.
-Workspace checks are a coarse target filter; the controller checks reachability.
+Source XY and motion heights follow V4; the gateway and controller check targets.
 """
 
 from cup_inventory import (
     GRIPPER_TCP_Z, LEFT_DOWN, LEFT_READY, TRAVEL_Z, SelectionError,
-    _motion_flange_problem, finite_number, normalize_offset, position_problem,
+    finite_number, normalize_offset, position_problem,
 )
 from placing_grid import validate_place
 
@@ -38,8 +38,7 @@ PICK_SPEED = 100
 FLIP_SPEED = 100
 FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
-HANDOVER_OFFSET_LIMIT = 20
-ALIGNMENT_SPEED = 25
+HANDOVER_BLEND_MM = 10
 DEFAULT_PHASE_SPEEDS = {"pick_lift": PICK_SPEED, "handover": None,
                         "flip": FLIP_SPEED, "placement": None}
 
@@ -88,38 +87,25 @@ def motion_speeds(speed=None, home_speed=None):
 
 
 def normalize_handover_offset(value):
-    """Small operator-taught corrections in robot-base mm, never camera pixels.
-
-    These bounds limit configuration mistakes; they do not prove path clearance.
-    """
+    """Read legacy settings without changing V4's fixed receiving poses."""
     if (not isinstance(value, (tuple, list)) or len(value) != 3
-            or any(not finite_number(v) or abs(v) > HANDOVER_OFFSET_LIMIT for v in value)):
-        raise SelectionError("Handover X/Y/Z offsets must be finite numbers from -20 to 20 mm.")
-    return tuple(float(v) for v in value)
+            or any(not finite_number(v) for v in value)):
+        raise SelectionError("Legacy handover offsets must contain three finite numbers.")
+    return (0.0, 0.0, 0.0)
 
 
 def handover_settings(offset=(0, 0, 0), speed=DEFAULT_SPEED):
-    offset = normalize_handover_offset(offset)
+    normalize_handover_offset(offset)
     if not finite_number(speed) or not 1 <= speed <= 1500:
         raise SelectionError("speed must be a finite number from 1 to 1500 mm/s")
-    adjusted = any(offset)
-    return {"offset_mm": dict(zip("xyz", offset)),
-            "receive_mm": dict(zip("xyz", (p + d for p, d in zip(R_TAKE, offset)))),
-            "approach_speed": min(speed, ALIGNMENT_SPEED) if adjusted else speed,
-            "adjusted": adjusted}
+    return {"offset_mm": dict.fromkeys("xyz", 0.0),
+            "receive_mm": dict(zip("xyz", R_TAKE)),
+            "approach_speed": speed, "adjusted": False}
 
 
 def pick_position_problem(cup, tag_offset=(0, 0, 0)):
-    """A fixed-height pick additionally needs a plausible table cup-base height."""
-    reason = position_problem(cup, tag_offset)
-    if reason:
-        return reason
-    if cup.get("grip_geometry_error"):
-        return f"Grip geometry is unconfirmed: {cup['grip_geometry_error']}"
-    if not CUP_Z_MIN <= cup["z"] <= CUP_Z_MAX:
-        return (f"cup base height must be {CUP_Z_MIN}..{CUP_Z_MAX} mm for the fixed-height pick "
-                f"(detected {cup['z']:.1f} mm)")
-    return None
+    """Use V4's source-coordinate eligibility without extra grip/height gates."""
+    return position_problem(cup, tag_offset)
 
 
 def pick_tcp_z(cup, *, camera_z=False):
@@ -136,15 +122,15 @@ def pick_tcp_z(cup, *, camera_z=False):
 def _pick_geometry(cup, tag_offset, *, camera_z=False):
     if not isinstance(cup, dict):
         raise SelectionError("Cup selection must be an object")
-    reason = cup.get("blocked_reason") or pick_position_problem(cup, tag_offset)
-    if cup.get("selectable") is False or reason:
-        raise SelectionError(reason or "cup is not selectable")
+    reason = pick_position_problem(cup, tag_offset)
+    if reason:
+        raise SelectionError(reason)
     yaw = cup.get("rz", LEFT_DOWN[2])
-    if not finite_number(yaw) or not 90 <= yaw <= 270:
-        raise SelectionError("Cup grip yaw must be a finite angle from 90 to 270 degrees")
+    if not finite_number(yaw):
+        raise SelectionError("Cup grip yaw must be a finite angle")
     aperture = cup.get("aperture")
-    if aperture is not None and (not finite_number(aperture) or aperture <= 0):
-        raise SelectionError("Cup aperture must be a finite positive width or unknown")
+    if aperture is not None and not finite_number(aperture):
+        raise SelectionError("Cup aperture must be a finite width or unknown")
     ox, oy, _ = normalize_offset(tag_offset)
     x, y = cup["x"] + ox, cup["y"] + oy
     return ((x, y, TRAVEL_Z + GRIPPER_TCP_Z),
@@ -173,9 +159,6 @@ class _Plan:
 
     def move(self, name, arm, position, rotation, *, move_speed=None, acceleration=100,
              ramp=100, pick=False, after=()):
-        reason = _motion_flange_problem(position, pick=pick)
-        if reason:
-            raise SelectionError(f"{name}: {reason}")
         self.job(name, arm, "move", **dict(zip(("x", "y", "z"), position)),
                  **dict(zip(("rx", "ry", "rz"), rotation)),
                  speed=self.speed if move_speed is None else move_speed,
@@ -183,6 +166,22 @@ class _Plan:
 
     def home(self, name, arm):
         self.job(name, arm, "home", speed=self.home_speed, acceleration=100, ramp=100)
+
+    def path(self, name, arm, waypoints, *, move_speed, zone=HANDOVER_BLEND_MM,
+             acceleration=100, ramp=100, after=()):
+        """Blend transit points only; the final target remains a DONE barrier.
+
+        Keep V4's joint-space movement. Height is checked when dispatched;
+        the gateway and controller check workspace and reachability.
+        """
+        points = []
+        for index, (position, rotation, speed) in enumerate(waypoints):
+            radius = zone if index < len(waypoints) - 1 else 0
+            points.append({**dict(zip(("x", "y", "z"), position)),
+                           **dict(zip(("rx", "ry", "rz"), rotation)),
+                           "linear": False, "speed": speed, "zone": radius})
+        self.job(name, arm, "path", points=points, speed=move_speed, zone=zone,
+                 acceleration=acceleration, ramp=ramp, after=after)
 
     def grip(self, name, arm, action, **options):
         self.job(name, arm, "gripper", action=action, **options)
@@ -223,7 +222,7 @@ class _Plan:
 
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None,
-                  home_after_cup=True):
+                  home_after_cup=False):
     """Build one guarded transfer with per-arm order and cross-arm dependencies.
 
     The accepted observation supplies the cup's yaw and aperture. Only cup
@@ -235,20 +234,21 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     Defaults are 250 mm/s travel and 200 mm/s home. Picking, loaded lift and
     left handover default to 100; the two turnover moves default to 100 and
     retain 30% acceleration. Explicit phase settings adjust future plans only,
-    always capped by the overall speed. Adjusted
-    receiving poses retain the 25 mm/s, 20% acceleration, 10% ramp limits.
+    always capped by the overall speed. Receiving poses are fixed to V4.
 
     Empty grippers travel closed. Opening happens above the cup or beside the
     handover. The left handover move overlaps the right via/beside approach;
-    right opening waits for both. After the right retreats above placement, its
-    placing/return sequence overlaps the left return. Left release still waits
+    right opening waits for both. Via/beside and turnover/retreat each use the
+    loaded RAPID RunPath routine: a 10 mm intermediate blend and an exact final
+    stop. Left release still waits
     for right grip, and right lowering waits for left clearance. Every job's
-    ``after`` names must complete before dispatch. The initial right home is
-    retained as an additional startup guard before left picking begins when
-    ``home_after_cup`` is true (the default). With it false, the terminal's
+    ``after`` names must complete before dispatch. By default, the
     vision_detection4 workflow leaves both empty grippers open at their clear
-    targets, and starts the next cup through LEFT_READY without a home command.
-    The right approach still waits for the left lift to finish.
+    targets and starts the next cup through LEFT_READY without a home command.
+    The right approach still waits for the left lift to finish. Explicit
+    ``home_after_cup=True`` adds the initial right home before left picking and
+    both return-home sequences; after the right retreats above placement, its
+    placing/return sequence then overlaps the left return.
 
     The right arm homes from its raised placement position without a mandatory
     600 mm move. There is no retry or fallback after any unconfirmed movement.
@@ -256,12 +256,11 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
     plan = _Plan(speed, home_speed, dependencies=True, phase_speeds=phase_speeds)
-    alignment = handover_settings(handover_offset, plan.phase_speeds["handover"])
-    take = tuple(alignment["receive_mm"][axis] for axis in "xyz")
+    normalize_handover_offset(handover_offset)
+    take = R_TAKE
     below = (take[0], take[1], take[2] - 35)
     beside = (below[0], below[1] - 120, below[2])
-    approach = ({"move_speed": alignment["approach_speed"], "acceleration": 20, "ramp": 10}
-                if alignment["adjusted"] else {"move_speed": plan.phase_speeds["handover"]})
+    approach = {"move_speed": plan.phase_speeds["handover"]}
     place = validate_place(place)
     spot = tuple(place[axis] for axis in ("x", "y", "z"))
     place_above = (spot[0], spot[1], spot[2] + PLACE_ABOVE)
@@ -274,9 +273,11 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               camera_z=camera_z)
     plan.move("left_handover", "left", HANDOVER_L, LEFT_DOWN,
               move_speed=plan.phase_speeds["pick_lift"])
-    plan.move("right_via", "right", R_VIA, RIGHT_UP, after=("lift_cup",),
-              move_speed=plan.phase_speeds["handover"])
-    plan.move("right_beside", "right", beside, RIGHT_UP, **approach)
+    plan.path("right_beside", "right",
+              [(R_VIA, RIGHT_UP, plan.phase_speeds["handover"]),
+               (beside, RIGHT_UP, plan.phase_speeds["handover"])],
+              after=("lift_cup",), zone=HANDOVER_BLEND_MM,
+              **approach)
     plan.grip("right_open", "right", "open", after=("left_handover",))
     plan.move("right_below", "right", below, RIGHT_UP, **approach)
     plan.move("right_take", "right", take, RIGHT_UP, **approach)
@@ -285,9 +286,9 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     left_clear = (HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT)
     plan.move("left_clear", "left", left_clear, LEFT_DOWN)
     plan.move("right_lower", "right", below, RIGHT_UP, after=("left_clear",), **approach)
-    plan.move("right_turn_half", "right", turn_half, RIGHT_SIDE,
-              move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
-    plan.move("right_retreat", "right", place_above, RIGHT_DOWN,
+    plan.path("right_retreat", "right",
+              [(turn_half, RIGHT_SIDE, plan.phase_speeds["flip"]),
+               (place_above, RIGHT_DOWN, plan.phase_speeds["flip"])],
               move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
     if home_after_cup:
         plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
@@ -300,8 +301,8 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
 
 
 def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False,
-                   phase_speeds=None, home_after_cup=True):
-    """Pick, lift and replace; optionally return home after clearing the cup."""
+                   phase_speeds=None, home_after_cup=False):
+    """Pick, lift and replace, ending open above the cup unless home is requested."""
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
     plan = _Plan(speed, home_speed, phase_speeds=phase_speeds)

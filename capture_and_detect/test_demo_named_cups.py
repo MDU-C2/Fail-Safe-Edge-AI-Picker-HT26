@@ -79,6 +79,7 @@ class DemoNamedCupTests(unittest.TestCase):
     def test_renumbered_fresh_cups_use_identity_then_normal_preview_and_confirmation(self):
         saved = self.save_white()
         self.samples.insert(0, ("orange", "orange", 40, 450))
+        self.session.scan()
         proposal = self.language.propose_saved(saved["id"])
         self.assertEqual(proposal["kind"], "proposal")
         self.assertEqual(self.language.pending["record"]["cup_id"], 3)
@@ -86,7 +87,7 @@ class DemoNamedCupTests(unittest.TestCase):
         self.assertEqual(self.robot.jobs, [])
         self.assertIn("Scripted demo", proposal["message"])
         self.language.confirm(proposal["token"])
-        self.assertEqual(self.captures, ["scan", "scan", "verification"])
+        self.assertEqual(self.captures, ["scan", "scan"])
         self.assertTrue(self.robot.jobs)  # Only the in-memory dry-run double runs.
         self.interpreter.interpret.assert_not_called()
         self.network.assert_not_called()
@@ -100,18 +101,19 @@ class DemoNamedCupTests(unittest.TestCase):
         for samples in cases:
             with self.subTest(samples=samples):
                 self.samples = samples
+                self.session.scan()
                 with self.assertRaisesRegex(SelectionError, "uniquely identify"):
                     self.language.propose_saved(saved["id"])
                 self.assertIsNone(self.language.pending)
                 self.assertEqual(self.robot.jobs, [])
 
-    def test_identity_change_before_confirmation_blocks_all_simulated_motion(self):
+    def test_changed_camera_scene_does_not_replace_the_reviewed_snapshot(self):
         saved = self.save_white()
         proposal = self.language.propose_saved(saved["id"])
         self.samples[1] = ("orange", "orange", 200, 550)
-        with self.assertRaisesRegex(SelectionError, "uniquely identify"):
-            self.language.confirm(proposal["token"])
-        self.assertEqual(self.robot.jobs, [])
+        self.language.confirm(proposal["token"])
+        self.assertTrue(self.robot.jobs)
+        self.assertEqual(self.captures, ["scan"])
         self.assertIsNone(self.language.pending)
 
     def test_demo_cannot_attach_to_live_robot_or_save_a_real_camera_inventory(self):

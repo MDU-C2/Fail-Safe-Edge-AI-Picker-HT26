@@ -1,4 +1,4 @@
-"""Offline dependency checks for overlapping arms and guarded handover phases."""
+"""Offline dependency checks including the optional return-home choreography."""
 
 import unittest
 
@@ -9,7 +9,7 @@ class HandoverDependencyTests(unittest.TestCase):
     def setUp(self):
         self.cup = {"x": 500, "y": 100, "z": 50, "selectable": True}
         self.place = {"id": 1, "x": 420, "y": -200, "z": 230, "occupied": False}
-        self.jobs = handover_jobs(self.cup, place=self.place)
+        self.jobs = handover_jobs(self.cup, place=self.place, home_after_cup=True)
         self.by_name = {job["name"]: job for job in self.jobs}
 
     def ancestors(self, name, visiting=()):
@@ -44,12 +44,12 @@ class HandoverDependencyTests(unittest.TestCase):
 
     def test_after_lift_left_handover_overlaps_right_approach_but_open_waits_for_both(self):
         lifted = self.ancestors("lift_cup") | {"lift_cup"}
-        self.assertEqual(self.ready(lifted), {"left_handover", "right_via"})
-        right_waiting = lifted | {"right_via", "right_beside"}
+        self.assertEqual(self.ready(lifted), {"left_handover", "right_beside"})
+        right_waiting = lifted | {"right_beside"}
         self.assertEqual(self.ready(right_waiting), {"left_handover"})
         self.assertEqual(self.ready(right_waiting | {"left_handover"}), {"right_open"})
         left_waiting = lifted | {"left_handover"}
-        self.assertEqual(self.ready(left_waiting), {"right_via"})
+        self.assertEqual(self.ready(left_waiting), {"right_beside"})
 
     def test_handover_release_and_right_lowering_retain_cross_arm_barriers(self):
         self.assertIn("right_grip", self.by_name["left_release"]["after"])
@@ -85,7 +85,7 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertEqual(right_moves[-1]["body"]["z"], 310)
 
     def test_left_only_keeps_serial_schema_and_existing_raise_and_lateral_return(self):
-        jobs = left_only_jobs(self.cup)
+        jobs = left_only_jobs(self.cup, home_after_cup=True)
         self.assertTrue(all(set(job) == {"name", "endpoint", "body"} for job in jobs))
         self.assertTrue(all(job["body"]["arm"] == "left" for job in jobs))
         self.assertEqual([job["name"] for job in jobs[-4:]],

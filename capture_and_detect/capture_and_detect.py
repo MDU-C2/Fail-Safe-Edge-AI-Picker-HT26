@@ -1,8 +1,8 @@
 """Cup detection, placement grid, operator controls and browser dashboard.
 
 Press Enter to capture a fresh scene and pick all available cups, limited by
-clear placement locations. Each cup is verified before the existing handover.
-The ordinary terminal leaves the arms at their final clearance poses, as in
+clear placement locations. All cups use that saved scan throughout the batch.
+Cup workflows leave the arms at their final clearance poses, as in
 vision_detection4. --home-after-cup restores automatic home after each cup.
 Type q to quit. --dry-run previews requests without moving hardware.
 Use --commands for the scan/goto/confirm shell, or run web_app.py for the browser
@@ -29,7 +29,6 @@ import numpy as np
 
 from camera_client import CameraClient, CameraError
 from cup_commands import CupSession
-from cup_base_depth import cup_base_depth
 from depth_average import capture_fresh_samples, mask_depth, DEFAULT_DEPTH_FRAMES
 from detection_masks import encode_mask
 from cup_inventory import (SelectionError, atomic_json, build_inventory, normalize_offset,
@@ -64,9 +63,9 @@ HELP = """Commands:
   Enter / scan        Detect and save cups; no robot movement.
   list                Show cups, saved XYZ, and the corrected hover target.
   show 2              Show all stored information for cup 2.
-  goto 2              Verify cup 2; pick with left, hand to right, place it,
-                      then finish with both arms home.
-  hover 2             Verify cup 2; move the left arm above it without gripping.
+  goto 2              Use saved cup 2; pick with left, hand to right, place it,
+                      then finish with both arms at clearance poses.
+  hover 2             Use saved cup 2; move the left arm above it without gripping.
   goto all            Preview a batch of available cups, limited by free slots.
   save cup 2 as mug    Save a named visual reference; no movement.
   saved cups          List saved references.
@@ -87,7 +86,7 @@ Start never restarts RAPID or resumes an interrupted movement.
 LANGUAGE_HELP = """Local language mode:
   Type a sentence, for example: pick cup two / hover above the rightmost cup.
   A movement proposal shows a cup ID and a one-use confirmation code.
-  confirm <code>      Execute that exact proposal through the existing checks.
+  confirm <code>      Execute that exact proposal using the saved scan.
   cancel             Discard a pending proposal; does not stop a moving robot.
   Exact terminal commands (scan, goto 2, hover 2, reset, etc.) still work directly.
 Left/right refer to the numbered camera image. Use saved names for visual cup
@@ -182,42 +181,21 @@ class Detector:
         return objects, annotated
 
     def describe(self, name, confidence, mask, depth):
-        """Mask centre + depth -> coordinates; CUP BASE requires reliable core depth."""
+        """V4 coordinates: eroded-mask median per frame, mean of available depths."""
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
-        quality = None
-        if name == "CUP BASE":
-            z, quality = cup_base_depth(mask, depth)
-        else:
-            z = mask_depth(depth, mask)
+        z = mask_depth(depth, mask)
         samples = getattr(self, "_depth_samples", ())
         z_frames, robot_z_frames = [], []
-        qualities = []
         for sample in samples:
-            if name == "CUP BASE":
-                value, sample_quality = cup_base_depth(mask, sample)
-                qualities.append(sample_quality)
-            else:
-                value = mask_depth(sample, mask)
-            z_frames.append(value)
+            value = mask_depth(sample, mask)
+            z_frames.append(mm(value))
             robot_z_frames.append(None if value is None else mm(self.calibration.to_robot(
                 (u - self.K["cx"]) * value / self.K["fx"],
                 (v - self.K["cy"]) * value / self.K["fy"], value)[2]))
-        if samples:
-            # Every base core must be observed. An average must not fill a
-            # missing latest core or silently turn moving/background depth into
-            # a new pick target. Keep the latest raw depth for grid assessment.
-            valid = [value for value in z_frames if value is not None]
-            stable = len(valid) == len(samples) and max(valid) - min(valid) <= 20.0
-            z = float(np.mean(valid)) if stable else None
-            if quality is not None:
-                quality = dict(quality, method="temporal_interior_mean",
-                               sample_count=len(samples), frame_quality=qualities,
-                               valid=bool(stable and all(q["valid"] for q in qualities)))
-                quality["reason"] = ("All frame cores have stable positive depth." if quality["valid"] else
-                                     "CUP BASE depth is missing or varies by more than 20 mm across frames.")
-                if not quality["valid"]:
-                    z = None
+        valid = [value for value in z_frames if value]
+        if valid:
+            z = sum(valid) / len(valid)
 
         x = y = None
         robot = (None, None, None)
@@ -245,8 +223,6 @@ class Detector:
         if samples:
             result["z_frames_mm"] = [mm(value) for value in z_frames]
             result["robot_z_frames_mm"] = robot_z_frames
-        if quality is not None:
-            result["depth_quality"] = quality
         return result
 
 
@@ -354,7 +330,7 @@ class CaptureStore:
 class CaptureService:
     def __init__(self, camera, detector, store, weights, *, placing_grid=None,
                  grid_table_z=0.0, grid_cell_size=80.0, table_reference_path=None, depth_frames=1,
-                 scan_observations=SCAN_FRAMES):
+                 scan_observations=1):
         if type(depth_frames) is not int or not 1 <= depth_frames <= 9:
             raise ValueError("depth_frames must be an integer from 1 to 9")
         self.depth_frames = depth_frames
@@ -402,10 +378,6 @@ class CaptureService:
             raise SelectionError("Empty-table reference changed. Restart and scan again.")
 
     def _observe(self):
-        calibration = self.detector.calibration
-        calibration.ensure_unchanged()
-        if self.camera.intrinsics() != self.detector.K:
-            raise CameraError("Camera intrinsics changed. Restart and scan again.")
         rgb, depth, frame, samples = capture_fresh_samples(self.camera, self.depth_frames)
         if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.shape[:2] != (self.detector.K.get("height"), self.detector.K.get("width")):
             raise CameraError("Image dimensions do not match the camera intrinsics.")
@@ -473,7 +445,6 @@ class CaptureService:
                 # buffers before _observe() allocates the next RGB/depth/masks;
                 # tuple assignment otherwise retains them until that call ends.
                 del rgb, depth, annotated
-        calibration.ensure_unchanged()
         self._check_table_reference()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + purpose
         images = {kind: str(self.store.folder / f"{kind}_{stamp}.{extension}")
@@ -578,16 +549,21 @@ def handle_terminal(session, line):
                 raise SelectionError(f"Cup {cup_id} is not in the current scan.")
             log(json.dumps(matches[0], indent=2))
         else:
-            log(f"Rechecking cup {cup_id} against a new camera observation ...")
+            log(f"Preparing cup {cup_id} from the saved workspace snapshot ...")
             session.execute_selection(action=command, capture_id=session.inventory["capture"], cup_id=cup_id)
             if session.robot.dry_run:
                 log("Preview complete; no robot commands sent.")
             elif command == "goto":
-                log("Robot reported the cup replaced and the left arm home. Scan again before another cup."
-                    if session.left_only else
-                    "Robot reported the pick, handover and placement complete; both home poses checked. Scan again before another cup.")
+                if session.home_after_cup:
+                    log("Robot reported the cup replaced and the left arm home. Select another available cup from this scan, or scan a new scene."
+                        if session.left_only else
+                        "Robot reported the pick, handover and placement complete; both home poses checked. Select another available cup from this scan, or scan a new scene.")
+                else:
+                    log("Robot reported the cup replaced; left arm at its clearance pose. Select another available cup from this scan, or scan a new scene."
+                        if session.left_only else
+                        "Robot reported the pick, handover and placement complete; both arms at clearance poses. Select another available cup from this scan, or scan a new scene.")
             else:
-                log("Robot reported DONE above the selected cup. Scan again before another move.")
+                log("Robot reported DONE above the selected cup. The saved scan is available for another move.")
     else:
         raise SelectionError("Unknown command. Use scan, list, show <id>, goto <id>, hover <id>, reset, help, or quit.")
     return True
@@ -680,7 +656,7 @@ def terminal_prompt(session, command_mode=False):
 
 
 def handle_process_input(session, line):
-    """An explicit Enter authorizes one fresh, checked pick-all cycle."""
+    """An explicit Enter captures once and authorizes that saved pick-all cycle."""
     command = " ".join(line.strip().lower().split())
     if command in ("q", "quit", "exit"):
         return False
@@ -738,7 +714,7 @@ def main(argv=None):
     parser.add_argument("--web", action="store_true", help="Open the browser workflow; use --web --help for its options")
     parser.add_argument("--commands", action="store_true", help="Use the scan/goto/confirm command shell instead of Enter to process all cups")
     parser.add_argument("--home-after-cup", action="store_true",
-                        help="Return home after each cup; the ordinary Enter workflow otherwise stays at clearance poses like vision_detection4")
+                        help="Return home after each cup; cup workflows otherwise stay at clearance poses like vision_detection4")
     parser.add_argument("--left-only", action="store_true", help="Pick, lift and replace each selected cup with the left arm; no handover or placement-grid update")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(CALIBRATION_FILE))
@@ -755,9 +731,9 @@ def main(argv=None):
     parser.add_argument("--speed", type=positive, default=None,
                         help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
                              f"normal {DEFAULT_SPEED}, automatic home {HOME_SPEED}. Turning is capped at 100.")
-    parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
-    parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
-    parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")
+    parser.add_argument("--max-result-age", type=positive, default=15.0, help="Legacy compatibility option; snapshot picking has no image-age limit")
+    parser.add_argument("--match-mm", type=positive, default=20.0, help="Legacy compatibility option; snapshot picking does not rematch cup positions")
+    parser.add_argument("--match-px", type=positive, default=40.0, help="Legacy compatibility option; snapshot picking does not rematch cup pixels")
     parser.add_argument("--llm", action="store_true", help="Enable the command shell with local Ollama commands and saved-cup visual matching with movement confirmation")
     parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct", help="Installed local Ollama model (default qwen3-vl:4b-instruct)")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Local Ollama address; loopback hosts only")
@@ -815,8 +791,8 @@ def main(argv=None):
                              calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                              max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
                              recovery=recovery, placing_grid=grid, left_only=args.left_only,
-                             verification_frames=3, camera_z=args.camera_z,
-                             home_after_cup=bool(command_mode or args.home_after_cup))
+                             verification_frames=1, strict_single_verification=True, camera_z=args.camera_z,
+                             home_after_cup=args.home_after_cup)
         from named_cups import NamedCupStore
         from cup_visual_matcher import OllamaCupMatcher
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
@@ -833,21 +809,21 @@ def main(argv=None):
     log(f"Ready. Saving to: {store.folder}")
     log(f"Gateway: {api}; terminal movement speed: {session.speed:g} mm/s")
     log(f"Automatic home after each cup: {session.home_speed:g} mm/s" if session.home_after_cup else
-        "Branch-4 terminal movement: no automatic home before, between or after cups; arms remain at their clearance poses.")
+        "Cup movement: no automatic home before, between or after cups; arms remain at their clearance poses.")
     log("LEFT ONLY: picks return to their original position; the right arm and placement grid are not used."
         if args.left_only else
         f"Placement grid: {args.placing_grid}; cup turning: {min(session.speed, FLIP_SPEED):g} mm/s, 30% acceleration")
     if args.dry_run:
         log("DRY RUN: all RWS moves, gripper and home requests will only be printed.")
     elif command_mode:
-        log("LIVE: goto picks, lifts, replaces and homes the LEFT arm. hover only approaches; scan only saves detections."
+        log("LIVE: goto picks, lifts and replaces with the LEFT arm. hover only approaches; scan only saves detections."
             if args.left_only else
-            "LIVE: goto picks, hands over, places and homes BOTH arms. hover only approaches; scan only saves detections.")
+            "LIVE: goto picks, hands over and places with BOTH arms. hover only approaches; scan only saves detections.")
     else:
         log("LIVE: pressing Enter automatically picks, lifts and replaces all available cups with the LEFT arm."
             if args.left_only else
             "LIVE: pressing Enter automatically picks, hands over and places all available cups, limited by clear destinations.")
-        log("Enter starts movement after fresh checks, without another confirmation. Nothing starts until you press Enter.")
+        log("Enter captures once and moves the cups from that saved scan without another confirmation. Nothing starts until you press Enter.")
     log(HELP if command_mode else PROCESS_HELP)
     if args.llm:
         log(f"LOCAL LLM: {args.llm_model} via {args.ollama_url}")

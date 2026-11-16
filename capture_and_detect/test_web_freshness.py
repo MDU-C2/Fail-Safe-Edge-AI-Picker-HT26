@@ -1,4 +1,4 @@
-"""Mac dashboard freshness limits, with synthetic captures and no robot connection."""
+"""Snapshot age never triggers capture or blocks a reviewed pick; offline only."""
 
 from contextlib import redirect_stdout
 import io
@@ -31,25 +31,20 @@ class MacWebFreshnessTests(unittest.TestCase):
         self.assertEqual(self.web_options().max_result_age, 30)
         self.assertEqual(self.web_options("--max-result-age", "12").max_result_age, 12)
 
-    def test_default_accepts_reported_age_but_still_blocks_over_thirty_seconds(self):
+    def test_old_snapshot_remains_usable_without_an_additional_capture(self):
         options = self.web_options()
-        for age, accepted in ((15.1, True), (30.0, True), (30.1, False)):
+        for age in (15.1, 30.0, 30.1, 86400):
             with self.subTest(age=age), redirect_stdout(io.StringIO()):
-                capture = Mock(side_effect=[(inventory(), 90),
-                    (inventory(capture="verification-1", sequence=11), 100 - age)])
+                capture = Mock(return_value=(inventory(), 100 - age))
                 robot = RobotDouble()
                 session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: 100,
                     max_result_age=options.max_result_age, placing_grid=temporary_grid(self))
                 session.scan()
-                request = {"action": "hover", "capture_id": "scan-1", "cup_id": 1}
-                if accepted:
-                    session.execute_selection(**request)
-                    self.assertEqual([job["name"] for job in robot.jobs], ["left_ready", "approach_cup"])
-                else:
-                    with self.assertRaisesRegex(SelectionError, r"30\.1s old; motion blocked \(limit 30s\)"):
-                        session.execute_selection(**request)
-                    self.assertEqual(robot.jobs, [])
-                    self.assertFalse(session.scan_usable)
+                capture.side_effect = AssertionError("Execution cannot capture a new observation")
+                session.execute_selection(action="hover", capture_id="scan-1", cup_id=1)
+                self.assertEqual([job["name"] for job in robot.jobs], ["left_ready", "approach_cup"])
+                self.assertEqual(capture.call_count, 1)
+                self.assertTrue(session.scan_usable)
 
 
 if __name__ == "__main__":

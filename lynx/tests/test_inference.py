@@ -209,7 +209,7 @@ def test_cropped_masks_preserve_existing_depth_and_robot_geometry(tmp_path, name
 @pytest.mark.parametrize("name", ["CUP", "CUP BASE", "CUP HANDLE"])
 @pytest.mark.parametrize("origin", [(0, 0), (13, 17), (59, 51)])
 @pytest.mark.parametrize("condition", ["stable", "missing_latest", "moving"])
-def test_cropped_temporal_depth_matches_full_image_guards(tmp_path, name, origin, condition):
+def test_cropped_temporal_depth_matches_v4_available_sample_mean(tmp_path, name, origin, condition):
     calibration_path = tmp_path / "calibration.json"
     calibration_path.write_text(json.dumps({"scale": 1., "R": [[1,0,0],[0,1,0],[0,0,1]], "t": [0,0,-750]}))
     calibration = Calibration(calibration_path)
@@ -235,6 +235,6 @@ def test_cropped_temporal_depth_matches_full_image_guards(tmp_path, name, origin
     actual, _ = detector.analyse(np.zeros((70,80,3), np.uint8), samples[-1])
     for key, value in expected.items():
         assert actual[0][key] == value, key
-    assert actual[0]["z_mm"] == (804 if condition == "stable" else None)
+    assert actual[0]["z_mm"] == {"stable": 804, "missing_latest": 803, "moving": 832.4}[condition]
     for before, after in zip(original, samples):
         np.testing.assert_array_equal(before, after)

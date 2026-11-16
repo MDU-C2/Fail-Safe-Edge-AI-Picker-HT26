@@ -9,7 +9,7 @@ namespace lynx {
 // Pure perception: no camera, robot, filesystem, or shared mutable state.
 // detections is the native response document; masks is its cropped uint8 payload.
 // depths contains 1..9 aligned CV_16UC1 frames, oldest first and newest last.
-// One frame omits temporal telemetry; multiple frames use stable per-object means.
+// One frame omits temporal telemetry; multiple frames average available positive mask medians.
 // config contains calibration{scale,R,t,tag_offset}, intrinsics{fx,fy,cx,cy}, names.
 // Extra config fields (grid/reference identity, etc.) are deliberately ignored.
 // Returns the Python Detector object's JSON array, including exact packed masks.

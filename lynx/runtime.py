@@ -91,9 +91,9 @@ class _NativeWebFactory:
                          model={"weights": str(model.weights), "sha256": model.sha256,
                                 "input_size": model.input_size, "precision": model.precision,
                                 "names": list(model.names)},
-                         policy={"scan_observations": 1, "verification_frames": 1,
-                                 "strict_single_verification": True,
-                                 "depth_frames": depth_frames, "max_result_age": max_age,
+                         policy={"workflow": "v4_snapshot", "scan_observations": 1,
+                                 "verification_frames": 0, "per_cup_capture": False,
+                                 "depth_frames": depth_frames,
                                  "camera_z": getattr(args, "camera_z", False),
                                  "confidence_threshold": confidence},
                          memory={"guard_required_mib": 128, "checked": False})
@@ -125,7 +125,7 @@ class _NativeWebFactory:
 
             def capture(purpose):
                 controller.event("Capturing and detecting cups on the native worker…" if purpose == "scan"
-                                 else "Rechecking the cup and destination with one fresh observation…")
+                                 else "Capturing a requested workspace observation…")
                 try:
                     inventory, started = captures.capture(purpose)
                 except BaseException as error:

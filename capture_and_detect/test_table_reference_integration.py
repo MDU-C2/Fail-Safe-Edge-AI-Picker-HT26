@@ -106,7 +106,7 @@ class TableReferenceIntegrationTests(unittest.TestCase):
                 else:
                     self.f.calibration.digest = "b" * 64
                 self.f.camera.capture.side_effect = self.f.frames
-                with self.assertRaisesRegex(SelectionError, "geometry changed"):
+                with self.assertRaisesRegex(SelectionError, "identity mismatch"):
                     service.capture("verification")
                 self.f.store.save_capture.assert_not_called()
 

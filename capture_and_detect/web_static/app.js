@@ -30,7 +30,6 @@
   let controlDeadline = 0;
   let speedDirty = false;
   let phaseSpeedDirty = false;
-  let handoverDirty = false;
   let releaseReview = null;
   let releaseMessage = "";
   let transientError = "";
@@ -59,7 +58,6 @@
   const handoverAxes = ["x", "y", "z"];
   const coordinatesAvailable = (point) => handoverAxes.every((axis) => Number.isFinite(point?.[axis]));
   const coordinatesText = (point, signed = false) => coordinatesAvailable(point) ? handoverAxes.map((axis) => `${axis.toUpperCase()} ${signed && point[axis] > 0 ? "+" : ""}${point[axis]}`).join(", ") + " mm" : "unavailable";
-  const enteredHandoverOffset = () => Object.fromEntries(handoverAxes.map((axis) => [axis, Number(dom[`robot-handover-${axis}`].value)]));
   const clockText = (value) => {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
@@ -162,7 +160,9 @@
     }
     dom["mode-panel"].classList.toggle("live", mode === "live");
     text("mode-footer", mode === "demo" ? "Local demo · no physical movement" : "One controller · one action at a time");
-    text("motion-summary", `Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · Sequence home ${speedText(state?.motion?.home_speed)}`);
+    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
+    const smooth = state?.motion?.handover_motion === "blended_path" ? " · Smooth handover" : "";
+    text("motion-summary", `${state?.motion?.workflow === "v4_snapshot" ? "Snapshot picking · " : ""}Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · ${home}${smooth}`);
   }
 
   function renderConnection() {
@@ -420,7 +420,7 @@
       dot.className = "status-dot";
       const label = document.createElement("span");
       label.className = "cup-status-label";
-      label.textContent = cup.selectable ? (cup.pick_available ? "Available" : "Hover only") : "Blocked";
+      label.textContent = ["placed", "replaced"].includes(cup.status) ? "Completed" : cup.selectable ? (cup.pick_available ? "Available" : "Hover only") : "Blocked";
       status.append(dot, label);
       card.append(topline, confidence, status);
       card.title = cup.blocked_reason || `Select cup ${cup.id}`;
@@ -661,7 +661,9 @@
     const ids = batch && Array.isArray(proposal.cup_ids) ? proposal.cup_ids : [proposal.cup_id];
     const cupCount = `${ids.length} cup${ids.length === 1 ? "" : "s"}`;
     text("proposal-cup", batch ? `Pick ${cupCount}` : `Cup ${proposal.cup_id}`);
-    text("proposal-action", proposal.action === "hover" ? "Hover above the cup" : "Pick → handover → place → return home");
+    const homeAfterCup = proposal.home_after_cup ?? state?.motion?.home_after_cup ?? false;
+    text("proposal-action", proposal.action === "hover" ? "Hover above the cup"
+      : homeAfterCup ? "Pick → handover → place → return home" : "Pick → handover → place → lift clear");
     text("proposal-description", proposal.description);
     const saved = proposal.saved_cup;
     hide("proposal-saved-cup", !saved);
@@ -679,7 +681,8 @@
     const motion = state?.motion;
     const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(motion?.acceleration)}`;
     const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
-    const home = `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`;
+    const home = homeAfterCup ? `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`
+      : "Automatic home off; arms remain at clearance poses";
     const phases = proposal.phase_speeds;
     const phaseReview = phases && ["pick_lift", "handover", "flip", "placement"].every((key) => Number.isFinite(phases[key]))
       ? `Pick & lift: ${speedText(phases.pick_lift)}. Right handover: ${speedText(phases.handover)}. Cup flip: ${speedText(phases.flip)}, ${accelerationText(motion?.flip_acceleration)}. Place & clear: ${speedText(phases.placement)}.` : `${flip}.`;
@@ -687,7 +690,7 @@
     const transfer = ["goto", "goto_all"].includes(proposal.action);
     const handover = proposal.handover;
     hide("proposal-handover", !transfer);
-    text("proposal-handover", transfer ? `Reviewed right receiving target: ${coordinatesText(handover?.receive_mm)}. Robot-base offset: ${coordinatesText(handover?.offset_mm, true)}. Receiving approach: ${speedText(handover?.approach_speed)}${handover?.adjusted ? " (adjusted alignment; maximum 25 mm/s)" : ""}.` : "");
+    text("proposal-handover", transfer ? `Reviewed right receiving target: ${coordinatesText(handover?.receive_mm)}. Receiving approach: ${speedText(handover?.approach_speed)}.` : "");
     text("proposal-context", `Selected from scan ${proposal.capture_id}. ${batch ? `Cups ${ids.join(", ")} run in this order. Check all highlighted cups and destinations.` : proposal.action === "hover" ? "Check the highlighted cup before continuing." : "Check the highlighted cup and destination before continuing."}`);
     text("confirm-button", `${state.mode === "live" ? "Confirm" : "Preview"} ${batch ? cupCount : `cup ${proposal.cup_id}`}`);
     updateCountdown();
@@ -771,8 +774,8 @@
     text("save-cup-hint", !enabled ? "Saving references is unavailable in this session." : !safeScan() ? "Scan again and select a cup before saving its reference." : cup?.can_save !== true ? "This detection cannot be saved. Choose a cup with a usable reference image." : "Save a name and reference image locally. Saving sends no movement command.");
   }
 
-  // Only explicit server capabilities authorize hardware previews. The browser
-  // never infers support from gateway names, demo mode or an earlier snapshot.
+  // Discovery describes the gateway; reviewed allowlisted actions remain available.
+  // Ownership, Stop, recovery and confirmation still control dispatch.
   function robotCapability(action) {
     const capabilities = state?.robot_controls?.capabilities;
     const capability = capabilities && !Array.isArray(capabilities) && typeof capabilities === "object"
@@ -780,9 +783,9 @@
     return capability && !Array.isArray(capability) && typeof capability === "object" ? capability : null;
   }
 
-  const robotActionSupported = (action) => robotCapability(action)?.supported === true;
-  const robotActionVisible = (action) => robotActionSupported(action) || robotCapability(action)?.advertised === true;
-  const robotStatusAvailable = () => robotCapability("robot_status")?.supported !== false;
+  const robotActionSupported = (action) => ["home", "open", "grip", "rapid_reset", "rapid_start", "collision_ack"].includes(action);
+  const robotActionVisible = (action) => robotActionSupported(action);
+  const robotStatusAvailable = () => true;
   const capabilityText = (action, field, fallback = "") => {
     const value = robotCapability(action)?.[field];
     return typeof value === "string" && value.trim() ? value : fallback;
@@ -813,8 +816,8 @@
     const enabled = supported && controlActionable() && validPhaseSpeeds(settings);
     hide("robot-phase-speeds", !supported);
     text("robot-speed-policy", supported
-      ? "Overall speed is the ceiling for every stage. Sequence home is limited to 200 mm/s and manual Home to 100 mm/s. Changes cancel pending previews and apply to future actions."
-      : "Apply sets normal speed and caps sequence home at this speed, up to 200 mm/s. Applies until restart and cancels pending previews. Loaded pick and cup flip stay capped at 100 mm/s.");
+      ? "Overall speed is the ceiling for every stage. Automatic Home, when enabled, is limited to 200 mm/s and manual Home to 100 mm/s. Changes cancel pending previews and apply to future actions."
+      : "Apply sets normal speed and caps automatic Home, when enabled, at this speed, up to 200 mm/s. Applies until restart and cancels pending previews. Loaded pick and cup flip stay capped at 100 mm/s.");
     phaseSpeedKeys.forEach((key) => {
       const input = dom[`phase-speed-${key}`];
       if (!supported || !phaseSpeedDirty) {
@@ -855,9 +858,9 @@
     const speedChanged = enteredSpeed !== currentSpeed || Math.min(enteredSpeed, 200) !== state?.motion?.home_speed;
     dom["robot-speed-input"].disabled = !enabled;
     dom["robot-speed-button"].disabled = !enabled || !validSpeed || !speedChanged;
-    text("robot-speed-current", `Applied overall ${speedText(currentSpeed)} · Sequence home ${speedText(state?.motion?.home_speed)}.`);
+    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
+    text("robot-speed-current", `Applied overall ${speedText(currentSpeed)} · ${home}.`);
     renderPhaseSpeedControls();
-    renderHandoverControls();
     renderReleaseLocations();
     text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
     hide("robot-status-button", !robotStatusAvailable());
@@ -882,14 +885,8 @@
       text(id, reason);
       hide(id, !reason);
     }
-    const knownCapabilities = typeof robotCapability("robot_status")?.supported === "boolean";
-    const supportedActions = actionButtons.some((button) => !button.hidden);
-    const blocked = blockedReasons([...new Set(actionButtons.map((button) => button.dataset.robotAction))]);
-    text("robot-capability-notice", !knownCapabilities
-      ? `Robot controls have not been verified. ${capabilityText("robot_status", "reason", "Refresh robot status to check Home and gripper support.")} Refresh reads status and sends no movement command.`
-      : blocked ? `Disabled controls are advertised by this gateway but cannot be used yet. ${blocked}`
-      : !supportedActions ? "No robot actions are available from this gateway. Local settings and app recovery remain available."
-      : "Only controls supported by this gateway are shown. Each robot action still needs a reviewed confirmation.");
+    const discoveryReason = capabilityText("robot_status", "reason");
+    text("robot-capability-notice", `Gateway discovery is informational. Review and confirm each robot action.${discoveryReason && robotCapability("robot_status")?.supported !== true ? ` ${discoveryReason}` : ""}`);
     dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
     text("robot-controls-badge", !connected ? "Disconnected" : state?.recovery_required ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
     dom["robot-controls-panel"].classList.toggle("live", state?.mode === "live");
@@ -945,31 +942,6 @@
     dom["release-locations-confirm"].disabled = !enabled || !releaseReview || !dom["release-locations-ack"].checked;
     dom["release-locations-cancel"].disabled = !releaseReview;
     if (releaseReview) text("release-locations-description", `Mark all ${releaseReview.count} placement locations available: ${releaseReview.labels.join(", ")}. This clears their occupied, reserved and camera-blocked records. Their positions stay the same.`);
-  }
-
-  function renderHandoverControls() {
-    const handover = state?.motion?.handover;
-    const applied = handover?.offset_mm;
-    const available = coordinatesAvailable(applied) && coordinatesAvailable(handover?.receive_mm);
-    const enabled = controlActionable() && available;
-    handoverAxes.forEach((axis) => {
-      const input = dom[`robot-handover-${axis}`];
-      if (!handoverDirty) input.value = Number.isFinite(applied?.[axis]) ? String(applied[axis]) : "";
-      input.disabled = !enabled;
-    });
-    const entered = enteredHandoverOffset();
-    const valid = handoverAxes.every((axis) => {
-      const input = dom[`robot-handover-${axis}`];
-      return input.value.trim() !== "" && Number.isFinite(entered[axis]) && entered[axis] >= -20 && entered[axis] <= 20 && input.validity.valid;
-    });
-    const changed = handoverDirty && (!valid || handoverAxes.some((axis) => entered[axis] !== applied?.[axis]));
-    dom["robot-handover-apply"].disabled = !enabled || !valid || !changed;
-    dom["robot-handover-reset"].disabled = !enabled || (!changed && handoverAxes.every((axis) => applied[axis] === 0));
-    text("robot-handover-current", `Applied offset: ${coordinatesText(applied, true)}.`);
-    text("robot-handover-target", `Right receiving target: ${coordinatesText(handover?.receive_mm)}.`);
-    text("robot-handover-speed", `Receiving approach: ${speedText(handover?.approach_speed)}${handover?.adjusted ? " · limited to 25 mm/s while alignment is adjusted" : ""}.`);
-    text("robot-handover-status", !available ? "Applied alignment unavailable." : changed ? valid ? "Unsaved edits. Apply alignment to use these offsets for future cup transfers." : "Unsaved edits. Enter each offset from −20 to +20 mm in 0.5 mm steps." : "Applied for this app session. Alignment resets to zero on restart.");
-    dom["robot-handover-status"].classList.toggle("unsaved", changed);
   }
 
   function updateControlCountdown() {
@@ -1133,7 +1105,6 @@
         controlDeadline = 0;
         speedDirty = false;
         phaseSpeedDirty = false;
-        handoverDirty = false;
         dom["recovery-ack"].checked = false;
         dom["robot-control-ack"].checked = false;
         transientError = expectedDeviceTransition ? "" : incoming.instance_id !== state.instance_id
@@ -1181,7 +1152,7 @@
       return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
     const stopping = path === "/api/stop";
-    const adminMutation = ["/api/speed", "/api/phase_speeds", "/api/handover_offset", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
+    const adminMutation = ["/api/speed", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
     const permitted = stopping ? canStop() : path === "/api/device_select" ? deviceSwitchAllowed(payload.device_id) : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
     if (!permitted || !state?.csrf_token || !robotRequestSupported(path, payload)) return;
     const deviceEpoch = state.device_epoch;
@@ -1225,7 +1196,6 @@
       if (!response.ok || !result.accepted) throw new Error(asMessage(result.detail || result.error) || `Request rejected (${response.status}).`);
       if (path === "/api/speed") speedDirty = false;
       if (path === "/api/phase_speeds") phaseSpeedDirty = false;
-      if (path === "/api/handover_offset") handoverDirty = false;
       await readState();
       if (path !== "/api/device_select" && state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
       else if (path !== "/api/device_select" && state?.device_epoch !== deviceEpoch) transientError = "Device ownership changed during this request. Check the current state; the request was not retried.";
@@ -1370,14 +1340,7 @@
     phaseSpeedDirty = true;
     renderPhaseSpeedControls();
   });
-  handoverAxes.forEach((axis) => dom[`robot-handover-${axis}`].addEventListener("input", () => { handoverDirty = true; renderHandoverControls(); }));
-  dom["robot-handover-form"].addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (!dom["robot-handover-apply"].disabled) post("/api/handover_offset", enteredHandoverOffset());
-  });
-  dom["robot-handover-reset"].addEventListener("click", () => {
-    if (!dom["robot-handover-reset"].disabled) post("/api/handover_offset", { x: 0, y: 0, z: 0 });
-  });
+
   dom["robot-status-button"].addEventListener("click", () => { if (!dom["robot-status-button"].disabled) post("/api/robot_status"); });
   document.querySelectorAll("[data-robot-action]").forEach((button) => button.addEventListener("click", () => {
     if (!button.disabled && !button.hidden && robotActionSupported(button.dataset.robotAction)) post("/api/control_preview", { action: button.dataset.robotAction, arm: button.dataset.arm || null });

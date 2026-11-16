@@ -13,7 +13,7 @@ import uuid
 
 from cup_inventory import SelectionError, hover_moves
 from handover_plan import (CAMERA_Z_FLOOR, CAMERA_Z_OFFSET, FLIP_ACCELERATION, FLIP_SPEED, handover_jobs,
-                           normalize_handover_offset, pick_position_problem,
+                           pick_position_problem,
                            normalize_phase_speeds, effective_phase_speeds)
 from operator_commands import COMMAND_HELP, START_COMMANDS, STOP_COMMANDS
 from robot_controls import RobotControls, control_plan, valid_speed
@@ -235,6 +235,9 @@ class WebController:
         settings = session.motion_settings()
         phases = settings["effective_phase_speeds"]
         motion = {"speed": session.speed, "home_speed": session.home_speed,
+                  "home_after_cup": settings["home_after_cup"],
+                  "workflow": settings.get("workflow", "v4_snapshot"),
+                  "handover_motion": settings["handover_motion"],
                   "camera_z": session.camera_z,
                   "flip_speed": phases["flip"],
                   "phase_speeds_supported": True,
@@ -258,9 +261,13 @@ class WebController:
             cups = []
             for cup in inventory["cups"]:
                 reason = cup.get("blocked_reason") or pick_position_problem(cup, session.tag_offset)
+                completed = cup.get("status") in ("placed", "replaced")
+                if completed:
+                    reason = "This cup has already been processed from this scan."
                 visible = {key: copy.deepcopy(cup.get(key)) for key in
                            ("id", "confidence", "pixel", "bbox_xyxy", "selectable", "status")}
-                visible.update(pick_available=bool(cup.get("selectable")) and reason is None,
+                visible.update(selectable=bool(cup.get("selectable")) and not completed,
+                               pick_available=bool(cup.get("selectable")) and reason is None,
                                blocked_reason=reason,
                                can_save=(cup.get("cup_detection_id") is not None
                                          and (bool(inventory.get("images", {}).get("rgb"))
@@ -325,13 +332,16 @@ class WebController:
                         "excluded_cup_ids": list(record.get("excluded_cup_ids", [])),
                         "speed": record.get("speed", session.speed),
                         "home_speed": record.get("home_speed", session.home_speed),
+                        "home_after_cup": record.get("motion_settings", {}).get("home_after_cup", session.home_after_cup),
                         "camera_z": record.get("motion_settings", {}).get("camera_z", session.camera_z),
                         "flip_speed": record.get("flip_speed", min(session.speed, FLIP_SPEED)),
                         "phase_speeds": copy.deepcopy(record.get("phase_speeds") or effective_phase_speeds(
                             record.get("speed", session.speed), record.get("motion_settings", {}).get("phase_speeds"))),
                         "handover": copy.deepcopy(record.get("handover")),
                         "description": record.get("description") or (
-                            "Pick with the left arm, transfer to the right, place, and return both arms home."
+                            "Pick with the left arm, transfer to the right, place, then "
+                            + ("return both arms home." if session.home_after_cup else
+                               "finish with both arms at clearance poses.")
                             if record["action"] in ("goto", "goto_all") else
                             "Move the left arm above this cup without gripping."),
                         "expires_in": max(0, remaining)}
@@ -396,7 +406,8 @@ class WebController:
             totals = {cup_id: len(handover_jobs(cups[cup_id], place=place,
                       tag_offset=self.session.tag_offset, speed=self.session.speed,
                       home_speed=self.session.home_speed, handover_offset=self.session.handover_offset,
-                      camera_z=self.session.camera_z, phase_speeds=self.session.phase_speeds))
+                      camera_z=self.session.camera_z, phase_speeds=self.session.phase_speeds,
+                      home_after_cup=self.session.home_after_cup))
                       for cup_id, place in zip(ids, places)}
         self._execution_capture = record["capture_id"]
         self._execution_totals = totals
@@ -409,7 +420,7 @@ class WebController:
                   "cancel": set(), "recovery": {"acknowledged"}, "robot_status": set(), "speed": {"speed"},
                   "phase_speeds": {"pick_lift", "handover", "flip", "placement"},
                   "control_preview": {"action", "arm"}, "control_confirm": {"token", "acknowledged"},
-                  "control_cancel": set(), "handover_offset": {"x", "y", "z"},
+                  "control_cancel": set(),
                   "release_locations": {"fingerprint", "acknowledged"},
                   "save_cup": {"capture_id", "cup_id", "name"},
                   "pick_saved": {"id"}, "forget_cup": {"id"}}
@@ -463,11 +474,6 @@ class WebController:
                     valid_speed(payload["speed"])
                 else:
                     control_plan(payload["action"], payload["arm"], 50)
-            except (ValueError, TypeError, OverflowError) as error:
-                raise WebError(str(error), 422) from error
-        if operation == "handover_offset":
-            try:
-                normalize_handover_offset(tuple(payload[a] for a in "xyz"))
             except (ValueError, TypeError, OverflowError) as error:
                 raise WebError(str(error), 422) from error
         if operation == "phase_speeds":
@@ -550,15 +556,14 @@ class WebController:
             self._update(error=None,
                          message={"scan": "Capturing and detecting cups…", "command": "Interpreting your command…",
                                   "start": "Scanning now to prepare a pick-all preview…",
-                                  "select": "Checking the selected cup…", "confirm": "Rechecking the cup before execution…",
+                                  "select": "Checking the selected cup…", "confirm": "Executing the reviewed snapshot selection…",
                                   "batch": "Checking cups and available placement locations…",
                                   "cancel": "Cancelling the proposal…", "recovery": "Recording your acknowledgement…",
                                   "robot_status": "Reading controller status…", "speed": "Updating future movement speed…",
                                   "phase_speeds": "Updating future movement phase speeds…",
-                                  "handover_offset": "Updating future handover alignment…",
                                   "release_locations": "Releasing inspected placement locations…",
                                   "save_cup": "Saving a local cup reference…",
-                                  "pick_saved": "Scanning the table and comparing the saved cup with GPT-6 Astra…",
+                                  "pick_saved": "Comparing the saved cup with the workspace snapshot…",
                                   "forget_cup": "Removing the saved reference…",
                                   "control_preview": "Preparing robot control preview…",
                                   "control_confirm": "Executing the reviewed robot control action…",
@@ -633,7 +638,7 @@ class WebController:
             result = None
             if operation not in ("control_confirm", "robot_status"):
                 self.controls.cancel()
-            if operation in ("speed", "phase_speeds", "handover_offset", "control_preview", "control_confirm", "release_locations"):
+            if operation in ("speed", "phase_speeds", "control_preview", "control_confirm", "release_locations"):
                 self.language.cancel()
             if operation == "start":
                 result = self.language.start()
@@ -684,8 +689,6 @@ class WebController:
             elif operation == "phase_speeds":
                 result = self.session.set_phase_speeds({key: payload[key] for key in
                     ("pick_lift", "handover", "flip", "placement")})
-            elif operation == "handover_offset":
-                result = self.controls.set_handover_offset(tuple(payload[a] for a in "xyz"))
             elif operation == "release_locations":
                 result = self.session.release_locations(fingerprint=payload["fingerprint"],
                                                         acknowledged=payload["acknowledged"])
@@ -699,7 +702,8 @@ class WebController:
             message = (result or {}).get("message")
             if (result or {}).get("kind") == "proposal":
                 record = self.language.pending["record"]
-                action = "pick, handover, place and return home" if record["action"] in ("goto", "goto_all") else "hover only"
+                finish = ("return home" if record["motion_settings"]["home_after_cup"] else "finish at clearance poses")
+                action = f"pick, handover, place and {finish}" if record["action"] in ("goto", "goto_all") else "hover only"
                 target = ("Cups " + ", ".join(str(value) for value in record["cup_ids"])
                           if record["action"] == "goto_all" else f"Cup {record['cup_id']}")
                 if "saved_cup" in record:
@@ -715,7 +719,7 @@ class WebController:
             elif (result or {}).get("kind") in ("reply", "clarify"):
                 message = "LLM response — no robot action requested: " + message
             if operation == "confirm" and (result or {}).get("kind") == "result" and self.mode == "live":
-                message = ("Robot reported the sequence complete. Placement is not independently verified. Scan again."
+                message = ("Robot reported the sequence complete. Select another available cup or scan again."
                            if result["action"] in ("goto", "goto_all") else "Robot reported hover complete. Scan again.")
             with self._lock:
                 self._check_generation(generation)

@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import requests
 
 from robot_client import RobotClient, RobotCommandError
+from test_gateway_capabilities import schema_fixture
 
 
 def response(payload, status=200, headers=None):
@@ -102,7 +103,7 @@ class RobotClientTests(unittest.TestCase):
             result = self.renew_reply or lease_response()
         elif url.endswith("/control/release"):
             result = self.release_reply or response({"success": True, "lease": {"active": False}})
-        elif url.endswith(("/robot/rws/move", "/robot/rws/gripper", "/robot/rws/home")):
+        elif url.endswith(("/robot/rws/move", "/robot/rws/path", "/robot/rws/gripper", "/robot/rws/home")):
             if self.movement:
                 self.movement()
             result = self.move_replies.pop(0) if self.move_replies else done_response()
@@ -114,6 +115,11 @@ class RobotClientTests(unittest.TestCase):
         return result
 
     def serve_get(self, url, **kwargs):
+        if url.endswith("/openapi.json"):
+            result = response(schema_fixture(blended_path=True))
+            result.content = b"fixture"
+            self.responses.append(result)
+            return result
         arm = url.split("/")[-2]
         self.assertIn(arm, ("left", "right"))
         self.assertTrue(url.endswith(f"/robot/arms/{arm}/joints"))

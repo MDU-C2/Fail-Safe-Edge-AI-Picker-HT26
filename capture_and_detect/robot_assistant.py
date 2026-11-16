@@ -1,7 +1,6 @@
 """Cloud reasoning beside the picker; only existing, confirmed actions can move it."""
 
 import copy
-from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -27,7 +26,6 @@ class RobotAssistant:
         self._image_busy = threading.Lock()
         self.image_timeout = 8.0
         self.scan_timeout = 45.0
-        self.scene_max_age = 30.0
         self._proposal = None
 
     def status(self):
@@ -122,17 +120,9 @@ class RobotAssistant:
                               r"|\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth) cup\b", text, re.I))
 
     def _scene_fresh(self, state):
+        """A reviewed snapshot remains usable until an explicit invalidation."""
         inventory = state.get("inventory") or {}
-        if not state.get("scan_usable") or not inventory.get("capture"):
-            return False
-        try:
-            stamp = datetime.fromisoformat(inventory["saved_at"].replace("Z", "+00:00"))
-            if stamp.tzinfo is None:
-                return False
-            age = (datetime.now(timezone.utc) - stamp).total_seconds()
-            return 0 <= age <= self.scene_max_age
-        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
-            return False
+        return bool(state.get("scan_usable") and inventory.get("capture"))
 
     def _scan_scene(self, state):
         if (not self._can_prepare(state, require_scan=False) or state.get("proposal")
@@ -210,7 +200,7 @@ class RobotAssistant:
                 "busy": state.get("busy"), "recovery_required": state.get("recovery_required"),
                 "stop_requested": state.get("stop_requested"),
                 "capabilities": "Select one cup for a reviewed pick, or pick all available cups. "
-                "Save a named cup reference or select an existing saved reference for a fresh visual match. "
+                "Save a named cup reference or match an existing reference against the saved workspace snapshot. "
                 "Saved cup IDs identify reference photos, never current detections or coordinates. "
                 "Sorting is a grouping suggestion only; placement follows the existing grid order. "
                 "Movement speeds are read-only here; the operator changes them in Settings. "
@@ -335,7 +325,7 @@ class RobotAssistant:
                 references = [cup for cup in library["cups"] if cup["name"].casefold() == name]
             if len(references) == 1:
                 result.update(action="pick_saved", saved_cup_id=references[0]["id"],
-                    message=f"Find {references[0]['name']} in a fresh scan and prepare a pick preview. "
+                    message=f"Find {references[0]['name']} in the workspace snapshot and prepare a pick preview. "
                             "Check the matched cup before confirming movement.")
                 return result
             if match[1] or "'s " in match[2] or "’s " in match[2]:
