@@ -1,0 +1,4 @@
+# These files are identified by exact bytes in saved references and device handoffs.
+# Keep their established LF checksums when Git for Windows has core.autocrlf=true.
+/calibration/*.json text eol=lf
+/capture_and_detect/*.table-reference.json text eol=lf

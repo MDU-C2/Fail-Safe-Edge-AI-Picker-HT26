@@ -1273,3 +1273,41 @@ preloaded Pi fallback, accepted-provider dashboard and durable event history,
 matching-model setup, dry-run disconnection experiment, and gateway/session
 requirements before live use. The coordinator and authoritative robot state
 stay on the Pi throughout switching and recovery; Lynx is not needed.
+
+## Windows checkout: table-reference checksum mismatch
+
+The saved empty-table reference includes the exact SHA256 of
+`calibration/calibration_grid.json`. Git for Windows can convert LF line endings
+to CRLF while checking out a repository. This leaves every calibration number
+unchanged but changes the file checksum, producing a table-reference identity
+error. The repository now pins calibration and table-reference JSON to LF in
+`.gitattributes`, preserving their deployed byte identities in new checkouts.
+
+For an existing Windows checkout, close the dashboard while the robot is stopped.
+From `capture_and_detect` in PowerShell:
+
+```powershell
+git pull --ff-only
+python repair_reference_line_endings.py --apply
+python capture_and_detect.py --web --gateway http://192.168.125.20:8000 --live --port 8087
+```
+
+Use the existing `GATEWAY_TOKEN` and the gateway's current address. The helper
+uses only Python's standard library. Without `--apply`, it only diagnoses the
+files. It writes the calibration only if replacing CRLF with LF produces the
+**exact** checksum recorded in the saved reference. Other formatting changes,
+different calibration values and malformed references are refused. Custom paths
+can be supplied with `--calibration` and `--reference`; they must be the same pair
+used by the dashboard. Run it with the dashboard closed, then restart and scan.
+
+The helper never rebuilds or modifies the table reference, grid, reservations,
+recovery records or camera configuration. A matching calibration does not prove
+that the live camera and grid still match: the normal scan checks still apply,
+and mismatch errors now identify the affected fields. Do not use an occupied
+scene to create a replacement empty-table reference.
+
+This repair addresses direct `--gateway` startup. Managed device switching also
+requires byte-identical table-reference files on all devices. An older checkout
+may retain a CRLF reference until it is checked out with the new attributes;
+the helper deliberately leaves reference bytes alone. Preserve the verified
+reference used by the devices rather than regenerating it to resolve formatting.

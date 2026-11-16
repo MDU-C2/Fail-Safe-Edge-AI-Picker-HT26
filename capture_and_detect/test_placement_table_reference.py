@@ -86,6 +86,10 @@ class TableReferenceTests(unittest.TestCase):
 
     def test_calibration_camera_grid_and_table_changes_reject_saved_reference(self):
         value = self.fit()
+        fields = {"digest": "calibration_sha256", "scale": "scale", "rotation": "rotation",
+                  "translation": "translation", "offset": "tag_offset_mm", "intrinsics": "intrinsics",
+                  "size": "cell_size_mm", "xy": "locations", "z": "locations", "order": "locations",
+                  "table": "table_z_mm"}
         for kind in ("digest", "scale", "rotation", "translation", "offset", "intrinsics", "size", "xy", "z", "order", "table"):
             with self.subTest(kind=kind):
                 calibration, K, locations = copy.deepcopy(self.calibration), dict(self.K), copy.deepcopy(self.locations)
@@ -101,7 +105,72 @@ class TableReferenceTests(unittest.TestCase):
                 elif kind == "z": locations[0]["z"] += 1
                 elif kind == "order": locations.reverse()
                 else: kwargs["table_z"] = 1.
-                with self.assertRaises(SelectionError): self.load(value, **kwargs)
+                with self.assertRaises(SelectionError) as raised:
+                    self.load(value, **kwargs)
+                self.assertIn(fields[kind], str(raised.exception))
+                if kind != "digest":
+                    self.assertNotIn("repair_reference_line_endings.py", str(raised.exception))
+
+    def test_checksum_only_difference_explains_line_endings_but_remains_blocked(self):
+        value = self.fit()
+        original = copy.deepcopy(value)
+        calibration = copy.deepcopy(self.calibration)
+        calibration.digest = "c" * 64
+        with self.assertRaises(SelectionError) as raised:
+            self.load(value, calibration=calibration)
+        message = str(raised.exception)
+        self.assertIn("only calibration_sha256 differs", message)
+        self.assertIn("calibration geometry, camera and grid still match", message)
+        self.assertIn("calibration file contents", message)
+        self.assertIn("LF/CRLF line endings", message)
+        self.assertIn("python repair_reference_line_endings.py", message)
+        self.assertIn("remains blocked", message)
+        self.assertEqual(value, original)
+        self.assertEqual(calibration.digest, "c" * 64)
+
+    def test_checksum_with_geometry_change_does_not_offer_line_ending_repair(self):
+        value = self.fit()
+        calibration = copy.deepcopy(self.calibration)
+        calibration.digest = "c" * 64
+        calibration.t[0] += 1
+        with self.assertRaises(SelectionError) as raised:
+            self.load(value, calibration=calibration)
+        message = str(raised.exception)
+        self.assertIn("calibration_sha256", message)
+        self.assertIn("translation", message)
+        self.assertNotIn("repair_reference_line_endings.py", message)
+
+    def test_missing_unknown_and_malformed_identity_fields_still_reject(self):
+        value = self.fit()
+        cases = []
+        missing = copy.deepcopy(value)
+        del missing["identity"]["calibration_sha256"]
+        cases.append(("missing: calibration_sha256", missing))
+        extra = copy.deepcopy(value)
+        extra["identity"]["unknown_geometry"] = 1
+        cases.append(("unexpected: unknown_geometry", extra))
+        digest_and_extra = copy.deepcopy(extra)
+        digest_and_extra["identity"]["calibration_sha256"] = "c" * 64
+        cases.append(("unexpected: unknown_geometry", digest_and_extra))
+        nested_extra = copy.deepcopy(value)
+        nested_extra["identity"]["intrinsics"]["unknown_camera_field"] = 1
+        cases.append(("changed: intrinsics", nested_extra))
+        invalid_digest = copy.deepcopy(value)
+        invalid_digest["identity"]["calibration_sha256"] = "invalid"
+        cases.append(("changed: calibration_sha256", invalid_digest))
+        absent = copy.deepcopy(value)
+        del absent["identity"]
+        cases.append(("identity is missing or is not an object", absent))
+        for identity in (None, [], "not an identity"):
+            malformed = copy.deepcopy(value)
+            malformed["identity"] = identity
+            cases.append(("identity is missing or is not an object", malformed))
+        for expected, artifact in cases:
+            with self.subTest(expected=expected, identity=artifact.get("identity")):
+                with self.assertRaises(SelectionError) as raised:
+                    self.load(artifact)
+                self.assertIn(expected, str(raised.exception))
+                self.assertNotIn("repair_reference_line_endings.py", str(raised.exception))
 
     def test_unknown_or_partially_hidden_baselines_cannot_train_a_reference(self):
         for key, value in (("state", "unknown"), ("cup_count", 1), ("assigned_cups", [{"location_id": 1}]),

@@ -147,6 +147,28 @@ def _check_plane(coefficients, identity):
             if not math.isfinite(predicted) or abs(predicted - identity["table_z_mm"]) > MAX_REFERENCE_OFFSET_MM:
                 _fail("fitted table lies outside the allowed offset from the calibrated table.")
 
+
+def _identity_mismatch(saved, current):
+    if not isinstance(saved, dict):
+        _fail("identity is missing or is not an object; rebuild the reference from an empty table.")
+    changed = [key for key in current if key in saved and saved[key] != current[key]]
+    missing = [key for key in current if key not in saved]
+    unexpected = [str(key) for key in saved if key not in current]
+    if (changed == ["calibration_sha256"] and not missing and not unexpected
+            and isinstance(saved["calibration_sha256"], str)
+            and _SHA256.fullmatch(saved["calibration_sha256"])):
+        _fail("only calibration_sha256 differs; calibration geometry, camera and grid still match. "
+              "The calibration file contents may have changed, including LF/CRLF line endings. "
+              "Run `python repair_reference_line_endings.py` to check for a line-ending-only repair. "
+              "Otherwise rebuild the reference from an empty table; this reference remains blocked.")
+    details = []
+    for label, fields in (("changed", changed), ("missing", missing), ("unexpected", unexpected)):
+        if fields:
+            details.append(label + ": " + ", ".join(fields))
+    _fail("identity mismatch (" + "; ".join(details)
+          + "); rebuild the reference from an empty table.")
+
+
 def validate_reference(value, *, calibration, intrinsics, locations, cell_size, table_z=0.0):
     identity = _identity(calibration, intrinsics, locations, cell_size, table_z)
     if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
@@ -154,7 +176,7 @@ def validate_reference(value, *, calibration, intrinsics, locations, cell_size, 
             or value.get("kind") != "placement_table_reference" or value.get("units") != "mm"):
         _fail("unsupported artifact format.")
     if value.get("identity") != identity:
-        _fail("calibration, camera or grid geometry changed; rebuild the reference from an empty table.")
+        _identity_mismatch(value.get("identity"), identity)
     _source(value.get("source"))
     _check_plane(value.get("plane_z_mm"), identity)
     fit = value.get("fit")
