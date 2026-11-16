@@ -11,7 +11,8 @@ from gateway.config import get_settings
 from gateway.events.manager import event_manager
 from gateway.events.permissions import get_event_permission
 from gateway.security.authentication import (
-    DEVELOPMENT_IDENTITIES,
+    get_bearer_identity,
+    get_development_identity,
 )
 
 router = APIRouter(
@@ -26,13 +27,8 @@ async def events(
     settings = get_settings()
 
     if settings.security_mode == "development":
-        client_id = websocket.query_params.get(
-            "client",
-            "operator",
-        )
-
-        identity = DEVELOPMENT_IDENTITIES.get(
-            client_id
+        identity = get_development_identity(
+            websocket.query_params.get("client")
         )
 
         if identity is None:
@@ -42,10 +38,20 @@ async def events(
             return
 
     else:
-        await websocket.close(
-            code=status.WS_1008_POLICY_VIOLATION
+        #
+        # Strict mode: the same Bearer token as the HTTP routes, in
+        # the upgrade request's Authorization header (?client= is
+        # ignored). Without a valid one the connection is closed.
+        #
+        identity = get_bearer_identity(
+            websocket.headers.get("authorization")
         )
-        return
+
+        if identity is None:
+            await websocket.close(
+                code=status.WS_1008_POLICY_VIOLATION
+            )
+            return
 
     await event_manager.connect(
         identity=identity,

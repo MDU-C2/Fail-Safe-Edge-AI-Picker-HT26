@@ -1,3 +1,4 @@
+import math
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -21,11 +22,15 @@ control_manager: ControlManager | None = None
 
 def configure_control_manager(
     lease_seconds: float,
+    contention_seconds: float = 0.0,
+    startup_grace_seconds: float = 0.0,
 ) -> None:
     global control_manager
 
     control_manager = ControlManager(
         lease_seconds=lease_seconds,
+        contention_seconds=contention_seconds,
+        startup_grace_seconds=startup_grace_seconds,
     )
 
 
@@ -119,9 +124,22 @@ async def acquire_control(
     )
 
     if not result.success:
+        headers = None
+
+        if result.retry_after is not None:
+            headers = {
+                "Retry-After": str(
+                    max(
+                        1,
+                        math.ceil(result.retry_after),
+                    )
+                ),
+            }
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=result.message,
+            headers=headers,
         )
 
     if result.previous_client_id is not None:
@@ -166,6 +184,7 @@ async def renew_control(
 
     success, message, lease = manager.renew(
         client_id=identity.client_id,
+        priority=identity.control_priority,
     )
 
     if not success:

@@ -1,5 +1,6 @@
 """
-Show or reset placing_grid.json, the place locations used by capture_and_detect.py.
+Show or reset placing_grid.json, the place locations used by capture_and_detect.py
+and by the web app's cup command (smooth plan).
 
     python reset_grid.py              # every location free again (after clearing the table)
     python reset_grid.py --show       # only show which locations are occupied
@@ -7,6 +8,7 @@ Show or reset placing_grid.json, the place locations used by capture_and_detect.
 
 Only reset while capture_and_detect.py is not moving a cup: during a hand-over it holds
 its own copy of the grid and writes it back after placing, which would undo the reset.
+(The web app reads the file fresh when it marks a spot, so it does not undo a reset.)
 """
 
 import argparse
@@ -16,15 +18,15 @@ from pathlib import Path
 PLACE_FILE = Path(__file__).resolve().parent / "placing_grid.json"
 
 
-def load_places():
-    with open(PLACE_FILE) as f:
+def load_places(path=PLACE_FILE):
+    with open(path) as f:
         return json.load(f)
 
 
-def save_places(places):
+def save_places(places, path=PLACE_FILE):
     """Same layout as capture_and_detect.py writes it: one location per line."""
     lines = ",\n".join("    " + json.dumps(p) for p in places["locations"])
-    with open(PLACE_FILE, "w") as f:
+    with open(path, "w") as f:
         f.write(f'{{\n  "locations": [\n{lines}\n  ]\n}}\n')
 
 

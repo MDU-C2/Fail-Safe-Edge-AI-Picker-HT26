@@ -40,7 +40,8 @@ class LanguageCommandTests(unittest.TestCase):
         after_ready["frame"]["sequence"] += 1
         capture = Mock(side_effect=[(original, 90), (fresh, 99), (after_ready, 99)])
         robot = robot if robot is not None else RobotDouble()
-        session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: self.now[0])
+        # Pins the classic plan (23 jobs); the smooth plan is tested with the handover plan.
+        session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: self.now[0], smooth=False)
         if scan:
             session.scan()
         interpreter = Mock()

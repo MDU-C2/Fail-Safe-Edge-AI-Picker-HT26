@@ -4,13 +4,14 @@ import math
 import time
 
 from cup_inventory import SelectionError, hover_moves, match_observation, selected_cup
-from handover_plan import handover_jobs
+from handover_plan import handover_jobs, handover_paths
+from reset_grid import PLACE_FILE, load_places, save_places
 
 
 class CupSession:
     def __init__(self, capture, save, robot, calibration_id, *, max_result_age=15.0,
                  match_mm=20.0, match_px=40.0, tag_offset=(0, 0, 0), speed=50.0,
-                 clock=time.monotonic, recovery=None):
+                 clock=time.monotonic, recovery=None, smooth=True, place_file=PLACE_FILE):
         for name, value in (("max_result_age", max_result_age), ("match_mm", match_mm), ("match_px", match_px)):
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be a positive finite number")
@@ -24,6 +25,13 @@ class CupSession:
         self.clock = clock
         self.tag_offset = tuple(tag_offset)
         self.speed = speed
+        # smooth: blended path jobs (needs the path variables in rapid/SharedVars.mod);
+        # False: the original one-stop-per-waypoint moves.
+        self.smooth = smooth
+        # The smooth plan puts each cup on the first free spot of this grid
+        # (placing_grid.json, as capture_and_detect.py does) and marks it occupied
+        # once the right gripper has let go there. reset_grid.py frees it again.
+        self.place_file = place_file
         self.inventory = None
         self.scan_usable = False
         self.recovery = recovery
@@ -52,9 +60,19 @@ class CupSession:
         self.scan_usable = False
         # Every attempted selection needs a new scan if validation fails.
         sequence = self.inventory["frame"]["sequence"]
+        # Other pickable cups in this scan: then the left arm waits above the
+        # handover (out of the camera view) instead of going home.
+        more_cups = any(cup is not original and cup.get("selectable")
+                        for cup in self.inventory["cups"])
+        # Where this cup goes, chosen before anything moves.
+        place = self._free_place() if action == "goto" and self.smooth else None
 
         def plan(target):
             if action == "goto":
+                if self.smooth:
+                    return handover_paths(target, tag_offset=self.tag_offset, speed=self.speed,
+                                          more_cups=more_cups,
+                                          place=(place["x"], place["y"], place["z"]))
                 return handover_jobs(target, tag_offset=self.tag_offset, speed=self.speed)
             return [{"name": name, "endpoint": "/robot/rws/move", "body": body}
                     for name, body in zip(("left_ready", "approach_cup"),
@@ -104,6 +122,8 @@ class CupSession:
         original["status"] = "command_pending"
         original["execution"] = {"action": action, "state": "pending", "completed_steps": []}
         execution = original["execution"]
+        if place is not None:
+            execution["place_id"] = place["id"]
         self.save(self.inventory)  # If persistence fails, do not dispatch motion.
         if self.recovery is not None:
             self.recovery.begin({"capture": capture_id, "cup_id": cup_id, "action": action})
@@ -124,6 +144,8 @@ class CupSession:
             if index == 0 or job["name"] in ("approach_cup", "descend_to_cup", "grip_cup"):
                 check_age()
             job = jobs[index]
+            # Both arms can have a job running at once (grouped jobs).
+            execution.setdefault("pending_steps", {})[job["name"]] = job
             execution.update(state="running", pending_step=job["name"], pending_job=job)
             self.save(self.inventory)
             if index == 0 or job["name"] in ("approach_cup", "descend_to_cup", "grip_cup"):
@@ -132,10 +154,21 @@ class CupSession:
             return job
 
         def after_job(index, job):
+            if place is not None and job["name"] == "right_release":
+                # The cup now stands there: the next cup goes to the next free spot.
+                self._mark_occupied(place["id"])
+                execution["placed_at"] = place["id"]
             execution["completed_steps"].append(job)
             execution["last_completed_step"] = job["name"]
-            execution.pop("pending_step", None)
-            execution.pop("pending_job", None)
+            pending = execution.get("pending_steps", {})
+            pending.pop(job["name"], None)
+            if pending:
+                name, still_running = next(iter(pending.items()))
+                execution.update(pending_step=name, pending_job=still_running)
+            else:
+                execution.pop("pending_steps", None)
+                execution.pop("pending_step", None)
+                execution.pop("pending_job", None)
             self.save(self.inventory)
 
         try:
@@ -157,6 +190,25 @@ class CupSession:
                 print(f"Could not save interrupted sequence: {save_error}", flush=True)
             raise
         return jobs
+
+    def _free_place(self):
+        """First free spot of the grid; refuses (before any motion) if there is none."""
+        try:
+            locations = load_places(self.place_file)["locations"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise SelectionError(f"Cannot read the place grid {self.place_file}: {error}") from error
+        place = next((spot for spot in locations if not spot.get("occupied")), None)
+        if place is None:
+            raise SelectionError("All place locations are occupied. Empty them, then run reset_grid.py.")
+        return place
+
+    def _mark_occupied(self, place_id):
+        # Read fresh, so a reset_grid.py run in between is not undone.
+        places = load_places(self.place_file)
+        for spot in places["locations"]:
+            if spot["id"] == place_id:
+                spot["occupied"] = True
+        save_places(places, self.place_file)
 
     def acknowledge_recovery(self):
         """Operator acknowledgement only; does not stop, home, or otherwise move hardware."""

@@ -7,6 +7,7 @@ this client only prevents further commands; it is not a robot emergency stop.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
@@ -29,7 +30,11 @@ class RobotClient:
     MOVE_ENDPOINT = "/robot/rws/move"
     HOME_ENDPOINT = "/robot/rws/home"
     GRIPPER_ENDPOINT = "/robot/rws/gripper"
+    PATH_ENDPOINT = "/robot/rws/path"
     MOTION_OPTIONS = {"speed": (1, 1500), "acceleration": (20, 100), "ramp": (10, 100)}
+    PATH_OPTIONS = {"zone": (0, 100), "max_acceleration": (0.1, 20)}
+    POINT_OPTIONS = {"speed": (1, 1500), "zone": (0, 100)}
+    MAX_PATH_POINTS = 8
     HOME_JOINTS = (0, -130, 30, 0, 40, 0)
     HOME_ARM_ANGLES = {"left": 135, "right": -135}
     HOME_TOLERANCE_DEGREES = 1.0
@@ -63,7 +68,16 @@ class RobotClient:
         except (requests.RequestException, ValueError) as exc:
             detail = (" Robot completion is unknown; the command was not retried."
                       if move is not None else " No further commands will be sent.")
-            raise RobotCommandError(f"Gateway {endpoint} failed: {exc}.{detail}") from exc
+            reason = ""
+            try:
+                # The gateway says why it refused (e.g. 409 "RAPID is not running").
+                if response is not None and response.status_code >= 400:
+                    body = response.json()
+                    if isinstance(body, dict) and body.get("detail"):
+                        reason = f" Gateway says: {body['detail']}."
+            except Exception:
+                pass
+            raise RobotCommandError(f"Gateway {endpoint} failed: {exc}.{reason}{detail}") from exc
         finally:
             if response is not None:
                 response.close()
@@ -185,6 +199,54 @@ class RobotClient:
                     raise RobotCommandError(f"Move {name} must be between {low} and {high}.")
         return dict(body)
 
+    @staticmethod
+    def _check_number(label, value, limits=None):
+        try:
+            finite = (not isinstance(value, bool) and isinstance(value, (int, float))
+                      and math.isfinite(value))
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise RobotCommandError(f"{label} must be a finite number.")
+        if limits is not None and not limits[0] <= value <= limits[1]:
+            raise RobotCommandError(f"{label} must be between {limits[0]} and {limits[1]}.")
+
+    @classmethod
+    def _validate_path(cls, body):
+        """One /robot/rws/path job: 1..8 points with x/y/z, rx/ry/rz and optional
+        linear, speed, zone; optional speed, acceleration, ramp, zone, max_acceleration."""
+        options = {**cls.MOTION_OPTIONS, **cls.PATH_OPTIONS}
+        if (not isinstance(body, dict) or not {"arm", "wait", "points"} <= body.keys()
+                or body.keys() - {"arm", "wait", "points"} - options.keys()):
+            raise RobotCommandError(
+                "Each path job must contain only arm, wait, points and optional "
+                "speed, acceleration, ramp, zone, max_acceleration."
+            )
+        if body["arm"] not in ("left", "right") or body["wait"] is not True:
+            raise RobotCommandError("Path jobs require arm='left' or 'right' and wait=True.")
+        for name, limits in options.items():
+            if name in body:
+                cls._check_number(f"Path {name}", body[name], limits)
+        points = body["points"]
+        if not isinstance(points, list) or not 1 <= len(points) <= cls.MAX_PATH_POINTS:
+            raise RobotCommandError(f"A path needs 1 to {cls.MAX_PATH_POINTS} points.")
+        coordinates = ("x", "y", "z", "rx", "ry", "rz")
+        for index, point in enumerate(points, 1):
+            if (not isinstance(point, dict) or not set(coordinates) <= point.keys()
+                    or point.keys() - set(coordinates) - {"linear"} - cls.POINT_OPTIONS.keys()):
+                raise RobotCommandError(
+                    f"Path point {index} must contain only x/y/z, rx/ry/rz "
+                    "and optional linear, speed, zone."
+                )
+            for name in coordinates:
+                cls._check_number(f"Path point {index} {name}", point[name])
+            if "linear" in point and not isinstance(point["linear"], bool):
+                raise RobotCommandError(f"Path point {index} linear must be true or false.")
+            for name, limits in cls.POINT_OPTIONS.items():
+                if name in point:
+                    cls._check_number(f"Path point {index} {name}", point[name], limits)
+        return copy.deepcopy(body)
+
     @classmethod
     def _validate_move(cls, move):
         """Retain the original hover-only interface's left-arm restriction."""
@@ -192,15 +254,23 @@ class RobotClient:
 
     @classmethod
     def _validate_job(cls, job):
-        if not isinstance(job, dict) or set(job) != {"name", "endpoint", "body"}:
-            raise RobotCommandError("Each job must contain exactly name, endpoint and body.")
+        if (not isinstance(job, dict) or not {"name", "endpoint", "body"} <= set(job)
+                or set(job) - {"name", "endpoint", "body", "group"}):
+            raise RobotCommandError("Each job must contain exactly name, endpoint, body and optional group.")
         if not isinstance(job["name"], str) or not job["name"].strip():
             raise RobotCommandError("Each job requires a nonempty step name.")
+        group = job.get("group")
+        if group is not None and (not isinstance(group, str) or not group.strip()):
+            raise RobotCommandError("A job group must be a nonempty string.")
+        if group is not None and (not isinstance(job["body"], dict) or job["body"].get("arm") not in ("left", "right")):
+            raise RobotCommandError(f"Grouped job '{job['name']}' must name its arm, 'left' or 'right'.")
         endpoint = job["endpoint"]
         if endpoint == cls.MOVE_ENDPOINT:
             body = cls._validate_motion(job["body"])
         elif endpoint == cls.HOME_ENDPOINT:
             body = cls._validate_motion(job["body"], home=True)
+        elif endpoint == cls.PATH_ENDPOINT:
+            body = cls._validate_path(job["body"])
         elif endpoint == cls.GRIPPER_ENDPOINT:
             body = job["body"]
             if (not isinstance(body, dict) or set(body) != {"arm", "wait", "action"}
@@ -212,12 +282,31 @@ class RobotClient:
                 )
             body = dict(body)
         else:
-            raise RobotCommandError("Only RWS move, home and gripper endpoints are supported.")
-        return {"name": job["name"], "endpoint": endpoint, "body": body}
+            raise RobotCommandError("Only RWS move, path, home and gripper endpoints are supported.")
+        checked = {"name": job["name"], "endpoint": endpoint, "body": body}
+        if group is not None:
+            checked["group"] = group
+        return checked
+
+    @staticmethod
+    def _stages(jobs):
+        """Consecutive jobs with the same group form one stage, the rest a stage each.
+
+        Returns lists of (index, job). Within a stage each arm is one lane.
+        """
+        stages = []
+        for index, job in enumerate(jobs):
+            group = job.get("group")
+            if group is not None and stages and stages[-1][0][1].get("group") == group:
+                stages[-1].append((index, job))
+            else:
+                stages.append([(index, job)])
+        return stages
 
     @staticmethod
     def _copy_job(job):
-        return {**job, "body": dict(job["body"])}
+        # Deep, so a hook cannot change a path's points behind the validation.
+        return {**job, "body": copy.deepcopy(job["body"])}
 
     def _verify_home(self, arm):
         """Independently confirm the deployed controller reached the expected home pose."""
@@ -281,10 +370,105 @@ class RobotClient:
 
         self.execute_jobs(jobs, before_send=check if before_send is not None else None)
 
+    def _prepare(self, index, job, before_send, hooks):
+        """Run before_send for one job; return the (validated) job to send."""
+        self._check_lease()
+        if before_send is not None:
+            try:
+                with hooks:
+                    replacement = before_send(index, self._copy_job(job))
+                if replacement is not None:
+                    replacement = self._validate_job(replacement)
+                    if (replacement.get("group") != job.get("group")
+                            or replacement["body"].get("arm") != job["body"].get("arm")):
+                        raise RobotCommandError("a replacement job may not change its arm or group")
+                    job = replacement
+            except Exception as exc:
+                raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
+        self._check_lease()
+        return job
+
+    def _send(self, index, job, after_done, hooks):
+        """Send one prepared job, require DONE, confirm a home, run after_done."""
+        reply, _ = self._post(job["endpoint"], move=job["body"])
+        print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
+              f" -> {reply} ({job['name']})")
+        if reply.get("accepted") is not True or reply.get("message") != "DONE":
+            raise RobotCommandError(
+                f"Step '{job['name']}' did not report successful completion: {reply}. "
+                "No further commands will be sent."
+            )
+        if job["endpoint"] == self.HOME_ENDPOINT:
+            self._verify_home(job["body"]["arm"])
+        if after_done is not None:
+            try:
+                with hooks:
+                    after_done(index, self._copy_job(job))
+            except Exception as exc:
+                raise RobotCommandError(
+                    f"Post-command check failed after '{job['name']}' reported DONE: {exc}. "
+                    "No further commands will be sent."
+                ) from exc
+        self._check_lease()
+
+    def _run_job(self, index, job, before_send, after_done, hooks):
+        self._send(index, self._prepare(index, job, before_send, hooks), after_done, hooks)
+
+    def _run_parallel(self, lanes, before_send, after_done, hooks):
+        """Run one lane per arm at the same time.
+
+        The first job of every lane is prepared (before_send) one after the
+        other, in plan order, before anything of the stage is sent: a check
+        in the first hook (e.g. a camera recheck) sees both arms where the
+        previous stage left them. After a failure in either lane no further
+        job is sent in any lane; a job already sent is waited for, then the
+        first error is raised.
+        """
+        first = [self._prepare(index, job, before_send, hooks) for index, job in lanes[0][:1]]
+        for lane in lanes[1:]:
+            first += [self._prepare(index, job, before_send, hooks) for index, job in lane[:1]]
+        failed = threading.Event()
+        errors = []
+
+        def run(lane, prepared):
+            try:
+                for position, (index, job) in enumerate(lane):
+                    if failed.is_set():
+                        return
+                    job = prepared if position == 0 else self._prepare(index, job, before_send, hooks)
+                    if failed.is_set():
+                        return
+                    self._send(index, job, after_done, hooks)
+            except BaseException as exc:
+                errors.append(exc)
+                failed.set()
+
+        threads = [threading.Thread(target=run, args=(lane, job), daemon=True)
+                   for lane, job in zip(lanes, first)]
+        for thread in threads:
+            thread.start()
+        try:
+            for thread in threads:
+                while thread.is_alive():
+                    thread.join(0.1)
+        except BaseException:
+            # Interrupted: send nothing more, but wait for jobs already sent.
+            failed.set()
+            for thread in threads:
+                thread.join()
+            raise
+        if errors:
+            raise errors[0]
+
     def execute_jobs(self, jobs: list[dict],
                      before_send: Optional[Callable[[int, dict], Optional[dict]]] = None,
                      after_done: Optional[Callable[[int, dict], None]] = None) -> None:
-        """Run named jobs sequentially under one renewed control lease.
+        """Run named jobs in order under one renewed control lease.
+
+        Consecutive jobs with the same optional ``group`` form a stage that
+        runs one lane per arm at the same time (each lane in order); the
+        next stage starts when both lanes are done. Grouped jobs must name
+        their arm, and a replacement may not change arm or group.
 
         Validate the complete plan before acquiring control. Every job requires
         wait=True and an exact accepted=True / DONE response. No failed command
@@ -307,43 +491,25 @@ class RobotClient:
         try:
             if self.dry_run:
                 for job in jobs:
+                    together = f" [together: {job['group']}]" if job.get("group") else ""
                     print(f"DRY RUN: POST {job['endpoint']} "
-                          f"{json.dumps(job['body'], sort_keys=True)} ({job['name']})")
+                          f"{json.dumps(job['body'], sort_keys=True)} ({job['name']}){together}")
                 return
             self._lease_error = None
             self._release_needed = False
             self._take_control()
             renewal = threading.Thread(target=self._renew_loop, args=(stop,), daemon=True)
             renewal.start()
-            for index, job in enumerate(jobs):
-                self._check_lease()
-                if before_send is not None:
-                    try:
-                        replacement = before_send(index, self._copy_job(job))
-                        if replacement is not None:
-                            job = self._validate_job(replacement)
-                    except Exception as exc:
-                        raise RobotCommandError(f"Pre-command check failed: {exc}") from exc
-                self._check_lease()
-                reply, _ = self._post(job["endpoint"], move=job["body"])
-                print(f"Sent: POST {job['endpoint']} {json.dumps(job['body'], sort_keys=True)}"
-                      f" -> {reply} ({job['name']})")
-                if reply.get("accepted") is not True or reply.get("message") != "DONE":
-                    raise RobotCommandError(
-                        f"Step '{job['name']}' did not report successful completion: {reply}. "
-                        "No further commands will be sent."
-                    )
-                if job["endpoint"] == self.HOME_ENDPOINT:
-                    self._verify_home(job["body"]["arm"])
-                if after_done is not None:
-                    try:
-                        after_done(index, self._copy_job(job))
-                    except Exception as exc:
-                        raise RobotCommandError(
-                            f"Post-command check failed after '{job['name']}' reported DONE: {exc}. "
-                            "No further commands will be sent."
-                        ) from exc
-                self._check_lease()
+            hooks = threading.Lock()
+            for stage in self._stages(jobs):
+                lanes = {}
+                for index, job in stage:
+                    lanes.setdefault(job["body"].get("arm", "left"), []).append((index, job))
+                if len(lanes) == 1:
+                    for index, job in stage:
+                        self._run_job(index, job, before_send, after_done, hooks)
+                else:
+                    self._run_parallel(list(lanes.values()), before_send, after_done, hooks)
         finally:
             stop.set()
             try:

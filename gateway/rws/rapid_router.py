@@ -183,7 +183,7 @@ async def put_rapid_module(
     ],
     identity: Annotated[
         Identity,
-        Depends(require_control("robot.control")),
+        Depends(require_control("robot.program")),
     ],
 ) -> RapidStatus:
     check_source(
@@ -226,7 +226,7 @@ async def delete_rapid_module(
     module: ModuleName,
     identity: Annotated[
         Identity,
-        Depends(require_control("robot.control")),
+        Depends(require_control("robot.program")),
     ],
 ) -> RapidStatus:
     await run(

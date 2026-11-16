@@ -9,6 +9,7 @@ Needs: requests, pillow
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import requests
@@ -16,7 +17,7 @@ from PIL import Image
 
 
 DEFAULT_URL = "http://127.0.0.1:8000/api/v1"
-DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+DEFAULT_TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # see client_tokens.json (local only)
 
 
 def main() -> None:
@@ -26,7 +27,7 @@ def main() -> None:
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Gateway API base URL")
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (strict mode)")
-    parser.add_argument("--client", default="operator", help="Client id (development mode)")
+    parser.add_argument("--client", default="admin", help="Client id (development mode)")
     parser.add_argument("--output", type=Path, default=Path("rgb.png"), help="PNG file to write")
 
     args = parser.parse_args()

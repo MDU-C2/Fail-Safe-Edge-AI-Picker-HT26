@@ -12,6 +12,20 @@ class Settings(BaseSettings):
 
     control_lease_seconds: float = 5.0
 
+    #
+    # A free lease goes to the highest-priority client that tried
+    # to acquire or renew within this many seconds; lower ones are
+    # refused meanwhile. Must be longer than the clients' retry
+    # interval (the template retries every second).
+    #
+    control_contention_seconds: float = 3.0
+
+    #
+    # After startup nobody gets the lease for this long, so every
+    # client can reconnect and the highest one wins.
+    #
+    control_startup_grace_seconds: float = 5.0
+
     calibration_file: str = "gateway/calibration.json"
 
     model_config = SettingsConfigDict(
