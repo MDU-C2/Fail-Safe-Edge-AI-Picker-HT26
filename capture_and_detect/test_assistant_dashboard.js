@@ -133,7 +133,7 @@ test("keyless flexible-request errors keep local commands available and prepare 
 test("unavailable device dashboards block assistant commands while keeping Mac API settings editable", async () => {
   const reason = "Assistant features run on the MacBook controller only. Open the MacBook dashboard to use them.";
   const p = await page({ status: { available: false, unavailable_reason: reason, settings_editable: true } });
-  assert.equal(p.dom["assistant-state"].textContent, "MacBook only");
+  assert.equal(p.dom["assistant-state"].textContent, "Local computer only");
   assert.equal(p.dom["assistant-context-note"].textContent, reason);
   assert.equal(p.dom["assistant-input"].disabled, true);
   assert.equal(p.dom["assistant-send"].disabled, true);
@@ -151,7 +151,7 @@ test("combined dashboard enables only an explicitly owned local Mac and reacts i
   const statusReads = p.requests.filter((request) => request.url === "/api/assistant/status").length;
   await p.publish({ revision: 0, assistant_available: false, device_epoch: "epoch-2", devices: { active_id: "pi", switching: false } });
   assert.equal(p.dom["assistant-input"].disabled, true);
-  assert.match(p.dom["assistant-context-note"].textContent, /Select PC.*enable the Assistant/);
+  assert.match(p.dom["assistant-context-note"].textContent, /Select the local computer.*enable the Assistant/);
   assert.equal(p.dom["assistant-save"].disabled, false, "Mac API settings remain editable while Pi is selected");
   assert.ok(p.requests.filter((request) => request.url === "/api/assistant/status").length > statusReads);
   await p.ask("Pick cup 2"); assert.equal(p.posts().length, 0);
@@ -161,6 +161,22 @@ test("combined dashboard enables only an explicitly owned local Mac and reacts i
   for (const change of [{assistant_available:false}, {assistant_available:undefined}, {ready:false}, {device_epoch:""}, {devices:{active_id:"mac",switching:true}}, {devices:{active_id:"lynx",switching:false}}]) {
     await p.publish({...managedMac(),ready:true,...change});
     assert.equal(p.dom["assistant-input"].disabled,true,JSON.stringify(change));
+  }
+});
+
+test("managed Assistant names the configured local computer while remaining disabled on Pi and Lynx", async () => {
+  for (const label of ["MacBook", "Windows PC", "This PC"]) {
+    const entries = [{ id: "mac", label }, { id: "pi", label: "Raspberry Pi" }, { id: "lynx", label: "Lynx" }];
+    const p = await page({ state: managedMac({ devices: { active_id: "mac", switching: false, entries } }) });
+    await p.publish();
+    assert.equal(p.dom["assistant-input"].disabled, false);
+    for (const device of ["pi", "lynx"]) {
+      await p.publish({ assistant_available: false, devices: { active_id: device, switching: false, entries } });
+      assert.equal(p.dom["assistant-input"].disabled, true);
+      assert.equal(p.dom["assistant-state"].textContent, "Local computer only");
+      assert.ok(p.dom["assistant-context-note"].textContent.startsWith(`Select ${label} and use that device`));
+    }
+    assert.equal(p.posts().length, 0);
   }
 });
 
@@ -290,6 +306,22 @@ test("settings sends key once, honors explicit remember, then clears the textbox
   assert.ok(!allText(p.dom["view-assistant"]).includes("secret-example-key"));
   await p.dom["assistant-settings-form"].fire("submit");
   assert.ok(!("api_key" in JSON.parse(p.posts()[1].body)), "blank key preserves existing credentials");
+});
+
+test("Windows session-only settings hide and clear Remember and never submit a persistence request", async () => {
+  const p = await page({ status: { remember_supported: false, remember: true } });
+  assert.equal(p.dom["assistant-remember-option"].hidden, true);
+  assert.equal(p.dom["assistant-remember"].disabled, true);
+  assert.equal(p.dom["assistant-remember"].checked, false);
+  p.dom["assistant-api-key"].value = "secret-example-session-key";
+  p.dom["assistant-remember"].checked = true;
+  p.dom["assistant-remember"].disabled = false;
+  await p.dom["assistant-settings-form"].fire("submit");
+  assert.equal(p.posts().length, 1);
+  assert.equal(JSON.parse(p.posts()[0].body).remember, false);
+  assert.equal(p.dom["assistant-remember"].checked, false);
+  assert.equal(p.dom["assistant-api-key"].value, "");
+  assert.match(p.dom["assistant-settings-status"].textContent, /this service session/);
 });
 
 test("a failed key save never exposes a secret in an error and clears the input", async () => {

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import secrets
+import sys
 import threading
 import time
 from urllib.parse import urlsplit
@@ -75,9 +76,12 @@ class DeviceClient:
 class DeviceDashboard:
     def __init__(self, clients, state_path, *, initial_device="lynx", mode="dry_run", poll_interval=1.0):
         if set(clients) != set(LABELS) or initial_device not in clients or mode not in ("live", "dry_run"):
-            raise ValueError("Configure MacBook, Raspberry Pi and Lynx, with an initial device and mode.")
+            raise ValueError("Configure the computer, Raspberry Pi and Lynx, with an initial device and mode.")
         self.clients, self.path, self.mode = clients, Path(state_path), mode
         self.astra_named_matching = isinstance(clients.get("mac"), LocalDeviceClient)
+        self.labels = dict(LABELS)
+        if self.astra_named_matching:
+            self.labels["mac"] = {"darwin": "MacBook", "win32": "Windows PC"}.get(sys.platform, "This PC")
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-handoff")
@@ -118,7 +122,7 @@ class DeviceDashboard:
         if not isinstance(config, dict) or set(config) != {"schema_version", "initial_device", "state_file", "devices"} or config["schema_version"] != 1:
             raise ValueError("Invalid device configuration.")
         if not isinstance(config["devices"], dict) or set(config["devices"]) != set(LABELS):
-            raise ValueError("Configure exactly MacBook, Raspberry Pi and Lynx.")
+            raise ValueError("Configure exactly the computer, Raspberry Pi and Lynx.")
         clients = {}
         try:
             for name, value in config["devices"].items():
@@ -140,7 +144,7 @@ class DeviceDashboard:
     def configure_astra(self, client, settings):
         with self._lock:
             if self._poller is not None or self._busy_switch or self._closed or not self.astra_named_matching:
-                raise WebError("Configure Astra on the combined Mac dashboard before startup.")
+                raise WebError("Configure Astra on the combined local dashboard before startup.")
             self.clients["mac"].configure_astra(client, settings)
 
     def _persist(self):
@@ -225,7 +229,7 @@ class DeviceDashboard:
         with self._lock:
             self.record.update(phase="active", target_id=None, handoff=None)
             self._persist()
-            self._message = f"{LABELS[target]} selected. Wait for its model, then scan the workspace."
+            self._message = f"{self.labels[target]} selected. Wait for its model, then scan the workspace."
             if result["health"].get("handoff_notice"):
                 self._message += " " + result["health"]["handoff_notice"]
             self._error = None
@@ -278,7 +282,7 @@ class DeviceDashboard:
                     with self._lock:
                         self.record.update(phase="active", target_id=None, handoff=None)
                         self._persist()
-                        self._message = f"{LABELS[device]} selected. Wait for its model, then scan the workspace."
+                        self._message = f"{self.labels[device]} selected. Wait for its model, then scan the workspace."
                         self._error = None
                 elif owner.get("active_generation") == context["generation"] and health["boot_id"] != context["boot_id"]:
                     self._activate(device, None)
@@ -305,18 +309,18 @@ class DeviceDashboard:
             if new["health"]["owner"].get("active_generation") is not None:
                 raise WebError("Target device already has an active owner.")
             if new["health"]["owner"].get("owner_id") not in (None, self.record["owner_id"]):
-                raise WebError(f"{LABELS[target]} belongs to another dashboard. Previous device remains selected.")
+                raise WebError(f"{self.labels[target]} belongs to another dashboard. Previous device remains selected.")
             if new["health"].get("transfer_incomplete") or new["health"].get("handoff_blocked"):
                 reason = new["health"].get("handoff_block_reason")
                 if not isinstance(reason, str) or not reason.strip():
                     reason = ("An interrupted state transfer needs inspection." if new["health"].get("transfer_incomplete")
                               else "Unfinished recovery or placement reservations need inspection.")
-                raise WebError(f"{LABELS[target]}: {reason} Previous device remains selected.")
+                raise WebError(f"{self.labels[target]}: {reason} Previous device remains selected.")
             from handover_plan import normalize_phase_speeds
             phases = (old.get("state") or {}).get("motion", {}).get("phase_speed_settings")
             if (normalize_phase_speeds(phases) != normalize_phase_speeds()
                     and (new["health"].get("features") or {}).get("phase_speeds") is not True):
-                raise WebError(f"{LABELS[target]} needs the movement-speed update. Restore the stage-speed defaults "
+                raise WebError(f"{self.labels[target]} needs the movement-speed update. Restore the stage-speed defaults "
                                "or update that service before switching. Previous device remains selected.")
             with self._lock:
                 self.record.update(phase="deactivate_pending", target_id=target)
@@ -353,13 +357,13 @@ class DeviceDashboard:
             return "Ready", None
         error = state.get("error")
         if not state.get("busy") and isinstance(error, str) and error.strip():
-            restart = ("restart this dashboard to reload the Mac picker"
+            restart = ("restart this dashboard to reload the local picker"
                        if device == "mac" and self.astra_named_matching
-                       else f"restart the {LABELS[device]} picker service")
-            return "Startup failed", (f"{LABELS[device]} picker startup failed: {error} "
+                       else f"restart the {self.labels[device]} picker service")
+            return "Startup failed", (f"{self.labels[device]} picker startup failed: {error} "
                 f"Fix the cause, then {restart}. Refreshing this page does not reload the model. "
                 "Saved placement and recovery records are preserved.")
-        return "Starting", f"{LABELS[device]} is starting its picker and model. Wait until it is ready before scanning."
+        return "Starting", f"{self.labels[device]} is starting its picker and model. Wait until it is ready before scanning."
 
     def state(self):
         # The Mac lives in this process. A fresh browser read after submit must
@@ -422,10 +426,10 @@ class DeviceDashboard:
                             # if a previous switch attempt also produced an error.
                             current["error"] = (item.get("state") or {}).get("error")
                     elif status == "Ready":
-                        device_message = f"{LABELS[name]} selected. Picker and model are ready."
+                        device_message = f"{self.labels[name]} selected. Picker and model are ready."
                     if h.get("handoff_notice"):
                         device_message += " " + h["handoff_notice"]
-                entries.append({"id": name, "label": LABELS[name], "available": available,
+                entries.append({"id": name, "label": self.labels[name], "available": available,
                     "status": status,
                     "model": model, "reason": reason})
             can_switch = (permitted and current["ready"] and not current["busy"]
@@ -453,7 +457,7 @@ class DeviceDashboard:
             assistant_action = assistant_request_id is not None or assistant_camera is not False
             if assistant_action and (not current["assistant_available"]
                     or operation not in ("scan", "select", "batch", "pick_saved")):
-                raise WebError("Assistant actions require the active local Mac picker.")
+                raise WebError("Assistant actions require the active local computer picker.")
             if operation == "device_select":
                 if (set(payload) != {"device_id", "request_id"} or payload["device_id"] not in self.clients
                         or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", str(payload["request_id"]))):

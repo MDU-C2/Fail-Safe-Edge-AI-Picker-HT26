@@ -14,6 +14,7 @@ import queue
 import re
 import secrets
 import stat
+import sys
 import threading
 import time
 
@@ -88,7 +89,9 @@ class AssistantSettings:
         self._remember = False
         self._tier = "default"
         self._reasoning = "low"
-        self._load()
+        self._remember_supported = sys.platform != "win32"
+        if self._remember_supported:
+            self._load()
 
     @staticmethod
     def _options(payload):
@@ -105,7 +108,8 @@ class AssistantSettings:
     def status(self):
         with self._lock:
             return {"configured": bool(self._key), "provider": "openai", "model": MODEL,
-                    "remember": self._remember, "service_tier": self._tier, "reasoning": self._reasoning}
+                    "remember": self._remember, "remember_supported": self._remember_supported,
+                    "service_tier": self._tier, "reasoning": self._reasoning}
 
     def _credentials(self):
         with self._lock:
@@ -214,16 +218,20 @@ class AssistantSettings:
             remember = payload.get("remember", False)
             tier = payload.get("service_tier", self._tier)
             reasoning = payload.get("reasoning", self._reasoning)
+            if remember and not self._remember_supported:
+                raise AssistantError("Remembering API keys is unavailable on Windows. Use the key for this session only.")
             if remember and not key:
                 raise AssistantError("Enter an API key before remembering it.")
-            self._save({"api_key": key, "remember": True, "service_tier": tier, "reasoning": reasoning}
-                       if remember else None)
+            if self._remember_supported:
+                self._save({"api_key": key, "remember": True, "service_tier": tier, "reasoning": reasoning}
+                           if remember else None)
             self._key, self._remember, self._tier, self._reasoning = key, remember, tier, reasoning
             return self.status()
 
     def clear(self):
         with self._lock:
-            self._save(None)
+            if self._remember_supported:
+                self._save(None)
             self._key, self._remember = None, False
             return self.status()
 

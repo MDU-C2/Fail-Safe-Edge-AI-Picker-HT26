@@ -39,20 +39,24 @@ class RobotAssistant:
     @staticmethod
     def _available(state):
         devices = state.get("devices")
-        # Only the owned, in-process Mac controller shares Astra credentials.
+        # Only the owned, in-process local controller shares Astra credentials.
         # A remote service named "mac" does not gain this capability by its name.
         return not devices or (state.get("assistant_available") is True
                                and devices.get("active_id") == "mac" and not devices.get("switching"))
 
     @staticmethod
     def _unavailable_reason():
-        return "Assistant features run on the MacBook controller only. Open the MacBook dashboard to use them."
+        return "Assistant features run on this computer only. Select the local processing device to use them."
 
     @staticmethod
     def _label(state):
         if state.get("mode") == "demo":
             return "Illustrated sample scene — no gateway or robot connected"
-        active = (state.get("devices") or {}).get("active_id") or "MacBook"
+        devices = state.get("devices") or {}
+        active_id = devices.get("active_id")
+        active = next((entry["label"] for entry in devices.get("entries", [])
+                       if entry.get("id") == active_id and isinstance(entry.get("label"), str)),
+                      "This computer" if active_id in (None, "mac") else active_id)
         capture = (state.get("inventory") or {}).get("capture")
         return f"{active} · saved scan {capture}" if capture else f"{active} · no scan yet"
 
@@ -149,7 +153,7 @@ class RobotAssistant:
             current = self.controller.state()
             if (self._device_context(current) != context or current.get("instance_id") != instance
                     or not self._available(current)):
-                raise WebError("The device changed while taking the photo. Ask again on the selected MacBook.", 409)
+                raise WebError("The device changed while taking the photo. Select this computer and ask again.", 409)
             if current.get("stop_requested") or current.get("recovery_required"):
                 raise WebError("The picker stopped or requires inspection. The camera result was discarded.", 409)
             if current.get("proposal") or ((current.get("robot_controls") or {}).get("proposal")):
@@ -441,7 +445,7 @@ class RobotAssistant:
                     reason = "Saved cup references are unavailable on the selected picker."
                 elif result["action"] == "pick_saved" and not library["matcher_enabled"]:
                     reason = "Astra photo matching is not enabled. Save an OpenAI API key in Settings " \
-                             "on the MacBook before finding a saved cup."
+                             "on this computer before finding a saved cup."
                 elif result["action"] == "save_cup" and any(
                         cup["name"].casefold() == _name(result["cup_name"]).casefold() for cup in library["cups"]):
                     reason = "That name is already saved. Choose another name, or use Forget in Saved cup references first."

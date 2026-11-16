@@ -23,6 +23,31 @@ from test_named_cup_flow import NamedCupFixture, two_cups, visual_result
 from web_controller import WebError
 
 
+class LocalDeviceLabelTests(unittest.TestCase):
+    def test_platform_label_depends_on_local_backend_without_changing_device_ids(self):
+        for platform, expected in (("darwin", "MacBook"), ("win32", "Windows PC"), ("linux", "This PC")):
+            for local in (True, False):
+                with self.subTest(platform=platform, local=local), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    clients = {name: AgentClient(DeviceAgent(name, FakeFactory(), FakeStore(root / name),
+                               controller_class=FakeController)) for name in ("mac", "pi", "lynx")}
+                    if local:
+                        clients["mac"] = LocalDeviceClient(clients["mac"].agent)
+                    with patch("device_dashboard.sys.platform", platform):
+                        dashboard = DeviceDashboard(clients, root / "owner.json", initial_device="pi")
+                    try:
+                        for name in clients:
+                            dashboard._read(name)
+                        entries = {entry["id"]: entry for entry in dashboard.state()["devices"]["entries"]}
+                        self.assertEqual(set(entries), {"mac", "pi", "lynx"})
+                        self.assertEqual(entries["mac"]["label"], expected if local else "MacBook")
+                        self.assertEqual(entries["pi"]["label"], "Raspberry Pi")
+                        self.assertEqual(entries["lynx"]["label"], "Lynx")
+                        self.assertFalse(dashboard.state()["assistant_available"])
+                    finally:
+                        dashboard.close()
+
+
 class LocalDashboardTests(unittest.TestCase):
     def setUp(self):
         output = redirect_stdout(io.StringIO())

@@ -1,7 +1,8 @@
-# Manual Mac / Pi / Lynx dashboard
+# Manual computer / Pi / Lynx dashboard
 
-The dashboard stays on the Mac. **Processing device → Use device** selects where
-both the detection model and the cup-picking controller run. Mac and Pi use the
+The dashboard runs on your MacBook or Windows PC. **Processing device → Use device**
+selects where both the detection model and the cup-picking controller run.
+The local computer and Pi use the
 Python perception runtime; Lynx uses the native C++ perception runtime and the
 shared Python motion controller. All three use the existing robot/camera gateway.
 This is separate from the older inference-only automatic failover feature.
@@ -10,6 +11,84 @@ The generic commands below are setup examples. For the verified installation,
 see [the deployment check and startup commands](DEVICE_CHECK_2026-11-13.md). Replace
 the example repository, model and state paths and the `192.0.2.*` documentation
 addresses with the verified installation values.
+
+## Move the dashboard between Mac and Windows
+
+The local option is **Windows PC** on Windows and **MacBook** on macOS when the
+configuration uses `backend: "local"`. It loads that computer's `best.pt` and
+runs detection and picking there. Raspberry Pi and Lynx remain remote choices.
+The internal device ID `mac` is retained for compatibility with deployed services;
+it does not send Windows processing to the Mac. A remote HTTP entry named `mac`
+still means the separate Mac service.
+
+A Git clone includes the program, model and reference files, but excludes your
+private device-service tokens and dashboard ownership record. Therefore
+`python web_app.py --gateway ...` runs a local-only dashboard. To get the three
+device choices, transfer your existing private setup and use `--device-config`.
+Do not create a new owner or delete records to attach to existing services.
+
+Before transferring, finish all robot work, select **Pi or Lynx**, wait for Ready,
+and close the source dashboard. Keep the selected remote picker service running.
+From the source checkout's `capture_and_detect` directory:
+
+```sh
+python dashboard_setup.py export --config "/path/to/current/devices-combined.json" --output "/private/path/dashboard-transfer.zip"
+```
+
+Export reads status only. It requires one selected, idle remote owner, an inactive
+local picker, matching identities and no recovery/reservations or unfinished
+handoff. Custom local runtime records must match their saved handoff binding;
+if standalone edits changed them, reconcile using the source dashboard before
+exporting. It preserves calibration and reference bytes, service credentials,
+controller profile, owner generations and local placement records. It excludes
+model weights, capture history, saved-cup photos and Assistant keys. Keep the ZIP
+private: it contains device and gateway credentials. Do not put it in Git.
+
+Copy the ZIP to the other computer. In Windows PowerShell, substitute your actual
+clone and downloaded ZIP paths:
+
+```powershell
+cd "C:\path\to\Fail-Safe-Edge-AI-Picker-HT26"
+git switch vision_detection3
+git pull --ff-only
+cd capture_and_detect
+python -m pip install -r requirements-inference.txt
+python dashboard_setup.py install --bundle "$HOME\Downloads\dashboard-transfer.zip" --directory "$HOME\cup-dashboard"
+python web_app.py --device-config "$HOME\cup-dashboard\devices.json" --live --port 8087
+```
+
+The install directory must be new; existing state is never overwritten. The
+installer points the local model at this checkout's `best.pt`, replacing Mac
+paths, and retains the currently selected remote owner. Open
+`http://localhost:8087`, choose **Windows PC**, then **Use device**. The ordinary
+handoff transfers the remote picker's current placement records before Windows
+loads its model. Installation and dashboard startup send no robot movement.
+A remote service whose network address changed needs its URL updated in the
+private config. All services and the dashboard must agree on live/dry-run mode.
+
+To return to the Mac later, select Pi or Lynx on Windows, wait for Ready, close
+the Windows dashboard and **export a new bundle from its current config**.
+Install it into a new private directory on the Mac and launch `web_app.py` with
+that new `devices.json`. It will offer MacBook processing automatically. Reusing
+an older bundle or the older Mac launcher after a transfer can have stale ownership
+generations; use the newest exported config. Run only one dashboard at a time.
+Existing saved-cup libraries and Assistant settings stay on their original host;
+the minimal transfer does not migrate them. API keys can be entered per session
+in Settings on the new host. On Windows, the Assistant uses session-only keys;
+Remember is unavailable, so enter the key again after restarting the dashboard.
+The Mac keeps its existing optional private key storage.
+
+The ordinary terminal is separate from this managed dashboard:
+
+```powershell
+$env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
+python capture_and_detect.py --gateway http://192.168.125.20:8000
+```
+
+Enter captures and processes cups; `q` quits. Add `--dry-run` to preview only,
+or `--commands` for the optional scan/goto/confirm shell. Do not run this direct
+terminal while a managed picker is operating; it uses the checkout's own local
+state rather than the transferred dashboard directory.
 
 ## Prepare matching persistent state
 
@@ -133,8 +212,8 @@ reuses an existing direct Mac dashboard's grid, captures, recovery journal and
 saved-cup library. Without it, the standard files in `state_dir` are used.
 The table-reference filename must correspond to the placement-grid filename.
 All devices still need matching geometry, calibration and table reference.
-The local Mac defaults to a 30-second verification-image limit; remote service
-settings are unchanged. `GATEWAY_TOKEN` supplies the local Mac credential when
+The local computer defaults to a 30-second verification-image limit; remote service
+settings are unchanged. `GATEWAY_TOKEN` supplies the local computer credential when
 set; otherwise the existing state-directory token is used.
 
 Close the old direct dashboard and separate Mac service before starting this

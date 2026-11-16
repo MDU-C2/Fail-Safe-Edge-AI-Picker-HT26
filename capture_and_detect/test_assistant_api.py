@@ -113,6 +113,44 @@ class AssistantAPITests(unittest.TestCase):
         self.assertFalse(self.path.parent.exists())
         self.assertFalse(AssistantSettings(self.path).status()["configured"])
 
+    def test_windows_session_key_ignores_existing_storage_and_never_uses_posix_operations(self):
+        self.path.parent.mkdir()
+        existing = b"Existing settings must not be read, changed or removed."
+        self.path.write_bytes(existing)
+        failure = AssertionError("Windows session keys must not touch persistent storage")
+        with patch("assistant_api.sys.platform", "win32"), \
+                patch.object(AssistantSettings, "_load", side_effect=failure), \
+                patch.object(AssistantSettings, "_save", side_effect=failure), \
+                patch.object(AssistantSettings, "_parent", side_effect=failure), \
+                patch("assistant_api.os.open", side_effect=failure), \
+                patch("assistant_api.os.getuid", side_effect=failure, create=True), \
+                patch("assistant_api.os.fchmod", side_effect=failure, create=True), \
+                patch("assistant_api.os.O_DIRECTORY", object(), create=True):
+            settings = AssistantSettings(self.path)
+            self.assertFalse(settings.status()["remember_supported"])
+            self.assertFalse(settings.status()["remember"])
+            self.assertFalse(settings.status()["configured"])
+            settings.update({"api_key": KEY, "remember": False, "service_tier": "flex"})
+            self.assertEqual(settings._credentials(), (KEY, "flex", "low"))
+            session = Mock()
+            session.post.return_value = Response()
+            AstraClient(settings, session=session).test_connection()
+            self.assertEqual(session.post.call_args.kwargs["headers"]["Authorization"], "Bearer " + KEY)
+            self.assertNotIn(KEY, json.dumps(settings.status()))
+            with self.assertRaisesRegex(AssistantError, "Windows.*session only"):
+                settings.update({"api_key": "sk-test-replacement-not-saved", "remember": True})
+            self.assertEqual(settings._credentials()[0], KEY)
+            self.assertFalse(AssistantSettings(self.path).status()["configured"])
+            self.assertFalse(settings.clear()["configured"])
+            self.assertFalse(settings.status()["remember"])
+            with self.assertRaises(AssistantError):
+                settings._credentials()
+        self.assertEqual(self.path.read_bytes(), existing)
+
+    def test_posix_reports_existing_remember_capability(self):
+        with patch("assistant_api.sys.platform", "darwin"):
+            self.assertTrue(AssistantSettings(self.path).status()["remember_supported"])
+
     def test_remember_is_atomic_private_and_restored(self):
         settings = self.settings(remember=True, service_tier="flex", reasoning="high")
         self.assertEqual(stat.S_IMODE(self.path.parent.stat().st_mode), 0o700)

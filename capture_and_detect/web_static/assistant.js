@@ -3,7 +3,7 @@
   "use strict";
   const byId = (id) => document.getElementById(id);
   if (!byId("assistant-form")) return;
-  const ids = ["state", "context-label", "source", "context-note", "error", "messages", "empty", "form", "input", "send", "settings", "settings-form", "api-key", "remember", "tier", "reasoning", "save", "test", "forget", "settings-status", "settings-access", "key-state", "phone-note", "phone-setup", "phone-link", "phone-code-row", "phone-code", "phone-unavailable"];
+  const ids = ["state", "context-label", "source", "context-note", "error", "messages", "empty", "form", "input", "send", "settings", "settings-form", "api-key", "remember", "remember-option", "tier", "reasoning", "save", "test", "forget", "settings-status", "settings-access", "key-state", "phone-note", "phone-setup", "phone-link", "phone-code-row", "phone-code", "phone-unavailable"];
   const ui = Object.fromEntries(ids.map((id) => [id, byId(`assistant-${id}`)]));
   let status = null, busy = "", connected = false, statusSequence = 0, settingsDirty = false;
   let active = null, controllerState = null, controllerSeenAt = 0, controllerOnline = false, watchTimer = null, localStop = false, sawStop = false, askGeneration = 0, capabilityContext = null;
@@ -16,8 +16,13 @@
     .replace(/sk-[A-Za-z0-9_-]+/g, "[key hidden]");
   const showError = (value = "") => { setText(ui.error, value); ui.error.hidden = !value; };
   const deviceAccess = (state) => !state?.devices || (state.assistant_available === true && state.devices.active_id === "mac" && !state.devices.switching && state.ready === true && typeof state.device_epoch === "string" && Boolean(state.device_epoch));
+  const localDeviceLabel = (state) => {
+    const entry = Array.isArray(state?.devices?.entries) ? state.devices.entries.find((item) => item?.id === "mac") : null;
+    return string(entry?.label).trim() || "the local computer";
+  };
   const assistantAvailable = () => controllerState?.devices ? deviceAccess(controllerState) && controllerOnline : status?.available !== false;
   const canAsk = () => connected && assistantAvailable() && !busy && !active && !controllerState?.busy;
+  const rememberSupported = () => status?.remember_supported !== false;
   const canEditSettings = () => connected && status?.settings_editable === true && !busy && !active;
 
   function invalidateDrafts() {
@@ -60,7 +65,7 @@
         if (typeof state?.csrf_token !== "string" || !state.csrf_token) throw new Error("Dashboard session unavailable. Refresh this page.");
         if (verifyState) verifyState(state);
         if (bindOwner && state.devices) {
-          if (!deviceAccess(state)) throw new Error("Activate the local MacBook controller before using the Assistant.");
+          if (!deviceAccess(state)) throw new Error("Activate the local computer controller before using the Assistant.");
           payload = { ...payload, _device_id: state.devices.active_id, _device_epoch: state.device_epoch };
         }
         headers["X-CSRF-Token"] = state.csrf_token;
@@ -85,12 +90,12 @@
     const scriptedDemo = status?.demo === true && !configured;
     const unavailable = !assistantAvailable();
     const scanning = busy === "ask" && controllerState?.busy && ["scan", "assistant_scan"].includes(controllerState.operation);
-    setText(ui.state, !connected ? "Unavailable" : unavailable ? "MacBook only" : scanning ? "Taking photo…" : busy === "ask" ? "Thinking…" : scriptedDemo ? "Offline demo" : status?.demo ? "Sample scene" : configured ? "Ready" : "Local commands");
+    setText(ui.state, !connected ? "Unavailable" : unavailable ? "Local computer only" : scanning ? "Taking photo…" : busy === "ask" ? "Thinking…" : scriptedDemo ? "Offline demo" : status?.demo ? "Sample scene" : configured ? "Ready" : "Local commands");
     ui.state.dataset.tone = !connected ? "error" : status?.demo ? "demo" : "ready";
     setText(ui["key-state"], !connected ? "Service unavailable" : configured ? "Key saved" : "No key saved");
     setText(ui.source, scriptedDemo ? "Local demo · no OpenAI request" : !configured ? "Saved cup commands · local" : `GPT-6 Astra · OpenAI · ${status?.service_tier === "flex" ? "Flex" : "Standard"}${status?.demo ? " · sample scene" : ""}`);
     setText(ui["context-label"], string(status?.context_label) || (status?.demo ? "Sample workspace · no robot connected" : "Current workspace snapshot"));
-    setText(ui["context-note"], unavailable ? controllerState?.devices ? "Select PC (this Mac) and use that device to enable the Assistant. Picking controls remain available on the selected device." : string(status?.unavailable_reason) || "Assistant features run on the MacBook controller only. Open the MacBook dashboard to use them."
+    setText(ui["context-note"], unavailable ? controllerState?.devices ? `Select ${localDeviceLabel(controllerState)} and use that device to enable the Assistant. Picking controls remain available on the selected device.` : string(status?.unavailable_reason) || "Assistant features run on the local computer controller only. Open its dashboard to use them."
       : scanning ? string(controllerState.message) || "Taking a fresh workspace photo automatically…"
       : busy === "ask" ? "Checking the workspace and preparing your answer…"
       : status?.stale ? "The next scene request will take a fresh photo automatically. Cup numbers may change."
@@ -101,6 +106,9 @@
     ui.send.disabled = !canAsk() || !ui.input.value.trim();
     const editable = canEditSettings();
     for (const id of ["api-key", "remember", "tier", "reasoning", "save"]) ui[id].disabled = !editable;
+    ui["remember-option"].hidden = !rememberSupported();
+    ui.remember.disabled = !editable || !rememberSupported();
+    if (!rememberSupported()) ui.remember.checked = false;
     ui.test.disabled = !editable || !configured;
     ui.forget.disabled = !editable || !configured;
     ui["settings-access"].hidden = !connected || status?.settings_editable === true;
@@ -125,7 +133,7 @@
   }
   function stateProblem(state, requireScan = false) {
     if (!state || typeof state.instance_id !== "string" || !["live", "dry-run", "dry_run", "demo"].includes(state.mode)) return "Controller status is unavailable. Reconnect before continuing.";
-    if (!deviceAccess(state) || (!state.devices && status?.available === false)) return "Assistant actions are available on the owned local MacBook controller only.";
+    if (!deviceAccess(state) || (!state.devices && status?.available === false)) return "Assistant actions are available on the owned local computer controller only.";
     if (localStop || state.stop_requested || state.stop_in_flight) return "Stop requested. This pick will not be confirmed. Inspect the robot before continuing.";
     if (state.recovery_required) return "Recovery inspection is required. This pick will not be confirmed.";
     if (!state.ready) return "The controller is not ready. Check its status before continuing.";
@@ -374,7 +382,7 @@
       if (!settingsDirty) {
         ui.tier.value = next.service_tier === "flex" ? "flex" : "default";
         ui.reasoning.value = ["low", "medium", "high"].includes(next.reasoning) ? next.reasoning : "low";
-        ui.remember.checked = next.remembered === true || next.remember === true;
+        ui.remember.checked = next.remember_supported !== false && (next.remembered === true || next.remember === true);
       }
       if (next.error) showError(cleanError({ message: message(next, "The assistant service needs attention.") }));
       else showError();
@@ -468,7 +476,7 @@
     try {
       let expectedContext;
       const answer = await request("/api/assistant/ask", { method: "POST", payload: { text: value }, bindOwner: true, timeout: 180000, verifyState: (state) => {
-        if (!deviceAccess(state) || state.busy) throw new Error("The Assistant needs an idle local MacBook controller. Check the selected device and try again.");
+        if (!deviceAccess(state) || state.busy) throw new Error("The Assistant needs an idle local computer controller. Check the selected device and try again.");
         expectedContext = contextKey(state);
       } });
       const current = await request("/api/state");
@@ -493,12 +501,12 @@
     invalidateDrafts();
     busy = "settings"; showError(); setText(ui["settings-status"], "Saving settings…"); render();
     const key = ui["api-key"].value.trim();
-    const payload = { remember: ui.remember.checked, service_tier: ui.tier.value, reasoning: ui.reasoning.value };
+    const payload = { remember: rememberSupported() && ui.remember.checked, service_tier: ui.tier.value, reasoning: ui.reasoning.value };
     if (key) payload.api_key = key;
     try {
       await request("/api/assistant/settings", { method: "POST", payload });
       settingsDirty = false;
-      setText(ui["settings-status"], ui.remember.checked ? "Settings saved on this Mac." : "Settings saved for this service session.");
+      setText(ui["settings-status"], ui.remember.checked ? "Settings saved on the dashboard computer." : "Settings saved for this service session.");
       await refreshStatus();
     } catch (_) { showError("Settings could not be saved. Check the dashboard connection and API key, then try again."); setText(ui["settings-status"], "Settings could not be saved. Check the connection and API key, then try again."); }
     finally { ui["api-key"].value = ""; busy = ""; render(); }

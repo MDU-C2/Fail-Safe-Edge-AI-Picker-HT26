@@ -179,7 +179,7 @@
   const deviceSnapshot = () => state?.devices && typeof state.devices === "object" && !Array.isArray(state.devices) ? state.devices : null;
   const deviceEntries = () => Array.isArray(deviceSnapshot()?.entries)
     ? deviceSnapshot().entries.filter((entry) => entry && ["mac", "pi", "lynx"].includes(entry.id)) : [];
-  const deviceLabel = (entry) => typeof entry?.label === "string" && entry.label.trim() ? entry.label : ({ mac: "PC (this Mac)", pi: "Raspberry Pi", lynx: "Lynx" })[entry?.id] || "Unknown device";
+  const deviceLabel = (entry) => typeof entry?.label === "string" && entry.label.trim() ? entry.label : ({ mac: "Computer", pi: "Raspberry Pi", lynx: "Lynx" })[entry?.id] || "Unknown device";
   const deviceNeedsInspection = (entry) => typeof entry?.status === "string" && entry.status.trim().toLowerCase().replaceAll("_", " ") === "needs inspection";
   const deviceStartupStatus = (entry) => typeof entry?.status === "string" && ["starting", "startup failed"].includes(entry.status.trim().toLowerCase())
     ? entry.status.trim().toLowerCase() : null;
@@ -235,7 +235,7 @@
       || (active.available === true ? state.ready ? "READY" : "SELECTED · NOT READY" : "ACTIVE · UNAVAILABLE") : "NO ACTIVE DEVICE");
     text("device-selection-note", choice && (choice.available !== true || deviceNeedsInspection(choice) || deviceStartupStatus(choice)) ? choice.reason || "This device is not ready."
       : choice && choice.id !== devices.active_id ? `${deviceLabel(choice)} is selected in this menu. Use device to activate it.`
-      : active && state.assistant_available === true && devices.active_id === "mac" ? "This Mac runs detection and picking. The Assistant can take a fresh photo when needed."
+      : active && state.assistant_available === true && devices.active_id === "mac" ? `${deviceLabel(active)} runs detection and picking. The Assistant can take a fresh photo when needed.`
       : active ? "The active device runs detection and picking. This is not confirmation of a new scan."
       : "Choose an available device, then select Use device.");
     text("device-message", !connected ? "Connection lost. Device status is the last received snapshot; switching is disabled."

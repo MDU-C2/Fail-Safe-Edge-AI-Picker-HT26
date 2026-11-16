@@ -412,9 +412,9 @@ def main(argv=None):
     parser.add_argument("--phone-ca", type=Path, help="Public local CA certificate for the phone download")
     parser.add_argument("--assistant-settings", type=Path, help="Private settings file outside Git; written only if Remember is selected")
     parser.add_argument("--demo", action="store_true", help="Sample cups only; no camera, model or robot connection (default without --gateway)")
-    parser.add_argument("--gateway", help="Robot gateway base URL; the MacBook runs detection and picking")
+    parser.add_argument("--gateway", help="Robot gateway base URL; this computer runs detection and picking")
     parser.add_argument("--device-config", type=Path,
-                        help="MacBook/Pi/Lynx picker configuration; an in-process Mac supports Astra Assistant")
+                        help="Local computer/Pi/Lynx picker configuration; the local computer supports Astra Assistant")
     parser.add_argument("--controller-profile", default=str(HERE / "robot_controller.json"),
                         help="Optional gateway-bound, read-only controller status connection profile")
     modes = parser.add_mutually_exclusive_group()
@@ -515,7 +515,7 @@ def main(argv=None):
             if args.allowed_origin:
                 print(f"Phone dashboard: {args.allowed_origin}", flush=True)
             if args.local_port:
-                print(f"Mac dashboard (same session): http://localhost:{args.local_port}", flush=True)
+                print(f"Computer dashboard (same session): http://localhost:{args.local_port}", flush=True)
             if access.pairing_code:
                 print(f"Phone pairing code: {access.pairing_code}", flush=True)
             print(f"Mode: {mode}. Close the terminal cup controller before using this app.", flush=True)

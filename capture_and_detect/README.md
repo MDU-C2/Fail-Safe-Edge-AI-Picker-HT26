@@ -1,18 +1,26 @@
 # Select a cup and run the handover
 
-**`capture_and_detect.py` is the application entry point.** Run
-`python capture_and_detect.py` for the terminal, or
-`python capture_and_detect.py --web` for the browser dashboard. Both modes share
-the camera, selection, motion-plan and recovery modules. Run only one controller
-at a time. For a browser preview without hardware, use
-`python capture_and_detect.py --web --demo`.
+Run **`python capture_and_detect.py` for the terminal** and
+**`python web_app.py` for the browser dashboard**. These are separate commands;
+run one controller at a time. Both use the same camera, grid, motion and recovery
+modules. `--web` on the terminal script remains a dashboard alias.
 
-`scan` detects cups and saves a numbered inventory. **`goto 2` now picks cup 2
-with the left arm, hands it to the right arm, places it in the next free grid
-location, and finishes with both arms home.** `goto all` offers a separate confirmed
-batch. `hover 2` retains the previous
-approach-only behavior. IDs refer to the numbered image from the current scan;
-they can change after the next scan.
+The default terminal restores the original workflow: **Enter captures a fresh
+scene and processes all available cups; `q` then Enter quits.** Live Enter starts
+the checked pick-and-place cycle without another confirmation. Use `--dry-run`
+to preview it without movement. Each cup still undergoes the existing verification,
+destination and recovery checks.
+
+For the optional `scan`, `goto 2`, and `goto all` command shell, add `--commands`.
+In that shell, `scan` only observes, `goto 2` verifies and picks cup 2, and
+`goto all` previews a batch for confirmation. Cup IDs refer to the current scan.
+For a browser preview without hardware, use `python web_app.py --demo`.
+
+Windows multi-device setup is described in
+[Windows PC / MacBook, Pi and Lynx](DEVICE_DASHBOARD.md#move-the-dashboard-between-mac-and-windows).
+The local device uses the computer running the dashboard: Windows PC on Windows,
+MacBook on macOS. The private device configuration is required to show all three
+choices; `--gateway` alone starts a local-only dashboard.
 
 The program uses the existing calibration, YOLO weights and RAPID program over
 `/api/v1/robot/rws/move`, `/gripper` and `/home`. It does not install or start RAPID.
@@ -109,41 +117,64 @@ the app and scan again to apply this check; archived scans are not rewritten.
 
 ## Run
 
-From the `capture_and_detect` directory on the Mac, preview the whole sequence:
+From the repository's `capture_and_detect` directory, set the existing gateway
+token. In Windows PowerShell:
 
-```sh
-export GATEWAY_TOKEN="BAD_TOKEN_OPERATOR"
-python capture_and_detect.py --gateway http://192.168.125.204:8000 --dry-run
+```powershell
+$env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
+python capture_and_detect.py --gateway http://192.168.125.20:8000
 ```
 
-Use the configured operator token if yours differs. The Pi address above is the
-current lab address; update it if the Pi's address changes. The default address
-without `--gateway` remains `http://169.254.125.202:8000`.
+On macOS/Linux:
+
+```sh
+export GATEWAY_TOKEN="YOUR_ACTUAL_GATEWAY_TOKEN"
+python capture_and_detect.py --gateway http://192.168.125.20:8000
+```
+
+The terminal runs **live by default**. Press Enter once to capture and process
+cups, or `q` then Enter to quit. While a cycle runs, another Enter is rejected
+instead of queued; `status` shows progress and `stop` requests a software stop.
+Add `--dry-run` to preview only. Use the actual reachable gateway address if it
+has changed.
+
+Launch the local-only UI separately:
+
+```sh
+python web_app.py --gateway http://192.168.125.20:8000 --live --port 8087
+```
+
+Open `http://localhost:8087`. For the device selector, use the private
+`--device-config` command in [device setup](DEVICE_DASHBOARD.md), instead of
+`--gateway`. The UI defaults to dry run without `--live`.
+
+To use the optional detailed terminal shell:
+
+```sh
+python capture_and_detect.py --commands --gateway http://192.168.125.20:8000 --dry-run
+```
 
 ```text
 cups> scan
 cups> list
 cups> show 2
 cups> goto 2
-... verification image and all planned requests, no robot movement ...
+... verification image and planned requests, no robot movement ...
 cups> quit
-```
-
-For live operation, restart without `--dry-run`:
-
-```sh
-python capture_and_detect.py --gateway http://192.168.125.204:8000
 ```
 
 The terminal-only `--left-only` option picks, lifts and replaces a selected cup
 with the left arm, without a handover or placement-grid update. Add `--dry-run`
 to preview that sequence first. Browser mode does not accept `--left-only`.
 
-Then `scan` and `goto <ID>` for an available cup. `scan` alone never moves the
+In `--commands` mode, use `scan` and `goto <ID>` for an available cup. `scan` alone never moves the
 robot. The token needs `camera.read`, `robot.control`, and `robot.read` for home
 checks. Use one operator instance at a time. Start with both grippers empty and
 the known calibrated table/gripper arrangement; `goto` opens the grippers as part
 of picking. Check that grid locations marked free are physically clear.
+
+The following table describes **`--commands` mode**. In the default terminal,
+Enter processes cups instead of only scanning.
 
 | Command | Behavior |
 | --- | --- |
@@ -168,7 +199,7 @@ command to move home.
 
 ## Start, software stop, status and help
 
-The web dashboard and terminal accept these exact commands without an LLM:
+The web dashboard and `--commands` terminal accept these exact commands without an LLM:
 
 ```text
 start

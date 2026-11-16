@@ -117,7 +117,7 @@ class DeviceStartupStatusTests(unittest.TestCase):
         entry = self.entry(state, "mac")
         self.assertEqual(entry["status"], "Startup failed")
         self.assertEqual(state["error"], error)
-        self.assertIn("restart this dashboard to reload the Mac picker", entry["reason"])
+        self.assertIn("restart this dashboard to reload the local picker", entry["reason"])
         self.assertNotIn("restart the MacBook picker service", entry["reason"])
         self.assertFalse(state["assistant_available"])
 

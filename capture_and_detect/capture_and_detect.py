@@ -1,10 +1,10 @@
 """Cup detection, placement grid, operator controls and browser dashboard.
 
-Enter / scan saves observations without movement. goto <id> verifies that cup,
-then runs the existing left-to-right handover and returns both arms home.
-hover <id> only moves the left arm above a cup. --dry-run previews the requests
-without acquiring control or moving hardware.
-Use --web for the browser UI, or --web --demo for a hardware-free demonstration.
+Press Enter to capture a fresh scene and pick all available cups, limited by
+clear placement locations. Each cup is verified before the existing handover.
+Type q to quit. --dry-run previews requests without moving hardware.
+Use --commands for the scan/goto/confirm shell, or run web_app.py for the browser
+UI (--web remains an alias; --web --demo runs a hardware-free demonstration).
 The terminal's --left-only mode picks, lifts and replaces a cup without a handover.
 See README.md in this directory for commands, calibration details and limitations.
 """
@@ -49,6 +49,12 @@ KEEP_CLASSES = ["CUP", "CUP BASE", "CUP HANDLE"]
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px", "robot_z_frames_mm"]
 GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm", "status"]
+PROCESS_HELP = """Enter: capture a fresh scene and process all available cups.
+q: quit. stop: request a software stop. status: show progress.
+After inspecting an unfinished movement, use reset before pressing Enter again.
+A software stop depends on the gateway and controller; use the robot's physical
+emergency stop when needed. Use --commands for scan/goto/confirmation commands.
+"""
 HELP = """Commands:
   start               Scan now and preview a pick-all batch; then confirm it.
   stop / halt         Block further jobs and request a software stop of both arms.
@@ -663,6 +669,43 @@ def handle_input(session, line, language=None):
     return True
 
 
+def handle_process_input(session, line):
+    """An explicit Enter authorizes one fresh, checked pick-all cycle."""
+    command = " ".join(line.strip().lower().split())
+    if command in ("q", "quit", "exit"):
+        return False
+    if command == "help":
+        log(PROCESS_HELP)
+        return True
+    if command in STOP_COMMANDS or command == "status":
+        return handle_input(session, line)
+    if command == "reset":
+        session.acknowledge_recovery()
+        log("Recovery acknowledged. No command sent. Press Enter for a fresh cycle.")
+        return True
+    if command:
+        raise SelectionError("Press Enter to process cups, or q to quit. Use --commands for scan/goto commands.")
+    if session.stop_requested or session.motion_uncertain:
+        raise SelectionError("Recovery is required. Inspect both arms and the cup, then use reset before pressing Enter.")
+    inventory = session.scan()
+    print_cups(inventory)
+    # Keep the batch tied to this scan, its destinations and the settings used
+    # for the preview. CupSession rechecks all of them before dispatch.
+    motion = session.motion_settings()
+    preview = session.preview_batch(capture_id=inventory["capture"])
+    log("Processing cups:", ", ".join(map(str, preview["cup_ids"])))
+    if preview.get("excluded_cup_ids"):
+        log("No free destination for cups:", ", ".join(map(str, preview["excluded_cup_ids"])))
+    session.execute_batch(capture_id=inventory["capture"], cup_ids=preview["cup_ids"],
+                          placement=preview["placement"], expected_motion=motion)
+    if session.robot.dry_run:
+        log("Preview complete; no robot commands sent.")
+    else:
+        log("Robot reported the batch complete; the left arm is home."
+            if session.left_only else "Robot reported the batch complete; both home poses checked.")
+    return True
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--web" in argv:
@@ -672,6 +715,7 @@ def main(argv=None):
                                        validate_inference_arguments)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--web", action="store_true", help="Open the browser workflow; use --web --help for its options")
+    parser.add_argument("--commands", action="store_true", help="Use the scan/goto/confirm command shell instead of Enter to process all cups")
     parser.add_argument("--left-only", action="store_true", help="Pick, lift and replace each selected cup with the left arm; no handover or placement-grid update")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
     parser.add_argument("--calibration", default=str(CALIBRATION_FILE))
@@ -691,12 +735,13 @@ def main(argv=None):
     parser.add_argument("--max-result-age", type=positive, default=15.0, help="Maximum verification image age before approach, descent and grip, seconds (default 15)")
     parser.add_argument("--match-mm", type=positive, default=20.0, help="Maximum 3D displacement on verification, mm (default 20)")
     parser.add_argument("--match-px", type=positive, default=40.0, help="Maximum pixel displacement on verification (default 40)")
-    parser.add_argument("--llm", action="store_true", help="Enable local Ollama commands and saved-cup visual matching with movement confirmation")
+    parser.add_argument("--llm", action="store_true", help="Enable the command shell with local Ollama commands and saved-cup visual matching with movement confirmation")
     parser.add_argument("--llm-model", default="qwen3-vl:4b-instruct", help="Installed local Ollama model (default qwen3-vl:4b-instruct)")
     parser.add_argument("--ollama-url", default="http://127.0.0.1:11434", help="Local Ollama address; loopback hosts only")
     parser.add_argument("--check-llm", action="store_true", help="Test local interpretation only; no camera, token, YOLO or robot connection")
     add_inference_arguments(parser)
     args = parser.parse_args(argv)
+    command_mode = args.commands or args.llm
     validate_inference_arguments(args, parser)
     if not math.isfinite(args.conf) or not 0 < args.conf <= 1:
         parser.error("--conf must be greater than 0 and at most 1")
@@ -766,22 +811,31 @@ def main(argv=None):
     log("LEFT ONLY: picks return to their original position; the right arm and placement grid are not used."
         if args.left_only else
         f"Placement grid: {args.placing_grid}; cup turning: {min(session.speed, FLIP_SPEED):g} mm/s, 30% acceleration")
-    log("DRY RUN: all RWS moves, gripper and home requests will only be printed." if args.dry_run else
-        ("LIVE: goto picks, lifts, replaces and homes the LEFT arm. hover only approaches; scan only saves detections."
-         if args.left_only else
-         "LIVE: goto picks, hands over, places and homes BOTH arms. hover only approaches; scan only saves detections."))
-    log(HELP)
+    if args.dry_run:
+        log("DRY RUN: all RWS moves, gripper and home requests will only be printed.")
+    elif command_mode:
+        log("LIVE: goto picks, lifts, replaces and homes the LEFT arm. hover only approaches; scan only saves detections."
+            if args.left_only else
+            "LIVE: goto picks, hands over, places and homes BOTH arms. hover only approaches; scan only saves detections.")
+    else:
+        log("LIVE: pressing Enter automatically picks, lifts and replaces all available cups with the LEFT arm."
+            if args.left_only else
+            "LIVE: pressing Enter automatically picks, hands over and places all available cups, limited by clear destinations.")
+        log("Enter starts movement after fresh checks, without another confirmation. Nothing starts until you press Enter.")
+    log(HELP if command_mode else PROCESS_HELP)
     if args.llm:
         log(f"LOCAL LLM: {args.llm_model} via {args.ollama_url}")
         log(LANGUAGE_HELP)
     if session.motion_uncertain:
-        log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset and scan.")
+        log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset. No automatic retry.")
     terminal = TerminalController(session, language,
-                                  lambda line: handle_input(session, line, language), output=log)
+                                  (lambda line: handle_input(session, line, language)) if command_mode else
+                                  (lambda line: handle_process_input(session, line)), output=log)
     interrupted = False
     try:
         while True:
-            if not terminal.submit(input("cups> ").strip()):
+            prompt = "cups> " if command_mode else "Press Enter to process cups (q + Enter to quit): "
+            if not terminal.submit(input(prompt).strip()):
                 break
     except (KeyboardInterrupt, EOFError):
         interrupted = True

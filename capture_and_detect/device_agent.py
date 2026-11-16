@@ -239,7 +239,7 @@ class DeviceAgent:
         """Python-only injection; the authenticated device HTTP API has no key route."""
         with self._lock:
             if self.device_id != "mac" or self.native or self.controller is not None or self.transition:
-                raise WebError("Configure Astra on the inactive local Mac picker before startup.")
+                raise WebError("Configure Astra on the inactive local computer picker before startup.")
             self._astra = (client, settings)
 
     def _context(self, body):
@@ -334,7 +334,7 @@ class DeviceAgent:
                 raise WebError("A device handoff is in progress.")
             if (assistant_request_id is not None or assistant_camera is not False):
                 if self.device_id != "mac" or self._astra is None:
-                    raise WebError("Assistant actions require the configured local Mac picker.")
+                    raise WebError("Assistant actions require the configured local computer picker.")
                 return self.controller.submit(body["operation"], body["payload"],
                     assistant_request_id=assistant_request_id, assistant_camera=assistant_camera)
             # WebController marks work busy synchronously before returning.

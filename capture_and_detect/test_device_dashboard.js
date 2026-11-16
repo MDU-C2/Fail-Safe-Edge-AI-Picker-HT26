@@ -109,6 +109,20 @@ test("the combined Mac assistant keeps the full device selector visible", () => 
   assert.match(page.dom["device-selection-note"].textContent,/Use device to activate/);
 });
 
+test("managed device display uses the server's local platform label with the same routing ID", () => {
+  for (const label of ["MacBook", "Windows PC", "This PC"]) {
+    const state = snapshot({ assistant_available: true });
+    state.devices.entries[0].label = label;
+    const page = dashboard(state);
+    assert.equal(page.dom["device-panel"].hidden, false);
+    assert.equal(page.option("mac").textContent, label);
+    assert.equal(page.dom["device-active"].textContent, label);
+    assert.equal(page.dom["device-select"].value, "mac");
+    assert.match(page.dom["device-selection-note"].textContent, new RegExp(`^${label} runs detection and picking`));
+    assert.equal(page.requests.length, 0);
+  }
+});
+
 test("blocked target inspection reasons remain visible without selecting a disabled option", () => {
   const state = snapshot();
   Object.assign(state.devices.entries[1], { available: false, status: "needs_inspection", reason: "Inspect P2 and P5; unfinished reservations remain." });
