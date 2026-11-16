@@ -163,6 +163,7 @@ CARRY_MAX_ACC = 1.5        # m/s2 (PathAccLim) while holding the cup
 TRAVEL_ZONE = 20           # mm blend radius on free travel
 NEAR_ZONE = 10             # mm blend radius where the next stretch is close to something
 TIGHT_ZONE = 3             # mm, the corner right under the cup (slide in, then up)
+SLIDE_SPEED = 150          # mm/s, the right sliding in under the cup
 
 
 def _speed_problem(name, value):
@@ -259,27 +260,56 @@ class _SmoothPlan:
         self.path("right_to_beside", "right", *points, group=group)
 
     def handover(self, place):
+        self.take()
+        self.separate_and_turn(place)
+
+    def take(self):
         # Only once the left holds still at the handover: the right opens, slides
         # in under the cup and goes straight up to the rim, in one motion.
         # The left hand holds the cup until the right hand has finished gripping it.
         self.grip("right_open", "right", "open")
         self.path("right_take", "right",
-                  self.point("right_below", RUN_R_BELOW, RIGHT_UP, linear=True, speed=self.speed,
+                  self.point("right_below", RUN_R_BELOW, RIGHT_UP, linear=True, speed=SLIDE_SPEED,
                              zone=TIGHT_ZONE),
                   self.point("right_take", RUN_R_TAKE, RIGHT_UP, linear=True, speed=self.speed))
         self.grip("right_grip", "right", "grip")
         self.grip("left_release", "left", "open")
+
+    def right_lower(self, group=None):
+        self.path("right_lower", "right",
+                  self.point("right_lower", RUN_R_BELOW, RIGHT_UP, linear=True, speed=self.speed),
+                  carrying=True, group=group)
+
+    def separate_and_turn(self, place):
         # Together, straight apart: the right pulls the cup down, the left goes up
         # to its top (the real runs' LEFT_LIFT); 70 mm between hand and cup, as in
         # the real runs, before the cup is turned.
         release = "release" + self.suffix
-        self.path("right_lower", "right",
-                  self.point("right_lower", RUN_R_BELOW, RIGHT_UP, linear=True, speed=self.speed),
-                  carrying=True, group=release)
+        self.right_lower(group=release)
         self.left_clear(group=release)
         # The left waits at its top while the right turns the cup over: its way out
         # could cross the right arm during the turn (the real runs waited too).
         self.right_retreat(place)
+
+    def on_to_next_cup(self, above, pick, group=None):
+        # Straight up off the released cup (while the right pulls it down) and on
+        # to the next cup in one motion: no stop at the top or at ready. The left
+        # gripper is still open from the release.
+        self.path("approach_cup", "left",
+                  self.point("left_clear", RUN_LEFT_CLEAR, LEFT_DOWN, linear=True,
+                             speed=self.speed, zone=NEAR_ZONE),
+                  self.point("above_cup", above, LEFT_DOWN, zone=NEAR_ZONE),
+                  self.point("descend_to_cup", pick, LEFT_DOWN, linear=True, speed=self.speed),
+                  group=group)
+        self.grip("grip_cup", "left", "grip", group=group)
+
+    def approach_from_top(self, above, pick, group=None):
+        # From the left's top (it is already clear of the cup) to the next cup.
+        self.path("approach_cup", "left",
+                  self.point("above_cup", above, LEFT_DOWN, zone=NEAR_ZONE),
+                  self.point("descend_to_cup", pick, LEFT_DOWN, linear=True, speed=self.speed),
+                  group=group)
+        self.grip("grip_cup", "left", "grip", group=group)
 
     def left_clear(self, group=None):
         self.path("left_clear", "left",
@@ -373,13 +403,14 @@ def handover_paths(cup, *, tag_offset=(0, 0, 0), speed=50, travel_speed=TRAVEL_S
 
 
 # ---------------- Several cups in one go (simulation for now) ----------------
-# Once the right has turned cup N over, the right places it while the left goes
-# from its top to ready and picks cup N+1; the right then waits beside the
-# handover for it instead of going home (only after the last cup it homes). The place spots are outside the camera view, so the recheck
-# before the approach can run while the right arm is placing.
+# As soon as the left has let go of cup N, it goes up off it and on to cup N+1
+# in one motion (no stop at its top or at ready) and grips it, while the right
+# pulls cup N down, turns it over, places it and goes to wait beside the
+# handover for cup N+1 (it homes only after the last cup). No camera recheck
+# between cups here: the simulation has no camera.
 # Only for cups on the left half of the table: a cup with y below
 # OVERLAP_MIN_Y is near the place spots, so for it the left arm only goes to
-# ready and waits there until the right arm is home (R_BESIDE is next to
+# its top and waits there until the right arm is home (R_BESIDE is next to
 # those cups, so the right does not wait there). Tune in RobotStudio.
 OVERLAP_MIN_Y = 0          # mm, robot y; cups at or above it are picked while the right places
 
@@ -425,25 +456,30 @@ def handover_batch(cups, *, tag_offset=(0, 0, 0), speed=50, travel_speed=TRAVEL_
             plan.right_to_beside(group=f"lift#{number}")
         else:
             previous = plans[-2]
-            together = f"next#{number}"
+            place = places[number - 2]
             if overlaps_placing(cup, tag_offset):
-                # Right lane: the previous cup (already turned over) placed, then
-                # not home but straight on to wait beside the handover for this cup.
-                previous.right_place(places[number - 2], group=together, home=False)
+                # The right pulls the previous cup down while the left goes up, and
+                # the left waits at its top until the right has turned the cup over.
+                previous.separate_and_turn(place)
+                together = f"next#{number}"
+                # Right lane: place the previous cup, then straight on to wait
+                # beside the handover for this cup.
+                previous.right_place(place, group=together, home=False)
                 plan.right_to_beside(group=together)
-                # Left lane: from its top to ready, the approach and the grip.
-                plan.left_ready(group=together)
-                plan.approach(above, pick, group=together)
+                # Left lane, at the same time: from its top straight to this cup
+                # in one motion (no stop at ready, the hand is still open), and grip.
+                plan.approach_from_top(above, pick, group=together)
                 plan.lift(above)
             else:
-                # The cup is near the place spots and R_BESIDE: the right goes home
-                # and the left only goes to ready until the right is out of the way.
-                previous.right_place(places[number - 2], group=together)
-                plan.left_ready(group=together)
-                plan.approach(above, pick, group=f"pick#{number}")
+                # The cup is near the place spots and R_BESIDE: the left goes up and
+                # waits while the right turns, places and goes home, then picks.
+                previous.separate_and_turn(place)
+                previous.right_place(place)
+                plan.approach_from_top(above, pick, group=f"pick#{number}")
                 plan.right_to_via(group=f"pick#{number}")
                 plan.lift(above, group=f"lift#{number}")
                 plan.right_to_beside(group=f"lift#{number}")
-        plan.handover(places[number - 1])
+        plan.take()
+    plans[-1].separate_and_turn(places[-1])
     plans[-1].finish(places[-1], more_cups=False)
     return jobs
