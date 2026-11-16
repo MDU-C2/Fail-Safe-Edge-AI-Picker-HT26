@@ -693,11 +693,13 @@ def handle_process_input(session, line):
         session.acknowledge_recovery()
         log("Recovery acknowledged. No command sent. Press Enter for a fresh cycle.")
         return True
-    if command:
-        raise SelectionError("Press Enter to process cups, or q to quit. Use --commands for scan/goto commands.")
     if session.stop_requested or session.motion_uncertain:
-        raise SelectionError("Recovery is required. Inspect both arms and the cup, then type reset and press Enter. "
+        raise SelectionError("Recovery acknowledgement is required by this app's saved record or software Stop. "
+                             "After inspecting both arms and the cup, type reset and press Enter; reset sends no robot command. "
                              "Pressing Enter without typing reset does not acknowledge recovery.")
+    if command:
+        raise SelectionError("This terminal processes all available cups with Enter. "
+                             "vision_detection4 has no selected-cup command. For scan/goto selection, restart with --commands.")
     inventory = session.scan()
     print_cups(inventory)
     if not any(cup.get("selectable") and not cup.get("blocked_reason")
@@ -851,8 +853,11 @@ def main(argv=None):
         log(f"LOCAL LLM: {args.llm_model} via {args.ollama_url}")
         log(LANGUAGE_HELP)
     if session.motion_uncertain:
-        log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset. No automatic retry.")
+        log("This computer has a saved recovery record from an earlier run. "
+            "It remains set after manually homing the robot or restarting RAPID.")
         log(f"Recovery record: {recovery.path}")
+        log("After inspecting both arms and the cup, type reset once to acknowledge recovery. "
+            "This sends no robot command and does not reset RAPID. Then press Enter for a fresh batch.")
     terminal = TerminalController(session, language,
                                   (lambda line: handle_input(session, line, language)) if command_mode else
                                   (lambda line: handle_process_input(session, line)), output=log,
@@ -868,7 +873,8 @@ def main(argv=None):
                 break
     except (KeyboardInterrupt, EOFError):
         interrupted = True
-        log("\nExiting; an active command will receive a software stop request. No automatic home or resume.")
+        log("\nExiting; the active command will receive a software stop request. No automatic home or resume."
+            if terminal.busy else "\nExiting while idle. No robot command sent.")
     finally:
         terminal.close(interrupt=interrupted)
         if callable(getattr(detector, "close", None)):

@@ -151,6 +151,10 @@ Add `--dry-run` to preview only. Use the actual reachable gateway address if it
 has changed.
 
 If startup reports an unfinished sequence, **blank Enter cannot clear it**.
+The message refers to this computer's saved recovery record. Manually homing
+the arms or restarting RAPID does not update that record. This is a retained
+recovery check from this branch; the original `vision_detection4` terminal did
+not have a persistent recovery acknowledgement.
 Finish and close any other controller, inspect both arms and the cup, and recover
 the robot as needed. At the program's prompt, type `reset` and press Enter. Wait
 for `Recovery acknowledged. No command sent.` before pressing Enter again to
