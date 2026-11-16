@@ -283,16 +283,19 @@ POINT = {"x": 400, "y": 100, "z": 300, "rx": 180, "ry": 0, "rz": 180}
         {"points": [POINT], "max_acceleration": 50},
         {"points": [POINT], "arm": "middle"},
         {"points": [POINT], "ramp": 5},
+        {"points": "POINT"},
+        {"points": [1]},
+        {"points": [{**POINT, "linear": "sideways"}]},
     ],
 )
 def test_rws_path_is_validated(
     gateway: Gateway,
     body: dict,
 ) -> None:
-    operator = gateway.client("operator")
+    admin = gateway.client("admin")
 
-    with operator.control():
-        expect(operator.post("/robot/rws/path", json=body), 422)
+    with admin.control():
+        expect(admin.post("/robot/rws/path", json=body), 422)
 
 
 @pytest.mark.parametrize(
@@ -796,6 +799,7 @@ def path_points(
     ]
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_writes_padded_arrays_and_length_last() -> None:
     controller = FakeArmTasks()
 
@@ -843,6 +847,7 @@ def test_rws_motion_path_writes_padded_arrays_and_length_last() -> None:
     assert not any(name.endswith("_right") for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_without_limit_writes_zero() -> None:
     controller = FakeArmTasks()
 
@@ -852,6 +857,7 @@ def test_rws_motion_path_without_limit_writes_zero() -> None:
     assert controller.symbols["path_len_right"] == "0"
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_refuses_any_point_outside_the_safe_zone() -> None:
     controller = FakeArmTasks()
 
@@ -864,6 +870,7 @@ def test_rws_motion_path_refuses_any_point_outside_the_safe_zone() -> None:
     assert controller.writes == []
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_reports_an_unreachable_point() -> None:
     result = motion(FakeArmTasks()).path(
         "left",
@@ -873,6 +880,7 @@ def test_rws_motion_path_reports_an_unreachable_point() -> None:
     assert (result.accepted, result.message) == (False, "ERR move failed")
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_needs_the_path_variables() -> None:
     controller = FakeArmTasks()
 
@@ -892,6 +900,7 @@ def test_rws_motion_path_needs_the_path_variables() -> None:
     assert not any(name == "path_len_left" for _, name, _ in controller.writes)
 
 
+@pytest.mark.python_internals
 def test_rws_motion_move_clears_a_stale_path_job() -> None:
     controller = FakeArmTasks()
 
@@ -902,6 +911,7 @@ def test_rws_motion_move_clears_a_stale_path_job() -> None:
     assert ("T_ROB_L", "path_len_left", "0") in controller.writes
 
 
+@pytest.mark.python_internals
 def test_rws_motion_path_length_is_checked() -> None:
     arms = motion(FakeArmTasks())
 

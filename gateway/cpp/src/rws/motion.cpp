@@ -20,6 +20,7 @@ const std::map<std::string, std::string> NEWER_VARIABLES = {
     {"move_speed", "speed variables"},
     {"grip_pos", "gripper position variables"},
     {"grip_force", "gripper force variables"},
+    {"path_len", "path variables"},
 };
 
 //
@@ -38,6 +39,27 @@ std::size_t index(
     Arm arm
 ) {
     return arm == Arm::left ? 0 : 1;
+}
+
+//
+// A RAPID array of the given items, padded with padding to count:
+// RWS writes whole arrays, so they keep the size declared in
+// SharedVars.mod.
+//
+std::string rapid_list(
+    std::vector<std::string> items,
+    std::size_t count,
+    const std::string& padding
+) {
+    items.resize(count, padding);
+
+    std::string text = "[";
+
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        text += (i == 0 ? "" : ",") + items[i];
+    }
+
+    return text + "]";
 }
 
 }  // namespace
@@ -140,11 +162,75 @@ CommandResult RwsMotion::move(
     values["go_home"] = "FALSE";
     values["grip_cmd"] = "\"\"";
 
+    //
+    // A path job left behind (RAPID stopped half way) would
+    // otherwise run instead of this move. Older programs have no
+    // path_len and skip it.
+    //
+    values["path_len"] = "0";
+
     if (rotation) {
         const auto [rx, ry, rz] = *rotation;
 
         values["target_rot"] = rapid_array(orient_zyx(rz, ry, rx).data(), 4);
     }
+
+    return run(arm, std::move(values), wait, {"path_len"});
+}
+
+CommandResult RwsMotion::path(
+    Arm arm,
+    const std::vector<PathPoint>& points,
+    double zone,
+    const std::optional<double>& max_acceleration,
+    bool wait,
+    const std::optional<MotionSpeed>& speed
+) {
+    if (points.empty() || points.size() > MAX_PATH_POINTS) {
+        throw std::invalid_argument(format("A path has 1 to %zu points", MAX_PATH_POINTS));
+    }
+
+    for (const PathPoint& point : points) {
+        if (!in_safe_zone(point.position)) {
+            return CommandResult{false, "ERR outside safe zone"};
+        }
+    }
+
+    const MotionSpeed& chosen = speed ? *speed : default_speed_;
+
+    std::vector<std::string> positions;
+    std::vector<std::string> rotations;
+    std::vector<std::string> linear;
+    std::vector<std::string> speeds;
+    std::vector<std::string> zones;
+
+    for (const PathPoint& point : points) {
+        const auto [rx, ry, rz] = point.rotation;
+
+        positions.push_back(rapid_array(point.position.data(), 3));
+        rotations.push_back(rapid_array(orient_zyx(rz, ry, rx).data(), 4));
+        linear.push_back(point.linear ? "TRUE" : "FALSE");
+        speeds.push_back(fixed6(point.speed.value_or(chosen.speed)));
+        zones.push_back(fixed6(point.zone.value_or(zone)));
+    }
+
+    Values values = speed_values(chosen);
+
+    values["go_home"] = "FALSE";
+    values["grip_cmd"] = "\"\"";
+
+    values["path_pos"] = rapid_list(positions, MAX_PATH_POINTS, "[0,0,0]");
+    values["path_rot"] = rapid_list(rotations, MAX_PATH_POINTS, "[1,0,0,0]");
+    values["path_lin"] = rapid_list(linear, MAX_PATH_POINTS, "FALSE");
+    values["path_speed"] = rapid_list(speeds, MAX_PATH_POINTS, fixed6(chosen.speed));
+    values["path_zone"] = rapid_list(zones, MAX_PATH_POINTS, fixed6(zone));
+    values["path_acc"] = fixed6(max_acceleration.value_or(0.0));
+
+    //
+    // path_len > 0 is what makes it a path job; run() writes it
+    // last.
+    //
+    values["path_len"] = std::to_string(points.size());
 
     return run(arm, std::move(values), wait);
 }
@@ -308,7 +394,9 @@ CommandResult RwsMotion::run(
 
     //
     // In the Python gateway's order (dict insertion order): the
-    // job's variables as motion.py builds them.
+    // job's variables as motion.py builds them. path_len goes last:
+    // once it is above 0 the job is a path job, so the arrays must
+    // be in place by then.
     //
     static const char* const ORDER[] = {
         "target_pos",
@@ -321,6 +409,13 @@ CommandResult RwsMotion::run(
         "target_rot",
         "grip_pos",
         "grip_force",
+        "path_pos",
+        "path_rot",
+        "path_lin",
+        "path_speed",
+        "path_zone",
+        "path_acc",
+        "path_len",
     };
 
     for (const char* name : ORDER) {
