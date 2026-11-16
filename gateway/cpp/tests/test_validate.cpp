@@ -140,6 +140,40 @@ TEST(Validate, ModelErrorsOnlyWhenTheFieldsAreFine) {
     EXPECT_EQ(errors_of(good)[0]["loc"], Json::array({"body"}));
 }
 
+TEST(Validate, ListsOfNestedModels) {
+    Fields fields(Json::parse(R"({"points": [{"x": 1}, {"x": "far"}, 3], "empty": [], "long": [1, 2, 3], "text": "a"})"), "body");
+
+    const auto points = fields.list("points", true, 1, 8);
+
+    ASSERT_TRUE(points.has_value());
+    ASSERT_EQ(points->size(), 3u);
+
+    for (std::size_t i = 0; i < points->size(); ++i) {
+        Fields point = fields.item("points", i, "Point");
+
+        point.number("x", true);
+        fields.merge(point);
+    }
+
+    EXPECT_EQ(fields.list("empty", true, 1, 8), std::nullopt);
+    EXPECT_EQ(fields.list("long", true, 1, 2), std::nullopt);
+    EXPECT_EQ(fields.list("text", true, 1, 8), std::nullopt);
+    EXPECT_EQ(fields.list("absent", false, 1, 8), std::nullopt);
+
+    const Json errors = errors_of(fields);
+
+    //
+    // The item that is no object is one error, not one per field.
+    //
+    ASSERT_EQ(errors.size(), 5u);
+    EXPECT_EQ(errors[0]["loc"], Json::parse(R"(["body", "points", 1, "x"])"));
+    EXPECT_EQ(errors[1]["type"], "model_type");
+    EXPECT_EQ(errors[1]["loc"], Json::parse(R"(["body", "points", 2])"));
+    EXPECT_EQ(errors[2]["msg"], "List should have at least 1 item after validation, not 0");
+    EXPECT_EQ(errors[3]["msg"], "List should have at most 2 items after validation, not 3");
+    EXPECT_EQ(errors[4]["type"], "list_type");
+}
+
 TEST(Validate, ObjectBodies) {
     Request request;
 

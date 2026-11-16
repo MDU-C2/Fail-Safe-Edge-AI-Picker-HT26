@@ -12,8 +12,10 @@ MODULE LeftArm
     go_home_left := FALSE;
     use_rot_left := FALSE;
     grip_cmd_left := "";
+    path_len_left := 0;
 
     ConfJ \Off;
+    ConfL \Off;                                 ! path MoveL: take the configuration closest to the current one
     IF NOT g_IsCalibrated() THEN
       g_Init \Calibrate;
     ENDIF
@@ -38,6 +40,9 @@ MODULE LeftArm
         g_MoveTo grip_pos_left;
         grip_cmd_left := "";
         move_ok_left := TRUE;
+      ELSEIF path_len_left > 0 THEN
+        RunPath;
+        path_len_left := 0;
       ELSE
         pTarget := CRobT(\Tool:=tool0 \WObj:=wobj0);
         TPWrite "Now: " \Pos:=pTarget.trans;
@@ -55,6 +60,66 @@ MODULE LeftArm
 
       move_request_left := FALSE;
     ENDWHILE
+  ENDPROC
+
+  ! Path job. Checks every point first, so the arm never stops half way
+  ! because of an unreachable point, then runs them all in one go: blended
+  ! (zone) through the middle points, fine at the last one. Straight-line
+  ! points use MoveL, the others the joint angles the check found.
+  PROC RunPath()
+    VAR robtarget p;
+    VAR jointtarget jPath{8};
+    VAR speeddata sp;
+    VAR zonedata zn;
+    VAR num n;
+    VAR num r;
+
+    move_ok_left := FALSE;
+    n := path_len_left;
+    IF n < 1 OR n > Dim(path_pos_left, 1) THEN
+      TPWrite "Path rejected: bad length";
+      RETURN;
+    ENDIF
+
+    p := CRobT(\Tool:=tool0 \WObj:=wobj0);   ! keeps the current arm angle and configuration
+    FOR i FROM 1 TO n DO
+      p.trans := path_pos_left{i};
+      p.rot := path_rot_left{i};
+      IF NOT Reachable(p) THEN
+        TPWrite "Path rejected: unreachable point " \Num:=i;
+        RETURN;
+      ENDIF
+      jPath{i} := jTarget;
+      ! The next point starts from this point's configuration, as separate
+      ! moves would (a cup turned over needs another wrist configuration).
+      p := CalcRobT(jPath{i}, tool0 \WObj:=wobj0);
+    ENDFOR
+
+    IF path_acc_left > 0 THEN
+      PathAccLim TRUE \AccMax:=path_acc_left, TRUE \DecelMax:=path_acc_left;
+    ENDIF
+
+    ! No waits or TPWrite in this loop, so the program runs ahead of the
+    ! motion and the controller can blend each corner.
+    FOR i FROM 1 TO n DO
+      sp := move_speed_left;
+      sp.v_tcp := path_speed_left{i};
+      r := path_zone_left{i};
+      IF i = n OR r <= 0 THEN
+        zn := fine;
+      ELSE
+        zn := [FALSE, r, 1.5 * r, 1.5 * r, 0.15 * r, 1.5 * r, 0.15 * r];   ! same shape as z10, z20 ...
+      ENDIF
+      IF path_lin_left{i} THEN
+        p := CalcRobT(jPath{i}, tool0 \WObj:=wobj0);   ! the checked point, with its configuration
+        MoveL p, sp, zn, tool0 \WObj:=wobj0;
+      ELSE
+        MoveAbsJ jPath{i} \NoEOffs, sp, zn, tool0;
+      ENDIF
+    ENDFOR
+
+    PathAccLim FALSE, FALSE;
+    move_ok_left := TRUE;
   ENDPROC
 
   ! GoHomeLeft can stop early if blocked, so check where the arm ended up.

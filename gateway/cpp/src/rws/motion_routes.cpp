@@ -162,6 +162,64 @@ void add_motion_routes(
     );
 
     // ------------------------------------------------------------
+    // POST /robot/rws/path
+    // ------------------------------------------------------------
+
+    router.post(
+        prefix + "/path",
+        [&app](Request& request) {
+            app.auth.require_control(request, "robot.control");
+
+            http::Fields body(http::object_body(request), "body");
+
+            const ArmFields job = arm_fields(body);
+            const rws::MotionSpeed speed = motion_speed(body, app.motion.default_speed());
+
+            const auto items = body.list("points", true, 1, rws::RwsMotion::MAX_PATH_POINTS);
+
+            std::vector<rws::PathPoint> points;
+
+            for (std::size_t i = 0; items && i < items->size(); ++i) {
+                http::Fields fields = body.item("points", i, "RwsPathPoint");
+
+                rws::PathPoint point;
+
+                const auto x = fields.number("x", true);
+                const auto y = fields.number("y", true);
+                const auto z = fields.number("z", true);
+
+                const auto rx = fields.number("rx", true);
+                const auto ry = fields.number("ry", true);
+                const auto rz = fields.number("rz", true);
+
+                point.linear = fields.boolean("linear", false);
+                point.speed = fields.number("speed", false, {1.0, std::nullopt, 1500.0});
+                point.zone = fields.number("zone", false, {0.0, std::nullopt, 100.0});
+
+                if (fields.ok()) {
+                    point.position = {*x, *y, *z};
+                    point.rotation = {*rx, *ry, *rz};
+
+                    points.push_back(point);
+                }
+
+                body.merge(fields);
+            }
+
+            const auto zone = body.number("zone", false, {0.0, std::nullopt, 100.0});
+            const auto max_acceleration = body.number("max_acceleration", false, {0.1, std::nullopt, 20.0});
+
+            body.check();
+
+            const auto result = rws::call([&]() {
+                return app.motion.path(job.arm, points, zone.value_or(10.0), max_acceleration, job.wait, speed);
+            });
+
+            return job_response(app, result);
+        }
+    );
+
+    // ------------------------------------------------------------
     // POST /robot/rws/home (body optional)
     // ------------------------------------------------------------
 

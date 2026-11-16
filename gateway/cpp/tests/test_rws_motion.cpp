@@ -48,6 +48,9 @@ public:
                      {"move_ramp", "100"},
                      {"grip_pos", "25"},
                      {"grip_force", "20"},
+                     {"path_len", "0"},
+                     {"path_pos", "[[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0],[0,0,0]]"},
+                     {"path_acc", "0"},
                  }) {
                 symbols_[name + "_" + arm] = value;
             }
@@ -184,7 +187,29 @@ private:
         const std::lock_guard lock(mutex_);
 
         const std::string target = symbols_["target_pos_" + arm];
-        const double x = std::stod(target.substr(1, target.find(',') - 1));
+        double x = std::stod(target.substr(1, target.find(',') - 1));
+
+        //
+        // A path job: every point must be in reach, as RAPID's
+        // RunPath checks them all first.
+        //
+        const auto length = symbols_.find("path_len_" + arm);
+
+        if (length != symbols_.end() && std::stoi(length->second) > 0 && symbols_["go_home_" + arm] != "TRUE"
+            && symbols_["grip_cmd_" + arm] == "\"\"") {
+            const std::string points = symbols_["path_pos_" + arm];
+
+            x = 0.0;
+
+            std::size_t at = 0;
+
+            for (int i = 0; i < std::stoi(length->second); ++i) {
+                at = points.find("[", at + 1);
+                x = std::max(x, std::stod(points.substr(at + 1)));
+            }
+
+            length->second = "0";
+        }
 
         const bool ok =
             symbols_["go_home_" + arm] == "TRUE"
@@ -711,6 +736,166 @@ TEST(RwsMotion, RapidStoppingDuringAMoveIsAConflict) {
     }
 
     stopper.join();
+}
+
+// ================================================================
+// Path jobs
+// ================================================================
+
+std::vector<PathPoint> path_points(
+    std::initializer_list<Vector3> positions
+) {
+    std::vector<PathPoint> points;
+
+    for (const Vector3& position : positions) {
+        points.push_back(PathPoint{position, {180.0, 0.0, 180.0}});
+    }
+
+    return points;
+}
+
+std::string padded(
+    const std::string& item,
+    int count
+) {
+    std::string text;
+
+    for (int i = 0; i < count; ++i) {
+        text += "," + item;
+    }
+
+    return text;
+}
+
+TEST(RwsMotionPath, WritesPaddedArraysAndLengthLast) {
+    FakeArmTasks controller;
+
+    const std::vector<PathPoint> points = {
+        PathPoint{{400.0, 100.0, 450.0}, {180.0, 0.0, 180.0}, false, 250.0, std::nullopt},
+        PathPoint{{500.0, 100.0, 409.0}, {180.0, 0.0, 180.0}, false, std::nullopt, 20.0},
+        PathPoint{{500.0, 100.0, 234.0}, {180.0, 0.0, 180.0}, true, 40.0, std::nullopt},
+    };
+
+    const CommandResult result =
+        motion(controller).path(Arm::left, points, 5.0, 2.0, true, MotionSpeed{150.0, 60.0, 40.0});
+
+    EXPECT_TRUE(result.accepted);
+    EXPECT_EQ(result.message, "DONE");
+
+    auto written = controller.last_writes();
+
+    EXPECT_EQ(
+        written["path_pos_left"].second,
+        "[[400.000000,100.000000,450.000000],[500.000000,100.000000,409.000000],"
+        "[500.000000,100.000000,234.000000]" + padded("[0,0,0]", 5) + "]"
+    );
+    EXPECT_EQ(written["path_lin_left"].second, "[FALSE,FALSE,TRUE" + padded("FALSE", 5) + "]");
+
+    //
+    // Per point speed and zone, else the path's.
+    //
+    EXPECT_EQ(written["path_speed_left"].second, "[250.000000,150.000000,40.000000" + padded("150.000000", 5) + "]");
+    EXPECT_EQ(written["path_zone_left"].second, "[5.000000,20.000000,5.000000" + padded("5.000000", 5) + "]");
+    EXPECT_EQ(written["path_acc_left"].second, "2.000000");
+    EXPECT_EQ(written["move_speed_left"].second, "[150.000000,500.000000,5000.000000,1000.000000]");
+    EXPECT_EQ(written["move_acc_left"].second, "60.000000");
+    EXPECT_EQ(written["move_ramp_left"].second, "40.000000");
+    EXPECT_EQ(written["path_rot_left"].first, "T_ROB_L");
+
+    const std::string rotations = written["path_rot_left"].second;
+
+    EXPECT_EQ(std::count(rotations.begin(), rotations.end(), '['), 9);
+
+    //
+    // path_len is what makes it a path job, so it goes last, then
+    // move_request.
+    //
+    const auto writes = controller.written();
+
+    ASSERT_GE(writes.size(), 2u);
+    EXPECT_EQ(writes[writes.size() - 2], (Write{"T_ROB_L", "path_len_left", "3"}));
+    EXPECT_EQ(writes.back(), (Write{"T_ROB_L", "move_request_left", "TRUE"}));
+
+    for (const auto& [task, name, value] : writes) {
+        EXPECT_EQ(name.find("_right"), std::string::npos) << name;
+    }
+}
+
+TEST(RwsMotionPath, WithoutALimitWritesZero) {
+    FakeArmTasks controller;
+
+    EXPECT_EQ(motion(controller).path(Arm::right, path_points({{420.0, -150.0, 300.0}})).message, "DONE");
+
+    EXPECT_EQ(controller.symbol("path_acc_right"), "0.000000");
+    EXPECT_EQ(controller.symbol("path_len_right"), "0");
+}
+
+TEST(RwsMotionPath, RefusesAnyPointOutsideTheSafeZone) {
+    FakeArmTasks controller;
+
+    const CommandResult result =
+        motion(controller).path(Arm::left, path_points({{400.0, 100.0, 300.0}, {400.0, 100.0, 900.0}}));
+
+    EXPECT_FALSE(result.accepted);
+    EXPECT_EQ(result.message, "ERR outside safe zone");
+    EXPECT_TRUE(controller.written().empty());
+}
+
+TEST(RwsMotionPath, ReportsAnUnreachablePoint) {
+    FakeArmTasks controller;
+
+    const CommandResult result =
+        motion(controller).path(Arm::left, path_points({{400.0, 100.0, 300.0}, {900.0, 0.0, 300.0}}));
+
+    EXPECT_FALSE(result.accepted);
+    EXPECT_EQ(result.message, "ERR move failed");
+}
+
+TEST(RwsMotionPath, NeedsThePathVariables) {
+    FakeArmTasks controller;
+
+    controller.remove_symbol("path_len_left");
+
+    try {
+        motion(controller).path(Arm::left, path_points({{400.0, 100.0, 300.0}}));
+        FAIL() << "expected MotionConflict";
+    } catch (const MotionConflict& error) {
+        EXPECT_NE(std::string(error.what()).find("no path variables"), std::string::npos);
+    }
+
+    EXPECT_TRUE(controller.written().empty());
+
+    //
+    // Single moves still work on such a program; they only clear
+    // path_len where it exists.
+    //
+    EXPECT_EQ(motion(controller).move(Arm::left, {400.0, 150.0, 320.0}, std::nullopt).message, "DONE");
+
+    EXPECT_FALSE(any_write_starting_with(controller.written(), "path_len"));
+}
+
+TEST(RwsMotionPath, MoveClearsAStalePathJob) {
+    FakeArmTasks controller;
+
+    controller.set_symbol("path_len_left", "3");
+
+    EXPECT_EQ(motion(controller).move(Arm::left, {400.0, 150.0, 320.0}, std::nullopt).message, "DONE");
+
+    const auto writes = controller.written();
+
+    EXPECT_NE(std::find(writes.begin(), writes.end(), Write{"T_ROB_L", "path_len_left", "0"}), writes.end());
+}
+
+TEST(RwsMotionPath, LengthIsChecked) {
+    FakeArmTasks controller;
+    RwsMotion arms = motion(controller);
+
+    EXPECT_THROW(arms.path(Arm::left, {}), std::invalid_argument);
+
+    const std::vector<PathPoint> nine(9, PathPoint{{400.0, 100.0, 300.0}, {180.0, 0.0, 180.0}});
+
+    EXPECT_THROW(arms.path(Arm::left, nine), std::invalid_argument);
+    EXPECT_TRUE(controller.written().empty());
 }
 
 // ================================================================

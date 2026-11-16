@@ -12,7 +12,82 @@ Fields::Fields(
     std::string location
 )
     : values_(std::move(values)),
-      location_(std::move(location)) {}
+      location_(Json::array({std::move(location)})) {}
+
+std::optional<Json> Fields::list(
+    const std::string& name,
+    bool required,
+    std::size_t min_length,
+    std::size_t max_length
+) {
+    const Json* value = find(name);
+
+    if (value == nullptr || (value->is_null() && !required)) {
+        if (required) {
+            missing(name);
+        }
+
+        return std::nullopt;
+    }
+
+    if (!value->is_array()) {
+        error(name, "list_type", "Input should be a valid list", *value);
+        return std::nullopt;
+    }
+
+    const std::size_t size = value->size();
+
+    if (size < min_length) {
+        error(
+            name,
+            "too_short",
+            format("List should have at least %zu item%s after validation, not %zu", min_length, min_length == 1 ? "" : "s", size),
+            *value
+        );
+
+        return std::nullopt;
+    }
+
+    if (size > max_length) {
+        error(
+            name,
+            "too_long",
+            format("List should have at most %zu item%s after validation, not %zu", max_length, max_length == 1 ? "" : "s", size),
+            *value
+        );
+
+        return std::nullopt;
+    }
+
+    return *value;
+}
+
+Fields Fields::item(
+    const std::string& name,
+    std::size_t index,
+    const std::string& model
+) const {
+    const Json* list = find(name);
+    const Json value = list != nullptr && list->is_array() && index < list->size() ? (*list)[index] : Json();
+
+    Fields fields(value, "");
+
+    fields.location_ = location_;
+    fields.location_.push_back(name);
+    fields.location_.push_back(index);
+
+    if (!value.is_object()) {
+        fields.error("", "model_type", "Input should be a valid dictionary or instance of " + model, value);
+    }
+
+    return fields;
+}
+
+void Fields::merge(
+    const Fields& other
+) {
+    errors_.insert(errors_.end(), other.errors_.begin(), other.errors_.end());
+}
 
 void Fields::error(
     const std::string& name,
@@ -20,7 +95,7 @@ void Fields::error(
     const std::string& message,
     const Json& input
 ) {
-    Json location = Json::array({location_});
+    Json location = location_;
 
     if (!name.empty()) {
         location.push_back(name);
@@ -51,6 +126,14 @@ const Json* Fields::find(
 void Fields::missing(
     const std::string& name
 ) {
+    //
+    // An item that is no object is one model_type error (item()),
+    // not one per field, as in Pydantic.
+    //
+    if (!values_.is_object()) {
+        return;
+    }
+
     error(name, "missing", "Field required", values_);
 }
 
