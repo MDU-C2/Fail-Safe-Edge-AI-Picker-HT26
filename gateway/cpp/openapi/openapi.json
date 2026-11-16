@@ -1,0 +1,2567 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Robot & Camera Gateway",
+    "version": "0.4.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Gateway, camera and robot controller health",
+        "description": "No authentication. status is ok when the camera delivers current frames and the robot controller answers over Robot Web Services, otherwise degraded; the details say which part is down and why. Always 200 while the gateway runs.",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control": {
+      "get": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Get the current control owner",
+        "operationId": "get_control_api_v1_control_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlLeaseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/acquire": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Acquire robot control",
+        "operationId": "acquire_control_api_v1_control_acquire_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/renew": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Renew robot control",
+        "operationId": "renew_control_api_v1_control_renew_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/control/release": {
+      "post": {
+        "tags": [
+          "control"
+        ],
+        "summary": "Release robot control",
+        "operationId": "release_control_api_v1_control_release_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlActionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/status": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get robot status",
+        "operationId": "get_robot_status_api_v1_robot_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RobotStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/camera/status": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get camera status",
+        "operationId": "get_camera_status_api_v1_camera_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/camera/intrinsics": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get the RGB camera intrinsics",
+        "operationId": "get_camera_intrinsics_api_v1_camera_intrinsics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraIntrinsics"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/camera/rgb": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get the latest RGB frame",
+        "operationId": "get_rgb_frame_api_v1_camera_rgb_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/camera/depth": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get the latest depth frame",
+        "operationId": "get_depth_frame_api_v1_camera_depth_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/calibration": {
+      "get": {
+        "tags": [
+          "calibration"
+        ],
+        "summary": "Get the current calibration",
+        "operationId": "get_calibration_api_v1_calibration_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalibrationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "calibration"
+        ],
+        "summary": "Upload a new calibration",
+        "operationId": "post_calibration_api_v1_calibration_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Calibration"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalibrationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/arms": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get the end-effector pose of both arms",
+        "operationId": "get_arm_poses_api_v1_robot_arms_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/ArmPose"
+                  },
+                  "title": "Response Get Arm Poses Api V1 Robot Arms Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/arms/{arm}/pose": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get the end-effector pose of one arm",
+        "description": "Without parameters the arm's active tool and work object are used. coordinate is the frame the pose is given in.",
+        "operationId": "get_arm_pose_api_v1_robot_arms__arm__pose_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "arm",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string",
+              "title": "Arm"
+            }
+          },
+          {
+            "name": "tool",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tool"
+            }
+          },
+          {
+            "name": "wobj",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Wobj"
+            }
+          },
+          {
+            "name": "coordinate",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "Base",
+                    "Wobj",
+                    "Tool"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Coordinate"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArmPose"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/arms/{arm}/joints": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get the joint angles of one arm",
+        "operationId": "get_arm_joints_api_v1_robot_arms__arm__joints_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "arm",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string",
+              "title": "Arm"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArmJoints"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/arms/{arm}/gripper": {
+      "get": {
+        "tags": [
+          "robot"
+        ],
+        "summary": "Get the finger position of one arm's gripper",
+        "description": "position in mm on the SmartGripper's scale (0 closed .. 25 fully open, as POST /robot/rws/gripper move uses it), read from the gripper's own position signal; after a grip it is where the fingers stopped on the object. 404 on a controller without the SmartGripper (RobotStudio).",
+        "operationId": "get_gripper_api_v1_robot_arms__arm__gripper_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "arm",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string",
+              "title": "Arm"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GripperState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rapid": {
+      "get": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Get RAPID execution state and loaded program modules",
+        "operationId": "get_rapid_status_api_v1_robot_rapid_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rapid/tasks/{task}/modules/{module}": {
+      "put": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Upload and load a RAPID module into a task",
+        "description": "Replaces a loaded module with the same name. RAPID must be stopped. The source must declare MODULE <module>.",
+        "operationId": "put_rapid_module_api_v1_robot_rapid_tasks__task__modules__module__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Task"
+            }
+          },
+          {
+            "name": "module",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Module"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RapidModuleUpload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Unload a RAPID module from a task",
+        "description": "RAPID must be stopped.",
+        "operationId": "delete_rapid_module_api_v1_robot_rapid_tasks__task__modules__module__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Task"
+            }
+          },
+          {
+            "name": "module",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Module"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rapid/start": {
+      "post": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Start RAPID execution in all tasks",
+        "description": "Starts from the current program pointer, or from main with reset_program_pointer. Needs motors on in auto mode.",
+        "operationId": "start_rapid_api_v1_robot_rapid_start_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RapidStartRequest",
+                "default": {
+                  "reset_program_pointer": false
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rapid/stop": {
+      "post": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Stop RAPID execution in all tasks",
+        "operationId": "stop_rapid_api_v1_robot_rapid_stop_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rws/move": {
+      "post": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "Move an arm over Robot Web Services",
+        "description": "Writes the target into the arm's RAPID task (rapid/) and waits for the move to finish. arm is left (default) or right; tool0 in wobj0, mm and degrees; without rx/ry/rz the orientation is kept. A target outside the gateway's safe zone (ERR outside safe zone, nothing is sent) or out of reach (ERR move failed) gives accepted=false. 409 if RAPID is not running or the arm is busy, 504 on timeout. With wait=false it answers STARTED once the job is written; poll GET /robot/rws/status. speed is the TCP speed in mm/s (default 50, RAPID v50), acceleration and ramp are RAPID AccSet's in % (default 100); they also apply to later legacy /robot/command moves of that arm.",
+        "operationId": "move_api_v1_robot_rws_move_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RwsMoveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rws/home": {
+      "post": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "Move an arm to its home position over Robot Web Services",
+        "description": "Body optional; arm is left (default) or right. ERR move failed if the arm stopped before reaching home (blocked). speed, acceleration and ramp as for /move.",
+        "operationId": "home_api_v1_robot_rws_home_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RwsMotionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Request"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rws/gripper": {
+      "post": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "Close, open or set the opening of an arm's gripper over Robot Web Services",
+        "description": "action grip closes until the fingers hold something, with optional force in N (0 < force <= 20, default 20, the SmartGripper's maximum); open opens fully; move goes to position, the opening between the fingers in mm (0 closed to 25 fully open), from either side and without holding force. position only with move, force only with grip (422 otherwise). 409 if the RAPID program predates move or force (upload rapid/ again). wait as for /move. The last force also applies to later legacy GRIP commands of that arm.",
+        "operationId": "gripper_api_v1_robot_rws_gripper_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RwsGripperRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rws/status": {
+      "get": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "State of an arm's last job",
+        "description": "Same answers as the team's CommServer STATUS: BUSY while the arm works on a job (also one started by another client), then DONE or ERR move failed (accepted=false). For jobs started with wait=false.",
+        "operationId": "job_status_api_v1_robot_rws_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "arm",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "left",
+                "right"
+              ],
+              "type": "string",
+              "default": "left",
+              "title": "Arm"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ArmJoints": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "title": "Arm"
+          },
+          "mech_unit": {
+            "type": "string",
+            "title": "Mech Unit"
+          },
+          "joints": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Joints"
+          },
+          "arm_angle": {
+            "type": "number",
+            "title": "Arm Angle"
+          }
+        },
+        "type": "object",
+        "required": [
+          "arm",
+          "mech_unit",
+          "joints",
+          "arm_angle"
+        ],
+        "title": "ArmJoints"
+      },
+      "ArmPose": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "title": "Arm"
+          },
+          "mech_unit": {
+            "type": "string",
+            "title": "Mech Unit"
+          },
+          "tool": {
+            "type": "string",
+            "title": "Tool"
+          },
+          "wobj": {
+            "type": "string",
+            "title": "Wobj"
+          },
+          "coordinate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Coordinate"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "z": {
+            "type": "number",
+            "title": "Z"
+          },
+          "q1": {
+            "type": "number",
+            "title": "Q1"
+          },
+          "q2": {
+            "type": "number",
+            "title": "Q2"
+          },
+          "q3": {
+            "type": "number",
+            "title": "Q3"
+          },
+          "q4": {
+            "type": "number",
+            "title": "Q4"
+          },
+          "cf1": {
+            "type": "integer",
+            "title": "Cf1"
+          },
+          "cf4": {
+            "type": "integer",
+            "title": "Cf4"
+          },
+          "cf6": {
+            "type": "integer",
+            "title": "Cf6"
+          },
+          "cfx": {
+            "type": "integer",
+            "title": "Cfx"
+          },
+          "arm_angle": {
+            "type": "number",
+            "title": "Arm Angle"
+          }
+        },
+        "type": "object",
+        "required": [
+          "arm",
+          "mech_unit",
+          "tool",
+          "wobj",
+          "x",
+          "y",
+          "z",
+          "q1",
+          "q2",
+          "q3",
+          "q4",
+          "cf1",
+          "cf4",
+          "cf6",
+          "cfx",
+          "arm_angle"
+        ],
+        "title": "ArmPose",
+        "description": "End-effector pose of one arm, as a RAPID robtarget."
+      },
+      "CalibrationResponse": {
+        "properties": {
+          "calibration": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Calibration"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "type": "string",
+            "title": "Updated By"
+          }
+        },
+        "type": "object",
+        "required": [
+          "calibration",
+          "updated_at",
+          "updated_by"
+        ],
+        "title": "CalibrationResponse"
+      },
+      "CameraHealth": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "frame_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Age Seconds"
+          },
+          "max_frame_age_seconds": {
+            "type": "number",
+            "title": "Max Frame Age Seconds"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "provider",
+          "connected",
+          "max_frame_age_seconds"
+        ],
+        "title": "CameraHealth"
+      },
+      "CameraIntrinsics": {
+        "properties": {
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "fx": {
+            "type": "number",
+            "title": "Fx"
+          },
+          "fy": {
+            "type": "number",
+            "title": "Fy"
+          },
+          "cx": {
+            "type": "number",
+            "title": "Cx"
+          },
+          "cy": {
+            "type": "number",
+            "title": "Cy"
+          },
+          "matrix": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Matrix"
+          }
+        },
+        "type": "object",
+        "required": [
+          "width",
+          "height",
+          "fx",
+          "fy",
+          "cx",
+          "cy",
+          "matrix"
+        ],
+        "title": "CameraIntrinsics"
+      },
+      "CameraStatus": {
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "rgb_available": {
+            "type": "boolean",
+            "title": "Rgb Available"
+          },
+          "depth_available": {
+            "type": "boolean",
+            "title": "Depth Available"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          },
+          "rgb_width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rgb Width"
+          },
+          "rgb_height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rgb Height"
+          },
+          "rgb_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rgb Format"
+          },
+          "depth_width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Width"
+          },
+          "depth_height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Height"
+          },
+          "depth_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Format"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "connected",
+          "rgb_available",
+          "depth_available"
+        ],
+        "title": "CameraStatus"
+      },
+      "CommandResponse": {
+        "properties": {
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "accepted",
+          "message"
+        ],
+        "title": "CommandResponse"
+      },
+      "ControlActionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "lease": {
+            "$ref": "#/components/schemas/ControlLeaseResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "message",
+          "lease"
+        ],
+        "title": "ControlActionResponse"
+      },
+      "ControlLeaseResponse": {
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "acquired_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acquired At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active"
+        ],
+        "title": "ControlLeaseResponse"
+      },
+      "GripperState": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "title": "Arm"
+          },
+          "position": {
+            "type": "number",
+            "title": "Position"
+          }
+        },
+        "type": "object",
+        "required": [
+          "arm",
+          "position"
+        ],
+        "title": "GripperState",
+        "description": "Finger position of one arm's SmartGripper."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "uptime_seconds": {
+            "type": "number",
+            "title": "Uptime Seconds"
+          },
+          "security_mode": {
+            "type": "string",
+            "title": "Security Mode"
+          },
+          "robot_provider": {
+            "type": "string",
+            "title": "Robot Provider"
+          },
+          "control_lease_active": {
+            "type": "boolean",
+            "title": "Control Lease Active"
+          },
+          "camera": {
+            "$ref": "#/components/schemas/CameraHealth"
+          },
+          "robot_controller": {
+            "$ref": "#/components/schemas/RobotControllerHealth"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "uptime_seconds",
+          "security_mode",
+          "robot_provider",
+          "control_lease_active",
+          "camera",
+          "robot_controller"
+        ],
+        "title": "HealthResponse"
+      },
+      "RapidModuleUpload": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "maxLength": 1000000,
+            "minLength": 1,
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "RapidModuleUpload"
+      },
+      "RapidStartRequest": {
+        "properties": {
+          "reset_program_pointer": {
+            "type": "boolean",
+            "title": "Reset Program Pointer",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "RapidStartRequest"
+      },
+      "RapidStatus": {
+        "properties": {
+          "execution_state": {
+            "type": "string",
+            "title": "Execution State"
+          },
+          "controller_state": {
+            "type": "string",
+            "title": "Controller State"
+          },
+          "operation_mode": {
+            "type": "string",
+            "title": "Operation Mode"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/RapidTask"
+            },
+            "type": "array",
+            "title": "Tasks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "execution_state",
+          "controller_state",
+          "operation_mode",
+          "tasks"
+        ],
+        "title": "RapidStatus"
+      },
+      "RapidTask": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "execution_state": {
+            "type": "string",
+            "title": "Execution State"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Modules"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "state",
+          "execution_state",
+          "active",
+          "modules"
+        ],
+        "title": "RapidTask"
+      },
+      "RobotControllerHealth": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "reachable": {
+            "type": "boolean",
+            "title": "Reachable"
+          },
+          "controller_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Controller State"
+          },
+          "operation_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Mode"
+          },
+          "rapid_execution_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rapid Execution State"
+          },
+          "move_in_progress": {
+            "type": "boolean",
+            "title": "Move In Progress"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "reachable",
+          "move_in_progress"
+        ],
+        "title": "RobotControllerHealth"
+      },
+      "RobotStatus": {
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "connected",
+          "state"
+        ],
+        "title": "RobotStatus"
+      },
+      "RwsGripperRequest": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "Arm",
+            "default": "left"
+          },
+          "wait": {
+            "type": "boolean",
+            "title": "Wait",
+            "default": true
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "grip",
+              "open",
+              "move"
+            ],
+            "title": "Action"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 25.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 20.0,
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "RwsGripperRequest",
+        "description": "One gripper job.\n\ngrip closes until the fingers hold something (or are closed),\nwith force N (default 20, the SmartGripper's maximum); open\nopens fully; move goes to position, the opening between the\nfingers in mm (0 closed .. 25 fully open), in either direction\nand without holding force (SmartGripper g_MoveTo)."
+      },
+      "RwsMotionRequest": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "Arm",
+            "default": "left"
+          },
+          "wait": {
+            "type": "boolean",
+            "title": "Wait",
+            "default": true
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1500.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed"
+          },
+          "acceleration": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 20.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceleration"
+          },
+          "ramp": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ramp"
+          }
+        },
+        "type": "object",
+        "title": "RwsMotionRequest",
+        "description": "A job that moves the arm (move or home).\n\nLeft out, each value is the gateway's default\n(GATEWAY_RWS_DEFAULT_SPEED / _ACCELERATION / _RAMP)."
+      },
+      "RwsMoveRequest": {
+        "properties": {
+          "arm": {
+            "type": "string",
+            "enum": [
+              "left",
+              "right"
+            ],
+            "title": "Arm",
+            "default": "left"
+          },
+          "wait": {
+            "type": "boolean",
+            "title": "Wait",
+            "default": true
+          },
+          "speed": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1500.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speed"
+          },
+          "acceleration": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 20.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acceleration"
+          },
+          "ramp": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 10.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ramp"
+          },
+          "x": {
+            "type": "number",
+            "title": "X"
+          },
+          "y": {
+            "type": "number",
+            "title": "Y"
+          },
+          "z": {
+            "type": "number",
+            "title": "Z"
+          },
+          "rx": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rx"
+          },
+          "ry": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ry"
+          },
+          "rz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rz"
+          }
+        },
+        "type": "object",
+        "required": [
+          "x",
+          "y",
+          "z"
+        ],
+        "title": "RwsMoveRequest",
+        "description": "Target of one arm's tool0 in wobj0 (default the left arm).\n\nPosition in mm. The rotation, in degrees, is optional and\nmeans the same as RAPID's OrientZYX(rz, ry, rx); without it\nthe arm keeps its current orientation."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

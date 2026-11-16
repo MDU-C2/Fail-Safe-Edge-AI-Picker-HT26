@@ -1,5 +1,12 @@
 # Gateway starter
 
+> **Legacy.** This is the Python (FastAPI) gateway. Since 2026-11-11 the
+> main implementation is the C++ gateway in [`gateway/cpp/`](cpp/README.md),
+> which runs on the Westermo Lynx. New features and fixes go there; this
+> code is no longer updated and is kept as the reference the port was
+> made from. Its test suite (`gateway/tests/`) also tests the C++ gateway
+> (`--impl cpp`).
+
 ## Install
 
 ```bash

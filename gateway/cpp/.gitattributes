@@ -1,0 +1,3 @@
+# The C++ gateway is built and run on Linux only (WSL, Docker): keep LF
+# line endings on Windows checkouts too, or dev.sh breaks in WSL.
+* text=auto eol=lf

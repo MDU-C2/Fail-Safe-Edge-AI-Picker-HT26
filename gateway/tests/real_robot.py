@@ -87,7 +87,7 @@ def real_robot(
 
 
 @pytest.fixture()
-def operator(
+def admin(
     real_robot: RemoteGateway,
 ) -> Iterator[Client]:
     client = real_robot.client()

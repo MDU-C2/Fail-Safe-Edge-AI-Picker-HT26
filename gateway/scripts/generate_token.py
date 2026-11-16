@@ -5,8 +5,8 @@ The token is given to the client; only its SHA-256 hash goes into
 gateway/auth_clients.json. Restart the gateway after editing it.
 
 Usage (from the repository root):
-    python gateway/scripts/generate_token.py autonomy
-    python gateway/scripts/generate_token.py autonomy --priority 50 --permissions robot.read camera.read
+    python gateway/scripts/generate_token.py primary
+    python gateway/scripts/generate_token.py diagnostics --priority 10 --permissions robot.read camera.read
 """
 
 import argparse
@@ -25,7 +25,7 @@ def main() -> None:
     parser.add_argument(
         "--permissions",
         nargs="+",
-        default=["robot.read", "robot.control", "camera.read", "camera.control"],
+        default=["robot.read", "robot.control", "camera.read"],
         help="Permissions to grant",
     )
 
