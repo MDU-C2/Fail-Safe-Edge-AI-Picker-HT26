@@ -138,6 +138,23 @@ instead of queued; `status` shows progress and `stop` requests a software stop.
 Add `--dry-run` to preview only. Use the actual reachable gateway address if it
 has changed.
 
+If startup reports an unfinished sequence, **blank Enter cannot clear it**.
+Finish and close any other controller, inspect both arms and the cup, and recover
+the robot as needed. At the program's prompt, type `reset` and press Enter. Wait
+for `Recovery acknowledged. No command sent.` before pressing Enter again to
+start a fresh cycle. Reset itself sends no movement and does not release reserved
+placement cells.
+
+If the UI works but the terminal reports recovery, compare their startup commands
+and capture directories. The direct UI and terminal default to this checkout's
+`Data/Detections/robot_recovery.json`; `--output`, another checkout, or a managed
+device configuration can select a different record. A blocked terminal prints
+its record's path. An already-running terminal also keeps its recovery block
+even if another process clears that file; close controllers before switching
+between them. A dry-run reset only acknowledges recovery for that preview
+session and leaves the real recovery record intact. Do not delete records to
+bypass recovery.
+
 Launch the local-only UI separately:
 
 ```sh
@@ -844,7 +861,8 @@ expire a new lease; expired or inconsistent replies still block commands.
 
 `robot_recovery.json` records an active sequence before the first live command.
 An interruption requires checking/recovering both arms and the cup, then `reset`
-and `scan`. Restarting the program or scanning does not clear this lockout.
+and a fresh scan (`scan` in `--commands` mode, or Enter for a fresh cycle in the
+default terminal). Restarting the program or scanning does not clear this lockout.
 Use the same output directory across runs: the journal belongs to that directory.
 The flag is cleared only after a fully completed sequence or explicit `reset`.
 Dry-run does not acquire control or send any robot HTTP request; it still uses

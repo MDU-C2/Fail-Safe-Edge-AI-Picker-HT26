@@ -669,6 +669,14 @@ def handle_input(session, line, language=None):
     return True
 
 
+def terminal_prompt(session, command_mode=False):
+    if command_mode:
+        return "cups> "
+    if session.stop_requested or session.motion_uncertain:
+        return "Recovery required — inspect robot, then type reset + Enter (q to quit): "
+    return "Press Enter to process cups (q + Enter to quit): "
+
+
 def handle_process_input(session, line):
     """An explicit Enter authorizes one fresh, checked pick-all cycle."""
     command = " ".join(line.strip().lower().split())
@@ -686,7 +694,8 @@ def handle_process_input(session, line):
     if command:
         raise SelectionError("Press Enter to process cups, or q to quit. Use --commands for scan/goto commands.")
     if session.stop_requested or session.motion_uncertain:
-        raise SelectionError("Recovery is required. Inspect both arms and the cup, then use reset before pressing Enter.")
+        raise SelectionError("Recovery is required. Inspect both arms and the cup, then type reset and press Enter. "
+                             "Pressing Enter without typing reset does not acknowledge recovery.")
     inventory = session.scan()
     print_cups(inventory)
     # Keep the batch tied to this scan, its destinations and the settings used
@@ -828,14 +837,14 @@ def main(argv=None):
         log(LANGUAGE_HELP)
     if session.motion_uncertain:
         log("An earlier robot sequence is unfinished. Check both arms and the cup, then use reset. No automatic retry.")
+        log(f"Recovery record: {recovery.path}")
     terminal = TerminalController(session, language,
                                   (lambda line: handle_input(session, line, language)) if command_mode else
                                   (lambda line: handle_process_input(session, line)), output=log)
     interrupted = False
     try:
         while True:
-            prompt = "cups> " if command_mode else "Press Enter to process cups (q + Enter to quit): "
-            if not terminal.submit(input(prompt).strip()):
+            if not terminal.submit(input(terminal_prompt(session, command_mode)).strip()):
                 break
     except (KeyboardInterrupt, EOFError):
         interrupted = True

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import capture_and_detect as app
 from cup_commands import CupSession
 from cup_inventory import SelectionError
+from recovery_journal import RecoveryJournal
 from robot_client import RobotCommandError
 from terminal_controller import TerminalController
 from test_cup_selection import RobotDouble, TRANSFER_JOB_COUNT, detection, inventory
@@ -83,6 +84,67 @@ class EnterProcessTests(unittest.TestCase):
         self.session.latch_stop()
         with self.assertRaisesRegex(SelectionError, "Recovery"):
             app.handle_process_input(self.session, "")
+        self.assertEqual(self.captures, [])
+        self.assertEqual(self.robot.jobs, [])
+
+    def test_prompt_names_reset_while_recovery_or_stop_is_required(self):
+        ready_prompt = "Press Enter to process cups (q + Enter to quit): "
+        recovery_prompt = "Recovery required — inspect robot, then type reset + Enter (q to quit): "
+        self.assertEqual(app.terminal_prompt(self.session), ready_prompt)
+        self.session.motion_uncertain = True
+        self.assertEqual(app.terminal_prompt(self.session), recovery_prompt)
+        self.assertEqual(app.terminal_prompt(self.session, command_mode=True), "cups> ")
+        self.session.motion_uncertain = False
+        self.session.latch_stop()
+        self.assertEqual(app.terminal_prompt(self.session), recovery_prompt)
+        self.assertEqual(app.terminal_prompt(self.session, command_mode=True), "cups> ")
+        self.assertEqual(self.captures, [])
+        self.assertEqual(self.robot.jobs, [])
+
+    def recovery_session(self, *, dry_run=False):
+        journal = RecoveryJournal(self.grid.path.parent / "terminal-recovery.json")
+        journal.begin({"action": "unfinished_test_sequence"})
+        self.robot.dry_run = dry_run
+        session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: 100,
+                             recovery=journal, placing_grid=self.grid)
+        return session, journal
+
+    def test_live_reset_restores_ready_prompt_and_persists_across_restart(self):
+        session, journal = self.recovery_session()
+        self.assertIn("type reset", app.terminal_prompt(session))
+        with self.assertRaisesRegex(SelectionError, "Enter without typing reset"):
+            app.handle_process_input(session, "")
+        app.handle_process_input(session, "reset")
+        self.assertFalse(journal.required())
+        self.assertFalse(session.motion_uncertain)
+        self.assertEqual(app.terminal_prompt(session), "Press Enter to process cups (q + Enter to quit): ")
+        restarted = CupSession(self.capture, Mock(), self.robot, "cal-1", recovery=RecoveryJournal(journal.path))
+        self.assertFalse(restarted.motion_uncertain)
+        self.assertEqual(app.terminal_prompt(restarted), app.terminal_prompt(session))
+        self.assertEqual(self.captures, [])
+        self.assertEqual(self.robot.jobs, [])
+
+    def test_dry_run_reset_does_not_clear_live_recovery_record(self):
+        session, journal = self.recovery_session(dry_run=True)
+        original = journal.path.read_bytes()
+        app.handle_process_input(session, "reset")
+        self.assertFalse(session.motion_uncertain)
+        self.assertIn("Press Enter to process", app.terminal_prompt(session))
+        self.assertEqual(journal.path.read_bytes(), original)
+        restarted = CupSession(self.capture, Mock(), RobotDouble(), "cal-1", recovery=RecoveryJournal(journal.path))
+        self.assertTrue(restarted.motion_uncertain)
+        self.assertIn("type reset", app.terminal_prompt(restarted))
+        self.assertEqual(self.captures, [])
+        self.assertEqual(self.robot.jobs, [])
+
+    def test_external_journal_clear_does_not_unlock_running_terminal(self):
+        session, journal = self.recovery_session()
+        RecoveryJournal(journal.path).clear()
+        self.assertFalse(journal.required())
+        self.assertTrue(session.motion_uncertain)
+        self.assertIn("type reset", app.terminal_prompt(session))
+        with self.assertRaisesRegex(SelectionError, "type reset and press Enter"):
+            app.handle_process_input(session, "")
         self.assertEqual(self.captures, [])
         self.assertEqual(self.robot.jobs, [])
 
@@ -172,9 +234,13 @@ class EnterProcessTests(unittest.TestCase):
         self.assertTrue(any("nothing was queued" in message for message in messages))
 
     def test_main_defaults_to_enter_mode_and_explicit_flags_keep_command_shell(self):
-        for flags, command_mode in (([], False), (["--commands"], True), (["--llm"], True)):
-            with self.subTest(flags=flags), ExitStack() as stack:
-                for name in ("load_token", "CameraClient", "CaptureService", "RecoveryJournal",
+        for flags, command_mode, recovery_required in (([], False, False), (["--commands"], True, False),
+                (["--llm"], True, False), ([], False, True), (["--commands"], True, True)):
+            with self.subTest(flags=flags, recovery_required=recovery_required), ExitStack() as stack:
+                self.session.motion_uncertain = recovery_required
+                recovery_path = self.grid.path.parent / "robot_recovery.json"
+                stack.enter_context(patch.object(app, "RecoveryJournal", return_value=SimpleNamespace(path=recovery_path)))
+                for name in ("load_token", "CameraClient", "CaptureService",
                              "LanguageController", "OllamaIntentClient"):
                     stack.enter_context(patch.object(app, name))
                 stack.enter_context(patch.object(app, "Calibration", return_value=SimpleNamespace(
@@ -200,7 +266,10 @@ class EnterProcessTests(unittest.TestCase):
                 self.assertEqual(command.call_count, int(command_mode))
                 self.assertEqual(process.call_count, int(not command_mode))
                 self.assertEqual(read.call_args.args[0], "cups> " if command_mode else
-                                 "Press Enter to process cups (q + Enter to quit): ")
+                                 "Recovery required — inspect robot, then type reset + Enter (q to quit): "
+                                 if recovery_required else "Press Enter to process cups (q + Enter to quit): ")
+                if recovery_required:
+                    self.assertIn(f"Recovery record: {recovery_path}", self.output.getvalue())
         self.assertIn("without another confirmation", self.output.getvalue())
         self.assertEqual(self.captures, [])
         self.assertEqual(self.robot.jobs, [])
