@@ -1,4 +1,4 @@
-"""Offline regression checks for the default vision_detection4 choreography."""
+"""Offline regressions for repeated smooth transfers without automatic homing."""
 
 import copy
 import unittest
@@ -14,17 +14,20 @@ class NoHomePlanTests(unittest.TestCase):
         self.place = {"id": 2, "x": 420, "y": -200, "z": 230, "occupied": False}
 
     def without_home(self, jobs):
-        """Independent expected edit: remove only startup/home return actions."""
+        """Removing the opt-in home actions must recover the default plan."""
         expected = []
         for original in jobs:
             name = original["name"]
             if "home" in name or name.endswith("_close_return"):
                 continue
             job = copy.deepcopy(original)
-            if name == "left_close_travel" and "after" in job:
-                job["after"] = []
-            elif name == "right_beside":
-                job["after"] = ["right_close_travel", "lift_cup"]
+            if "after" in job:
+                job["after"] = [parent for parent in job["after"]
+                                if "home" not in parent and not parent.endswith("_close_return")]
+                if name == "right_via":
+                    # Its same-arm predecessor becomes the startup close when
+                    # the optional initial right-home job is removed.
+                    job["after"].insert(0, "right_close_travel")
             expected.append(job)
         return expected
 
@@ -40,15 +43,15 @@ class NoHomePlanTests(unittest.TestCase):
             completed.add(name)
             previous[arm] = name
 
-    def test_default_plan_ends_at_clearance_for_both_modes(self):
+    def test_default_plan_disables_homes_for_both_modes(self):
         self.assertEqual(handover_jobs(self.cup, place=self.place),
                          handover_jobs(self.cup, place=self.place, home_after_cup=False))
         self.assertEqual(left_only_jobs(self.cup),
                          left_only_jobs(self.cup, home_after_cup=False))
 
-    def test_complete_plan_removes_only_home_actions_for_consecutive_cups(self):
-        # Each cup gets a complete new plan, including LEFT_READY and the right
-        # lift barrier; the previous cup's clear pose does not skip a pick step.
+    def test_each_consecutive_cup_has_full_smooth_choreography_without_home_actions(self):
+        # Consecutive cups change position/yaw/height/settings; the planner must
+        # still route through LEFT_READY and synchronize receiving each time.
         cases = ((self.cup, self.place, {}),
                  (dict(self.cup, x=460, y=210, z=65, rz=240, aperture=None),
                   dict(self.place, id=3, x=450, y=-260),
@@ -62,29 +65,29 @@ class NoHomePlanTests(unittest.TestCase):
                 jobs = handover_jobs(cup, place=place, **settings)
                 self.assertEqual(jobs, self.without_home(baseline))
                 self.check_dependency_closure(jobs)
-                self.assertEqual(len(jobs), 21)
-                self.assertEqual([job["name"] for job in jobs[:3]],
-                                 ["right_close_travel", "left_close_travel", "left_ready"])
+                names = {job["name"] for job in jobs}
+                self.assertTrue({"left_ready", "approach_cup", "grip_cup", "right_via",
+                                 "left_handover", "right_beside", "right_take",
+                                 "left_release", "right_place"} <= names)
+                self.assertFalse(any("home" in name for name in names))
                 self.assertFalse(any(job["endpoint"].endswith("/home") for job in jobs))
 
-    def test_release_clearance_and_right_approach_barriers_remain(self):
+    def test_normal_cycle_finishes_left_open_at_handover_and_right_closed_above_place(self):
         jobs = handover_jobs(self.cup, place=self.place)
         by_name = {job["name"]: job for job in jobs}
         self.assertEqual(by_name["left_close_travel"]["after"], [])
         self.assertEqual(by_name["right_close_travel"]["after"], [])
-        self.assertEqual(by_name["right_beside"]["after"], ["right_close_travel", "lift_cup"])
-        for earlier, later in (("left_handover", "right_open"),
-                               ("right_grip", "left_release"),
-                               ("left_clear", "right_lower"),
-                               ("right_retreat", "right_place"),
-                               ("right_place", "right_release"),
-                               ("right_release", "right_clear")):
-            self.assertIn(earlier, by_name[later]["after"])
-        for arm in ("left", "right"):
-            arm_jobs = [job for job in jobs if job["body"]["arm"] == arm]
-            self.assertEqual(arm_jobs[-1]["name"], arm + "_clear")
-            grip = [job for job in arm_jobs if job["endpoint"].endswith("/gripper")][-1]
-            self.assertEqual(grip["body"]["action"], "open")
+        left = [job for job in jobs if job["body"]["arm"] == "left"]
+        right = [job for job in jobs if job["body"]["arm"] == "right"]
+        self.assertEqual(left[-1]["name"], "left_clear")
+        self.assertEqual(right[-1]["name"], "right_close")
+        for lane, xyz, action in ((left, (350, -100, 690), "open"),
+                                  (right, (420, -200, 310), "grip")):
+            last_path = [job for job in lane if job["endpoint"].endswith("/path")][-1]
+            point = last_path["body"]["points"][-1]
+            self.assertEqual(tuple(point[axis] for axis in "xyz"), xyz)
+            self.assertEqual([job for job in lane if job["endpoint"].endswith("/gripper")][-1]
+                             ["body"]["action"], action)
 
     def test_left_only_replaces_then_clears_without_closing_or_homing(self):
         for cup in (self.cup, dict(self.cup, x=470, y=220, rz=240, aperture=None)):
@@ -97,6 +100,7 @@ class NoHomePlanTests(unittest.TestCase):
                 self.assertEqual([job["name"] for job in jobs[-3:]],
                                  ["replace_cup", "left_release", "left_clear"])
                 self.assertEqual(jobs[-2]["body"]["action"], "open")
+                self.assertEqual(jobs[-1]["body"]["z"], 409)
 
     def test_non_boolean_policy_fails_before_returning_a_plan(self):
         for value in (None, 0, 1, "false", [], {}):

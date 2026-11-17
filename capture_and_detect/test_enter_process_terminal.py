@@ -70,7 +70,7 @@ class EnterProcessTests(unittest.TestCase):
                              placing_grid=self.grid, home_after_cup=False)
         app.handle_process_input(session, "")
         self.assertEqual(session.batch_progress["completed_cups"], [1, 2])
-        self.assertEqual(len(self.robot.jobs), 42)
+        self.assertEqual(len(self.robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in self.robot.jobs))
         self.assertIn("left arm above handover, right arm above the last placement", self.output.getvalue())
         self.assertNotIn("both home poses checked", self.output.getvalue())

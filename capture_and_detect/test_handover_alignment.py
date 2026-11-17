@@ -1,4 +1,4 @@
-"""Fixed V4 handover poses and compatibility with previously saved offsets."""
+"""Fixed smooth-handover poses and compatibility with previously saved offsets."""
 
 from unittest.mock import Mock
 
@@ -20,9 +20,15 @@ def plan(**settings):
 def test_legacy_offsets_cannot_change_poses_speeds_blends_or_dependencies(offset, speed):
     assert plan(handover_offset=offset, speed=speed) == plan(speed=speed)
     bodies = {job["name"]: job["body"] for job in plan(handover_offset=offset, speed=speed)}
-    assert tuple(bodies["right_take"][axis] for axis in "xyz") == (330, -115, 316)
+    below, take = bodies["right_take"]["points"]
+    assert tuple(below[axis] for axis in "xyz") == (330, -115, 281)
+    assert tuple(take[axis] for axis in "xyz") == (330, -115, 316)
     assert bodies["right_take"]["speed"] == speed
-    assert [point["zone"] for point in bodies["right_beside"]["points"]] == [10, 0]
+    assert below["speed"] == min(speed, 150)
+    assert take["speed"] == speed
+    assert below["linear"] is True and take["linear"] is True
+    assert [point["zone"] for point in bodies["right_take"]["points"]] == [3, 0]
+    assert [point["zone"] for point in bodies["right_beside"]["points"]] == [0]
 
 
 @pytest.mark.parametrize("value", (None, {}, "1,2,3", (), (1, 2), (1, 2, 3, 4),

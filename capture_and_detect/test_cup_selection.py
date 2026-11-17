@@ -119,9 +119,9 @@ class CupSelectionTests(unittest.TestCase):
         jobs = self.select(session, action="goto")
         bodies = {job["name"]: job["body"] for job in jobs}
         self.assertEqual(bodies["left_open"]["position"], 22.5)
-        for name in ("approach_cup", "descend_to_cup", "lift_cup"):
-            self.assertEqual(bodies[name]["rz"], 90)
-        self.assertEqual(bodies["left_handover"]["rz"], 180)
+        pick_points = bodies["approach_cup"]["points"] + bodies["left_handover"]["points"][:1]
+        self.assertEqual([point["rz"] for point in pick_points], [90, 90, 90])
+        self.assertEqual(bodies["left_handover"]["points"][-1]["rz"], 180)
         self.assertEqual(capture.call_count, 1)
         self.assertEqual(robot.jobs, jobs)
         geometry = original["cups"][0]["last_verification"]["grip_geometry"]
@@ -135,7 +135,7 @@ class CupSelectionTests(unittest.TestCase):
         session.scan()
         expected = copy.deepcopy(session.inventory["cups"][0])
         jobs = self.select(session, action="goto")
-        descent = next(job["body"] for job in jobs if job["name"] == "descend_to_cup")
+        descent = next(job["body"]["points"][-1] for job in jobs if job["name"] == "approach_cup")
         self.assertEqual(descent["rz"], expected["rz"])
         self.assertEqual(capture.call_count, 1)
         self.assertEqual(robot.jobs, jobs)
@@ -327,10 +327,11 @@ class CupSelectionTests(unittest.TestCase):
         handle_terminal(session, "scan")
         handle_terminal(session, "goto 2")
         jobs = {job["name"]: job for job in robot.jobs}
-        for name, height in (("approach_cup", 409), ("descend_to_cup", 229), ("lift_cup", 409)):
-            body = jobs[name]["body"]
-            self.assertEqual((body["x"], body["y"], body["z"]), (485, 100, height))
-        self.assertEqual(robot.jobs[-1]["name"], "right_clear")
+        pick_points = (jobs["approach_cup"]["body"]["points"] +
+                       jobs["left_handover"]["body"]["points"][:1])
+        self.assertEqual([(p["x"], p["y"], p["z"]) for p in pick_points],
+                         [(485, 100, 334), (485, 100, 229), (485, 100, 334)])
+        self.assertEqual(robot.jobs[-1]["name"], "right_close")
         self.assertIn("left_clear", jobs)
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in robot.jobs))
         self.assertEqual(capture.call_count, 1)
@@ -352,7 +353,7 @@ class CupSelectionTests(unittest.TestCase):
             session.scan()
             jobs = self.select(session, action="goto")
             self.assertEqual({job["endpoint"] for job in jobs},
-                             {"/robot/rws/move", "/robot/rws/path", "/robot/rws/gripper"})
+                             {"/robot/rws/path", "/robot/rws/gripper"})
             post.assert_not_called()
             get.assert_not_called()
         self.assertEqual(capture.call_count, 1)
@@ -407,7 +408,7 @@ class CupSelectionTests(unittest.TestCase):
         self.assertFalse(session.placing_grid.snapshot()["locations"][0].get("reserved", False))
 
     def test_elapsed_time_does_not_interrupt_any_transfer_phase(self):
-        for delayed_step in ("approach_cup", "descend_to_cup", "grip_cup"):
+        for delayed_step in ("approach_cup", "left_handover", "grip_cup"):
             with self.subTest(delayed_step=delayed_step):
                 now = [100]
                 robot = RobotDouble()
@@ -416,7 +417,7 @@ class CupSelectionTests(unittest.TestCase):
                 session.clock = lambda: now[0]
                 session.scan()
                 self.select(session, action="goto")
-                self.assertEqual(robot.jobs[-1]["name"], "right_clear")
+                self.assertEqual(robot.jobs[-1]["name"], "right_close")
                 self.assertFalse(session.motion_uncertain)
                 self.assertEqual(capture.call_count, 1)
 

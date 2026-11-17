@@ -1,8 +1,8 @@
 """Pure pick/handover/place plans using the project's tuned RWS poses.
 
-Each arm advances only after its previous job reports DONE. Handover jobs add
-explicit cross-arm dependencies for the original overlapping choreography.
-Source XY and motion heights follow V4; the gateway and controller check targets.
+Each arm advances only after its previous job reports DONE. Handover jobs adapt
+the smooth branch's normal choreography with explicit cross-arm dependencies.
+Source detection follows V4; the gateway and controller check motion targets.
 """
 
 from cup_inventory import (
@@ -39,6 +39,12 @@ FLIP_SPEED = 100
 FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
 HANDOVER_BLEND_MM = 10
+SMOOTH_TRAVEL_Z = 175
+SMOOTH_ACCELERATION = 60
+SMOOTH_RAMP = 40
+CARRY_MAX_ACC = 1.5
+RECEIVING_BLEND_MM = 3
+SLIDE_SPEED = 150
 DEFAULT_PHASE_SPEEDS = {"pick_lift": PICK_SPEED, "handover": None,
                         "flip": FLIP_SPEED, "placement": None}
 
@@ -119,7 +125,7 @@ def pick_tcp_z(cup, *, camera_z=False):
     return max(CAMERA_Z_FLOOR, round(cup["z"] + CAMERA_Z_OFFSET, 1))
 
 
-def _pick_geometry(cup, tag_offset, *, camera_z=False):
+def _pick_geometry(cup, tag_offset, *, camera_z=False, travel_z=TRAVEL_Z):
     if not isinstance(cup, dict):
         raise SelectionError("Cup selection must be an object")
     reason = pick_position_problem(cup, tag_offset)
@@ -133,7 +139,7 @@ def _pick_geometry(cup, tag_offset, *, camera_z=False):
         raise SelectionError("Cup aperture must be a finite width or unknown")
     ox, oy, _ = normalize_offset(tag_offset)
     x, y = cup["x"] + ox, cup["y"] + oy
-    return ((x, y, TRAVEL_Z + GRIPPER_TCP_Z),
+    return ((x, y, travel_z + GRIPPER_TCP_Z),
             (x, y, pick_tcp_z(cup, camera_z=camera_z) + GRIPPER_TCP_Z),
             (LEFT_DOWN[0], LEFT_DOWN[1], yaw), aperture)
 
@@ -168,20 +174,22 @@ class _Plan:
         self.job(name, arm, "home", speed=self.home_speed, acceleration=100, ramp=100)
 
     def path(self, name, arm, waypoints, *, move_speed, zone=HANDOVER_BLEND_MM,
-             acceleration=100, ramp=100, after=()):
+             acceleration=SMOOTH_ACCELERATION, ramp=SMOOTH_RAMP,
+             max_acceleration=None, after=()):
         """Blend transit points only; the final target remains a DONE barrier.
 
-        Keep V4's joint-space movement. Height is checked when dispatched;
-        the gateway and controller check workspace and reachability.
+        Each waypoint selects a straight-line or joint move. Height is checked
+        when dispatched; the gateway and controller check workspace/reachability.
         """
         points = []
-        for index, (position, rotation, speed) in enumerate(waypoints):
+        for index, (position, rotation, speed, linear) in enumerate(waypoints):
             radius = zone if index < len(waypoints) - 1 else 0
             points.append({**dict(zip(("x", "y", "z"), position)),
                            **dict(zip(("rx", "ry", "rz"), rotation)),
-                           "linear": False, "speed": speed, "zone": radius})
+                           "linear": linear, "speed": speed, "zone": radius})
+        options = {} if max_acceleration is None else {"max_acceleration": max_acceleration}
         self.job(name, arm, "path", points=points, speed=move_speed, zone=zone,
-                 acceleration=acceleration, ramp=ramp, after=after)
+                 acceleration=acceleration, ramp=ramp, after=after, **options)
 
     def grip(self, name, arm, action, **options):
         self.job(name, arm, "gripper", action=action, **options)
@@ -223,35 +231,32 @@ class _Plan:
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None,
                   home_after_cup=False):
-    """Build one guarded transfer with per-arm order and cross-arm dependencies.
+    """Adapt the smooth branch's normal per-cup plan without automatic homing.
 
-    The accepted observation supplies the cup's yaw and aperture. Only cup
-    approach/descent/lift use that yaw; the fixed handover keeps its tuned pose.
-    Calibration XY is applied once. Travel uses TCP height 250 mm; picking uses
-    70 mm, or optionally max(40, cup base Z + 20) mm, plus the 159 mm gripper
-    length. Tag-offset Z is not added again. Placement is already a flange target.
+    Source XY, detected yaw/aperture, optional camera height and the selected
+    placement remain UI inputs. Only cup approach/descent/lift use detected yaw;
+    the fixed handover keeps its tuned pose. Calibration XY is applied once.
+    Dual-arm travel uses TCP Z=175 mm; picking uses 70 mm or, with camera height,
+    max(40, cup base Z + 20), plus the 159 mm gripper length. Left-only motion
+    keeps its existing travel height. Placement is already a flange target.
 
-    Defaults are 250 mm/s travel and 200 mm/s home. Picking, loaded lift and
-    left handover default to 100; the two turnover moves default to 100 and
-    retain 30% acceleration. Explicit phase settings adjust future plans only,
-    always capped by the overall speed. Receiving poses are fixed to V4.
+    Motion stretches between gripper actions are buffered RAPID paths, with
+    straight lines near cups, joint travel, 10 mm intermediate blends and exact
+    final stops. The receiving corner uses 3 mm. Paths use 60% acceleration and
+    40% ramp; carrying adds a 1.5 m/s2 acceleration limit, and turnover keeps
+    30% acceleration. Existing UI phase speeds still apply, capped by the
+    overall speed, with the slide under the cup additionally capped at 150.
 
-    Empty grippers travel closed. Opening happens above the cup or beside the
-    handover. The left handover move overlaps the right via/beside approach;
-    right opening waits for both. Via/beside and turnover/retreat each use the
-    loaded RAPID RunPath routine: a 10 mm intermediate blend and an exact final
-    stop. Left release still waits
-    for right grip, and right lowering waits for left clearance. Every job's
-    ``after`` names must complete before dispatch. By default, the
-    vision_detection4 workflow leaves both empty grippers open at their clear
-    targets and starts the next cup through LEFT_READY without a home command.
-    The right approach still waits for the left lift to finish. Explicit
-    ``home_after_cup=True`` adds the initial right home before left picking and
-    both return-home sequences; after the right retreats above placement, its
-    placing/return sequence then overlaps the left return.
+    Left approach/grip overlaps right preparation at R_VIA. Both finish before
+    left lift/handover overlaps the right move beside it. Right opening waits
+    for both arrivals; left release waits for confirmed right grip. After the
+    release the arms move straight apart together. Turnover waits for both to
+    finish, then placement completes before another cup can start.
 
-    The right arm homes from its raised placement position without a mandatory
-    600 mm move. There is no retry or fallback after any unconfirmed movement.
+    By default left stays open above the handover and right stays closed above
+    placement. No home command is issued, even for the last cup. Explicit
+    ``home_after_cup=True`` retains the initial right home and return-home
+    sequences. There is no retry or fallback after an unconfirmed movement.
     """
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
@@ -260,7 +265,13 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     take = R_TAKE
     below = (take[0], take[1], take[2] - 35)
     beside = (below[0], below[1] - 120, below[2])
-    approach = {"move_speed": plan.phase_speeds["handover"]}
+    pick_speed = plan.phase_speeds["pick_lift"]
+    receive_speed = plan.phase_speeds["handover"]
+    flip_speed = plan.phase_speeds["flip"]
+    place_speed = plan.phase_speeds["placement"]
+    carrying = {"max_acceleration": CARRY_MAX_ACC}
+    above, pick, rotation, aperture = _pick_geometry(
+        cup, tag_offset, camera_z=camera_z, travel_z=SMOOTH_TRAVEL_Z)
     place = validate_place(place)
     spot = tuple(place[axis] for axis in ("x", "y", "z"))
     place_above = (spot[0], spot[1], spot[2] + PLACE_ABOVE)
@@ -269,34 +280,58 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     plan.grip("right_close_travel", "right", "grip")
     if home_after_cup:
         plan.home("right_home_start", "right")
-    plan.pick(cup, tag_offset, after=("right_home_start",) if home_after_cup else (),
-              camera_z=camera_z)
-    plan.move("left_handover", "left", HANDOVER_L, LEFT_DOWN,
-              move_speed=plan.phase_speeds["pick_lift"])
+    plan.grip("left_close_travel", "left", "grip",
+              after=("right_home_start",) if home_after_cup else ())
+    plan.path("left_ready", "left", [(LEFT_READY, LEFT_DOWN, plan.speed, False)],
+              move_speed=plan.speed)
+    if aperture is None:
+        plan.grip("left_open", "left", "open")
+    else:
+        position = round(min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25), 1)
+        plan.grip("left_open", "left", "move", position=position)
+    plan.path("approach_cup", "left",
+              [(above, rotation, plan.speed, False),
+               (pick, rotation, pick_speed, True)], move_speed=plan.speed)
+    plan.grip("grip_cup", "left", "grip")
+    plan.path("right_via", "right", [(R_VIA, RIGHT_UP, receive_speed, False)],
+              move_speed=receive_speed, after=("left_open",))
+
+    # This is the smooth source plan's pick-group barrier: neither arm begins
+    # the handover approach until both picking and right preparation are DONE.
+    plan.path("left_handover", "left",
+              [(above, rotation, pick_speed, True),
+               (HANDOVER_L, LEFT_DOWN, pick_speed, False)],
+              move_speed=pick_speed, after=("right_via",), **carrying)
     plan.path("right_beside", "right",
-              [(R_VIA, RIGHT_UP, plan.phase_speeds["handover"]),
-               (beside, RIGHT_UP, plan.phase_speeds["handover"])],
-              after=("lift_cup",), zone=HANDOVER_BLEND_MM,
-              **approach)
+              [(beside, RIGHT_UP, receive_speed, False)],
+              move_speed=receive_speed, after=("grip_cup",))
     plan.grip("right_open", "right", "open", after=("left_handover",))
-    plan.move("right_below", "right", below, RIGHT_UP, **approach)
-    plan.move("right_take", "right", take, RIGHT_UP, **approach)
+    plan.path("right_take", "right",
+              [(below, RIGHT_UP, min(receive_speed, SLIDE_SPEED), True),
+               (take, RIGHT_UP, receive_speed, True)],
+              move_speed=receive_speed, zone=RECEIVING_BLEND_MM)
     plan.grip("right_grip", "right", "grip")
     plan.grip("left_release", "left", "open", after=("right_grip",))
     left_clear = (HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT)
-    plan.move("left_clear", "left", left_clear, LEFT_DOWN)
-    plan.move("right_lower", "right", below, RIGHT_UP, after=("left_clear",), **approach)
+    plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, plan.speed, True)],
+              move_speed=plan.speed)
+    plan.path("right_lower", "right", [(below, RIGHT_UP, receive_speed, True)],
+              move_speed=receive_speed, after=("left_release",), **carrying)
     plan.path("right_retreat", "right",
-              [(turn_half, RIGHT_SIDE, plan.phase_speeds["flip"]),
-               (place_above, RIGHT_DOWN, plan.phase_speeds["flip"])],
-              move_speed=plan.phase_speeds["flip"], acceleration=FLIP_ACCELERATION)
+              [(turn_half, RIGHT_SIDE, flip_speed, False),
+               (place_above, RIGHT_DOWN, flip_speed, False)],
+              move_speed=flip_speed, acceleration=FLIP_ACCELERATION,
+              after=("left_clear",), **carrying)
     if home_after_cup:
         plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
-    plan.move("right_place", "right", spot, RIGHT_DOWN, pick=True, move_speed=plan.phase_speeds["placement"])
+    plan.path("right_place", "right", [(spot, RIGHT_DOWN, place_speed, True)],
+              move_speed=place_speed, **carrying)
     plan.grip("right_release", "right", "open")
-    plan.move("right_clear", "right", place_above, RIGHT_DOWN, move_speed=plan.phase_speeds["placement"])
+    plan.path("right_clear", "right", [(place_above, RIGHT_DOWN, place_speed, True)],
+              move_speed=place_speed)
+    plan.grip("right_close", "right", "grip")
     if home_after_cup:
-        plan.return_home("right", place_above, RIGHT_DOWN)
+        plan.home("right_home", "right")
     return plan.jobs
 
 

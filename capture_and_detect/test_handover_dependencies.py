@@ -1,4 +1,4 @@
-"""Offline dependency checks including the optional return-home choreography."""
+"""Offline graph checks for smooth handover concurrency and release barriers."""
 
 import unittest
 
@@ -9,7 +9,7 @@ class HandoverDependencyTests(unittest.TestCase):
     def setUp(self):
         self.cup = {"x": 500, "y": 100, "z": 50, "selectable": True}
         self.place = {"id": 1, "x": 420, "y": -200, "z": 230, "occupied": False}
-        self.jobs = handover_jobs(self.cup, place=self.place, home_after_cup=True)
+        self.jobs = handover_jobs(self.cup, place=self.place)
         self.by_name = {job["name"]: job for job in self.jobs}
 
     def ancestors(self, name, visiting=()):
@@ -39,50 +39,58 @@ class HandoverDependencyTests(unittest.TestCase):
                 if arm in previous:
                     self.assertIn(previous[arm], job["after"])
                 previous[arm] = name
-        self.assertEqual(self.ready(set()), {"right_close_travel"})
-        self.assertIn("right_home_start", self.ancestors("left_close_travel"))
+        self.assertEqual(self.ready(set()), {"right_close_travel", "left_close_travel"})
 
-    def test_after_lift_left_handover_overlaps_right_approach_but_open_waits_for_both(self):
-        lifted = self.ancestors("lift_cup") | {"lift_cup"}
-        self.assertEqual(self.ready(lifted), {"left_handover", "right_beside"})
-        right_waiting = lifted | {"right_beside"}
-        self.assertEqual(self.ready(right_waiting), {"left_handover"})
-        self.assertEqual(self.ready(right_waiting | {"left_handover"}), {"right_open"})
-        left_waiting = lifted | {"left_handover"}
-        self.assertEqual(self.ready(left_waiting), {"right_beside"})
+    def test_right_prepares_while_left_picks_and_both_wait_before_entering_handover(self):
+        prepared = self.ancestors("approach_cup") | self.ancestors("right_via")
+        self.assertEqual(self.ready(prepared), {"approach_cup", "right_via"})
+        # No arm may start the handover until the cup is gripped AND the right
+        # arm has reached its separate via position, whichever finishes first.
+        left_gripped = prepared | {"approach_cup", "grip_cup"}
+        self.assertEqual(self.ready(left_gripped), {"right_via"})
+        right_arrived = prepared | {"right_via"}
+        self.assertEqual(self.ready(right_arrived), {"approach_cup"})
+        together = left_gripped | {"right_via"}
+        self.assertEqual(self.ready(together), {"left_handover", "right_beside"})
+        for finished, waiting in (("left_handover", "right_beside"),
+                                  ("right_beside", "left_handover")):
+            self.assertEqual(self.ready(together | {finished}), {waiting})
+        self.assertEqual(self.ready(together | {"left_handover", "right_beside"}), {"right_open"})
 
-    def test_handover_release_and_right_lowering_retain_cross_arm_barriers(self):
-        self.assertIn("right_grip", self.by_name["left_release"]["after"])
-        self.assertIn("left_clear", self.by_name["right_lower"]["after"])
+    def test_left_release_requires_right_grip_then_arms_separate_together(self):
         before_grip = self.ancestors("right_grip")
         self.assertNotIn("left_release", self.ready(before_grip))
-        self.assertIn("left_release", self.ready(before_grip | {"right_grip"}))
-        before_clear = self.ancestors("left_clear")
-        self.assertNotIn("right_lower", self.ready(before_clear))
-        self.assertIn("right_lower", self.ready(before_clear | {"left_clear"}))
+        self.assertEqual(self.ready(before_grip | {"right_grip"}), {"left_release"})
+        released = before_grip | {"right_grip", "left_release"}
+        self.assertEqual(self.ready(released), {"left_clear", "right_lower"})
+        # Turning must wait for BOTH separation movements to report DONE; an
+        # early completion by either arm must never release the turn barrier.
+        for finished, waiting in (("left_clear", "right_lower"), ("right_lower", "left_clear")):
+            self.assertEqual(self.ready(released | {finished}), {waiting})
+        self.assertEqual(self.ready(released | {"left_clear", "right_lower"}), {"right_retreat"})
 
-    def test_after_right_retreat_left_return_and_right_place_are_independent(self):
+    def test_left_holds_at_clearance_until_right_has_finished_turning(self):
+        left = [job for job in self.jobs if job["body"]["arm"] == "left"]
+        self.assertEqual(left[-1]["name"], "left_clear")
+        retreated = self.ancestors("right_retreat") | {"right_retreat"}
+        self.assertEqual(self.ready(retreated), {"right_place"})
+        self.assertIn("right_place", self.ancestors("right_release"))
+        self.assertIn("right_release", self.ancestors("right_clear"))
+        self.assertEqual(self.by_name["right_close"]["after"], ["right_clear"])
+
+    def test_optional_homes_start_and_finish_with_confirmed_clearances(self):
+        self.jobs = handover_jobs(self.cup, place=self.place, home_after_cup=True)
+        self.by_name = {job["name"]: job for job in self.jobs}
+        self.assertEqual(self.ready(set()), {"right_close_travel"})
+        self.assertIn("right_home_start", self.ancestors("left_close_travel"))
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
         self.assertEqual(self.ready(retreated), {"left_close_return", "right_place"})
-        self.assertEqual(self.by_name["right_place"]["after"], ["right_retreat"])
-        # Either arm may finish first; a shared lease still gates all dispatch.
-        left_returned = retreated | {"left_close_return", "left_home_lateral", "left_home"}
-        self.assertEqual(self.ready(left_returned), {"right_place"})
-        right_returned = retreated | {"right_place", "right_release", "right_clear",
-                                      "right_close_return", "right_home"}
-        self.assertEqual(self.ready(right_returned), {"left_close_return"})
+        self.assertEqual(self.by_name["right_home"]["after"], ["right_close"])
+        self.assertNotIn("right_home_raise", self.by_name)
         self.assertNotIn("left_home", self.ancestors("right_home"))
         self.assertNotIn("right_home", self.ancestors("left_home"))
-
-    def test_right_returns_after_placement_clearance_without_added_raise_or_retry(self):
-        self.assertNotIn("right_home_raise", self.by_name)
-        self.assertEqual(self.by_name["right_clear"]["after"], ["right_release"])
-        self.assertEqual(self.by_name["right_close_return"]["after"], ["right_clear"])
-        self.assertEqual(self.by_name["right_home"]["after"], ["right_close_return"])
-        right_moves = [job for job in self.jobs
-                       if job["body"]["arm"] == "right" and job["endpoint"].endswith("/move")]
-        self.assertEqual(right_moves[-1]["name"], "right_clear")
-        self.assertEqual(right_moves[-1]["body"]["z"], 310)
+        right_clear = self.by_name["right_clear"]["body"]["points"][-1]
+        self.assertEqual(right_clear["z"], 310)
 
     def test_left_only_keeps_serial_schema_and_existing_raise_and_lateral_return(self):
         jobs = left_only_jobs(self.cup, home_after_cup=True)

@@ -76,9 +76,9 @@ class BatchSelectionTests(unittest.TestCase):
         jobs = self.execute(capture_id, preview)
         self.assertEqual(len(jobs), 3 * TRANSFER_JOB_COUNT)
         self.assertEqual(len(self.robot.jobs), 3 * TRANSFER_JOB_COUNT)
-        self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"],
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"],
                          [550, 600, 500])
-        self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "right_place"],
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs if job["name"] == "right_place"],
                          [420, 500, 580])
         self.assertEqual(self.capture_count, 1)
         self.assertEqual(self.capture_trace,
@@ -133,7 +133,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertEqual(preview["excluded_cup_ids"], [1])
         self.assertEqual([place["id"] for place in preview["placement"]["locations"]], [2, 3])
         self.assertEqual(len(self.execute(capture_id, preview)), 2 * TRANSFER_JOB_COUNT)
-        self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"],
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"],
                          [550, 600])
 
     def test_full_grid_prevents_pick_and_batch_before_capture_or_motion(self):
@@ -219,7 +219,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertGreater(len(self.robot.jobs), TRANSFER_JOB_COUNT)
         self.assertLess(len(self.robot.jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertEqual(self.session.inventory["batch_execution"]["completed_cups"], [2])
-        self.assertEqual([job["body"]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"], [550, 600])
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs if job["name"] == "approach_cup"], [550, 600])
         locations = self.locations()
         self.assertTrue(locations[0]["occupied"])
         self.assertFalse(locations[0].get("reserved", False))
@@ -304,7 +304,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.session.execute_selection(action="goto", capture_id=capture_id, cup_id=1,
                                        placement=preview["placement"])
         self.assertEqual(len(seen), TRANSFER_JOB_COUNT)
-        self.assertEqual(seen[-1][0], "right_clear")
+        self.assertEqual(seen[-1][0], "right_close")
         self.assertTrue(all(places[0]["occupied"] and places[0]["reserved"] for _, places in seen))
         self.assertTrue(self.locations()[0]["occupied"])
         self.assertFalse(self.locations()[0].get("reserved", False))

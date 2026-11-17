@@ -452,8 +452,19 @@ test("real review includes the current scan and controller movement settings", a
   await p.ask("Pick Kasun's cup"); const text=allText(p.dom["assistant-messages"]);
   assert.match(text,/Current scan · scan-1/); assert.match(text,/Normal: 250 mm\/s · Cup flip: 100 mm\/s · Automatic home off/);
   assert.match(text,/finish at clearance poses/); assert.doesNotMatch(text,/Return home:|return home\./);
+  assert.match(text,/Acceleration: 50% · Cup flip: 20%/);
   assert.match(text,/Right receiving target: X 330, Y -115, Z 316 mm/); assert.match(text,/Offset: X 1, Y 2, Z 3 mm/);
   assert.equal(nodes(p.dom["assistant-messages"],"assistant-pick-scan")[0].open,true);
+});
+
+test("assistant review prefers proposal acceleration over current controller settings", async () => {
+  const p = await page({ answer: suggestion(), state: { motion: { acceleration: 100, flip_acceleration: 30 } },
+    proposal: { acceleration: 60 } });
+  await p.ask("Pick cup 2");
+  const review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /Acceleration: 60% · Cup flip: 30%/);
+  assert.doesNotMatch(review, /Acceleration: 100%/);
+  assert.deepEqual(p.posts().map((item) => item.url), ["/api/assistant/ask", "/api/assistant/prepare"]);
 });
 
 test("explicit automatic Home remains visible in the captured assistant review", async () => {

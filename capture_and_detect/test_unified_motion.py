@@ -34,22 +34,25 @@ class UnifiedMotionTests(unittest.TestCase):
 
     def test_handle_yaw_is_used_until_lift_then_fixed_handover_orientation(self):
         jobs = {job["name"]: job["body"] for job in self.transfer()}
-        for name in ("approach_cup", "descend_to_cup", "lift_cup"):
-            self.assertEqual(tuple(jobs[name][axis] for axis in ("rx", "ry", "rz")), (180, 0, 135))
-        self.assertEqual(jobs["left_handover"]["rz"], 180)
-        self.assertEqual(jobs["left_ready"]["rz"], 180)
+        cup_points = [*jobs["approach_cup"]["points"], jobs["left_handover"]["points"][0]]
+        self.assertEqual(len(cup_points), 3)
+        for point in cup_points:
+            self.assertEqual(tuple(point[axis] for axis in ("rx", "ry", "rz")), (180, 0, 135))
+        self.assertEqual(jobs["left_handover"]["points"][-1]["rz"], 180)
+        self.assertEqual(jobs["left_ready"]["points"][0]["rz"], 180)
         self.assertEqual(jobs["left_open"], {"arm": "left", "wait": True, "action": "move", "position": 10})
 
     def test_unknown_aperture_opens_fully_and_known_apertures_are_clamped(self):
         for aperture, expected in ((None, None), (-1, 0), (0, 0), (40, 0), (75, 0), (95, 10), (125, 25), (145, 25)):
             with self.subTest(aperture=aperture):
-                jobs = left_only_jobs(dict(self.cup, aperture=aperture))
-                body = next(job["body"] for job in jobs if job["name"] == "left_open")
-                if expected is None:
-                    self.assertEqual(body, {"arm": "left", "wait": True, "action": "open"})
-                else:
-                    self.assertEqual(body["action"], "move")
-                    self.assertEqual(body["position"], expected)
+                cup = dict(self.cup, aperture=aperture)
+                for jobs in (left_only_jobs(cup), handover_jobs(cup, place=self.place)):
+                    body = next(job["body"] for job in jobs if job["name"] == "left_open")
+                    if expected is None:
+                        self.assertEqual(body, {"arm": "left", "wait": True, "action": "open"})
+                    else:
+                        self.assertEqual(body["action"], "move")
+                        self.assertEqual(body["position"], expected)
 
     def test_invalid_yaw_or_aperture_never_produces_a_motion_plan(self):
         for field, values in (("rz", (None, True, "135", float("nan"), 10 ** 1000)),
@@ -77,11 +80,12 @@ class UnifiedMotionTests(unittest.TestCase):
         self.assertNotIn("left_home_raise", names)
         self.assertNotIn("right_home_raise", names)
         self.assertEqual(tuple(by_name["left_home_lateral"]["body"][a] for a in "xyz"), (350, 400, 690))
-        self.assertEqual(tuple(by_name["right_clear"]["body"][a] for a in "xyz"), (420, -200, 310))
+        self.assertEqual(tuple(by_name["right_clear"]["body"]["points"][0][a] for a in "xyz"),
+                         (420, -200, 310))
         for before, after in (("right_retreat", "left_close_return"),
                               ("left_close_return", "left_home_lateral"),
-                              ("right_clear", "right_close_return"),
-                              ("right_close_return", "right_home")):
+                              ("right_clear", "right_close"),
+                              ("right_close", "right_home")):
             self.assertIn(before, by_name[after]["after"])
         high = handover_jobs(self.cup, place=dict(self.place, z=620), home_after_cup=True)
         self.assertNotIn("right_home_raise", [job["name"] for job in high])

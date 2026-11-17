@@ -161,7 +161,8 @@
     dom["mode-panel"].classList.toggle("live", mode === "live");
     text("mode-footer", mode === "demo" ? "Local demo · no physical movement" : "One controller · one action at a time");
     const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
-    const smooth = state?.motion?.handover_motion === "blended_path" ? " · Smooth handover" : "";
+    const smooth = state?.motion?.handover_plan === "smooth_dual_arm_v1" ? " · Smooth dual-arm handover"
+      : state?.motion?.handover_motion === "blended_path" ? " · Smooth handover" : "";
     text("motion-summary", `${state?.motion?.workflow === "v4_snapshot" ? "Snapshot picking · " : ""}Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · ${home}${smooth}`);
   }
 
@@ -679,7 +680,7 @@
     hide("proposal-excluded", !excluded.length);
     text("proposal-excluded", `Not included because no destination slots remain: ${excluded.map((id) => `cup ${id}`).join(", ")}.`);
     const motion = state?.motion;
-    const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(motion?.acceleration)}`;
+    const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(proposal.acceleration ?? motion?.acceleration)}`;
     const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
     const home = homeAfterCup ? `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`
       : "Automatic home off; arms remain at clearance poses";

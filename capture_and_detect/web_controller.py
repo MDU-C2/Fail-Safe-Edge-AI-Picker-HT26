@@ -12,7 +12,8 @@ import time
 import uuid
 
 from cup_inventory import SelectionError, hover_moves
-from handover_plan import (CAMERA_Z_FLOOR, CAMERA_Z_OFFSET, FLIP_ACCELERATION, FLIP_SPEED, handover_jobs,
+from handover_plan import (CAMERA_Z_FLOOR, CAMERA_Z_OFFSET, FLIP_ACCELERATION, FLIP_SPEED,
+                           SMOOTH_ACCELERATION, SMOOTH_RAMP, CARRY_MAX_ACC, handover_jobs,
                            pick_position_problem,
                            normalize_phase_speeds, effective_phase_speeds)
 from operator_commands import COMMAND_HELP, START_COMMANDS, STOP_COMMANDS
@@ -238,12 +239,16 @@ class WebController:
                   "home_after_cup": settings["home_after_cup"],
                   "workflow": settings.get("workflow", "v4_snapshot"),
                   "handover_motion": settings["handover_motion"],
+                  "handover_plan": settings["handover_plan"],
                   "camera_z": session.camera_z,
                   "flip_speed": phases["flip"],
                   "phase_speeds_supported": True,
                   "phase_speed_defaults": normalize_phase_speeds(),
                   "phase_speed_settings": settings["phase_speeds"], "phase_speeds": phases,
-                  "acceleration": 100, "flip_acceleration": FLIP_ACCELERATION,
+                  "acceleration": 100 if session.left_only else SMOOTH_ACCELERATION,
+                  "ramp": 100 if session.left_only else SMOOTH_RAMP,
+                  "carry_max_acceleration": None if session.left_only else CARRY_MAX_ACC,
+                  "flip_acceleration": FLIP_ACCELERATION,
                   "handover": settings["handover"]}
         grid = None
         if session.placing_grid is not None:
@@ -334,6 +339,9 @@ class WebController:
                         "home_speed": record.get("home_speed", session.home_speed),
                         "home_after_cup": record.get("motion_settings", {}).get("home_after_cup", session.home_after_cup),
                         "camera_z": record.get("motion_settings", {}).get("camera_z", session.camera_z),
+                        "acceleration": (100 if record["action"] == "hover" or
+                                         record.get("motion_settings", {}).get("left_only", session.left_only)
+                                         else SMOOTH_ACCELERATION),
                         "flip_speed": record.get("flip_speed", min(session.speed, FLIP_SPEED)),
                         "phase_speeds": copy.deepcopy(record.get("phase_speeds") or effective_phase_speeds(
                             record.get("speed", session.speed), record.get("motion_settings", {}).get("phase_speeds"))),

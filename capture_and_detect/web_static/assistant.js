@@ -232,8 +232,9 @@
       setText(stages, `Pick & lift: ${speed(phases.pick_lift)} · Right handover: ${speed(phases.handover)} · Cup flip: ${speed(phases.flip)} · Place & clear: ${speed(phases.placement)}.`);
       movement.append(stages);
     }
-    if (Number.isFinite(state.motion?.acceleration) || Number.isFinite(state.motion?.flip_acceleration)) {
-      const acceleration = document.createElement("p"); setText(acceleration, `Acceleration: ${state.motion.acceleration ?? "unavailable"}% · Cup flip: ${state.motion.flip_acceleration ?? "unavailable"}%.`); movement.append(acceleration);
+    const accelerationValue = proposal.acceleration ?? state.motion?.acceleration;
+    if (Number.isFinite(accelerationValue) || Number.isFinite(state.motion?.flip_acceleration)) {
+      const acceleration = document.createElement("p"); setText(acceleration, `Acceleration: ${accelerationValue ?? "unavailable"}% · Cup flip: ${state.motion?.flip_acceleration ?? "unavailable"}%.`); movement.append(acceleration);
     }
     if (proposal.handover) {
       const handover = document.createElement("p"); const coordinates = (point) => ["x", "y", "z"].every((axis) => Number.isFinite(point?.[axis])) ? ["x", "y", "z"].map((axis) => `${axis.toUpperCase()} ${point[axis]}`).join(", ") + " mm" : "unavailable";

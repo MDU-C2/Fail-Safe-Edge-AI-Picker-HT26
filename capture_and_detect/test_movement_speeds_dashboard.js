@@ -17,6 +17,7 @@ function section(start, end) {
 function element() {
   const events = {};
   return { value: "", textContent: "", hidden: false, disabled: false, checked: false,
+    classList: { toggle() {} },
     addEventListener(name, fn) { events[name] = fn; },
     fire(name) { return events[name]?.({ preventDefault() {} }); },
     set innerHTML(_) { throw new Error("Settings must be text, not HTML"); },
@@ -54,8 +55,9 @@ function dashboard(initial = snapshot()) {
     + section("  function robotRequestSupported(", "  function renderRobotControls()")
     + section("  async function post(", "  async function showQuick(")
     + section('  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener', '  dom["robot-status-button"].addEventListener')
-    + section("  function renderProposal()", "  function renderSavedCups()");
-  vm.runInContext(code + "\nglobalThis.render = renderPhaseSpeedControls; globalThis.send = post; globalThis.review = renderProposal;", context);
+    + section("  function renderProposal()", "  function renderSavedCups()")
+    + section("  function renderMode()", "  function renderConnection()");
+  vm.runInContext(code + "\nglobalThis.render = renderPhaseSpeedControls; globalThis.send = post; globalThis.review = renderProposal; globalThis.mode = renderMode;", context);
   context.render();
   return { dom, context, requests, render: () => context.render(),
     edit(key, value) { dom[`phase-speed-${key}`].value = value; dom[`phase-speed-${key}`].fire("input"); },
@@ -203,4 +205,37 @@ test("picking review describes the proposed Home mode instead of promising parki
   assert.match(page.dom["proposal-action"].textContent, /return home/);
   assert.match(page.dom["proposal-motion"].textContent, /Sequence home: 175 mm\/s/);
   assert.doesNotMatch(page.dom["proposal-motion"].textContent, /Automatic home off/);
+});
+
+test("review uses action-specific acceleration and falls back for older controllers", () => {
+  const page = dashboard();
+  page.context.state.motion.acceleration = 60;
+  page.context.state.proposal = { cup_id: 2, action: "hover", acceleration: 100 };
+  page.context.review();
+  assert.match(page.dom["proposal-motion"].textContent, /100% acceleration/);
+  assert.doesNotMatch(page.dom["proposal-motion"].textContent, /60% acceleration/);
+  page.context.state.proposal = { cup_id: 2, action: "goto", acceleration: 60 };
+  page.context.state.motion.acceleration = 100;
+  page.context.review();
+  assert.match(page.dom["proposal-motion"].textContent, /60% acceleration/);
+  delete page.context.state.proposal.acceleration;
+  page.context.review();
+  assert.match(page.dom["proposal-motion"].textContent, /100% acceleration/);
+  assert.equal(page.requests.length, 0);
+});
+
+test("motion summary distinguishes the smooth dual-arm plan from older controllers", () => {
+  const page = dashboard();
+  page.context.state.motion.handover_motion = "blended_path";
+  page.context.state.motion.handover_plan = "smooth_dual_arm_v1";
+  page.context.mode();
+  assert.match(page.dom["motion-summary"].textContent, /Smooth dual-arm handover/);
+  assert.doesNotMatch(page.dom["motion-summary"].textContent, /smooth_dual_arm_v1/);
+  delete page.context.state.motion.handover_plan;
+  page.context.mode();
+  assert.match(page.dom["motion-summary"].textContent, /Smooth handover/);
+  assert.doesNotMatch(page.dom["motion-summary"].textContent, /dual-arm/);
+  page.context.state.motion.handover_motion = "single_arm";
+  page.context.mode();
+  assert.doesNotMatch(page.dom["motion-summary"].textContent, /Smooth/);
 });

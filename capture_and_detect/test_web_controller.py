@@ -24,7 +24,7 @@ from web_controller import WebController, WebError
 class WebFixture:
     """Use the real selection pipeline with an entirely in-memory camera and robot."""
 
-    def __init__(self, directory, *, dry_run=True, camera_z=False, home_after_cup=False):
+    def __init__(self, directory, *, dry_run=True, camera_z=False, home_after_cup=False, left_only=False):
         self.now = 100.0
         self.sequence = 10
         self.captures = []
@@ -42,7 +42,7 @@ class WebFixture:
             "action": "hover", "selector": "id", "cup_id": 1, "message": "Hover above cup 1."}
         self.session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: self.now,
                                   placing_grid=grid_fixture(directory), camera_z=camera_z,
-                                  home_after_cup=home_after_cup)
+                                  home_after_cup=home_after_cup, left_only=left_only)
         self.language = LanguageController(self.session, self.interpreter,
                                            audit_dir=Path(directory), clock=lambda: self.now)
 
@@ -194,6 +194,8 @@ class WebControllerTests(unittest.TestCase):
         self.scan()
         state = self.submit("command", text="Please hover above the first cup")
         self.assertEqual(state["proposal"]["cup_id"], 1)
+        self.assertEqual(state["proposal"]["acceleration"], 100)
+        self.assertEqual(state["motion"]["acceleration"], 60)
         self.assertEqual(self.fixture.robot.jobs, [])
         self.fixture.interpreter.interpret.assert_called_once()
         payload = {key: state["proposal"][key] for key in ("token", "capture_id", "cup_id", "action")}
@@ -203,6 +205,24 @@ class WebControllerTests(unittest.TestCase):
         self.assertIn("no robot commands", final["message"])
         self.assertEqual(self.fixture.captures, ["scan"])
         self.assertEqual([job["name"] for job in self.fixture.robot.jobs], ["left_ready", "approach_cup"])
+        self.assertTrue(all(job["body"]["acceleration"] == 100 for job in self.fixture.robot.jobs))
+
+    def test_single_pick_proposal_reports_the_selected_workflow_acceleration(self):
+        for left_only, acceleration in ((False, 60), (True, 100)):
+            with self.subTest(left_only=left_only), tempfile.TemporaryDirectory() as directory:
+                fixture = WebFixture(directory, left_only=left_only)
+                controller = WebController(fixture.factory)
+                try:
+                    controller.start()
+                    self.wait_idle(controller)
+                    fixture.session.scan()
+                    fixture.language.propose_selection(action="goto", cup_id=1,
+                        capture_id=fixture.session.inventory["capture"])
+                    controller.publish_session()
+                    self.assertEqual(controller.state()["proposal"]["acceleration"], acceleration)
+                    self.assertEqual(fixture.robot.jobs, [])
+                finally:
+                    controller.close()
 
     def test_batch_button_previews_exact_ids_slots_and_speeds_before_one_confirmation(self):
         capture = self.scan()
@@ -215,8 +235,13 @@ class WebControllerTests(unittest.TestCase):
         self.assertEqual([place["id"] for place in proposal["placements"]], [1, 2])
         self.assertEqual(proposal["speed"], 250)
         self.assertEqual(proposal["home_speed"], 200)
+        self.assertEqual(proposal["acceleration"], 60)
         self.assertIs(proposal["home_after_cup"], False)
         self.assertIs(state["motion"]["home_after_cup"], False)
+        self.assertEqual(state["motion"]["handover_plan"], "smooth_dual_arm_v1")
+        self.assertEqual(state["motion"]["acceleration"], 60)
+        self.assertEqual(state["motion"]["ramp"], 40)
+        self.assertEqual(state["motion"]["carry_max_acceleration"], 1.5)
         self.assertIn("clearance poses", proposal["description"])
         self.assertIs(proposal["camera_z"], False)
         self.assertEqual(proposal["flip_speed"], 100)

@@ -54,6 +54,16 @@ def bodies(jobs):
     return {job["name"]: job["body"] for job in jobs}
 
 
+def cup_targets(jobs):
+    """Expose the physical cup targets in either supported planner layout."""
+    result = bodies(jobs)
+    if "points" not in result["approach_cup"]:
+        return {name: result[name] for name in ("approach_cup", "descend_to_cup", "lift_cup")}
+    return {"approach_cup": result["approach_cup"]["points"][0],
+            "descend_to_cup": result["approach_cup"]["points"][1],
+            "lift_cup": result["left_handover"]["points"][0]}
+
+
 class CameraZPlanTests(unittest.TestCase):
     def setUp(self):
         self.cup = {"x": 500, "y": 100, "z": 80, "selectable": True,
@@ -73,7 +83,7 @@ class CameraZPlanTests(unittest.TestCase):
                     cup = dict(self.cup, z=z)
                     jobs = self.plan(left_only=left_only, cup=cup)
                     self.assertEqual(jobs, self.plan(left_only=left_only, cup=cup, camera_z=False))
-                    self.assertEqual(bodies(jobs)["descend_to_cup"]["z"], 229)
+                    self.assertEqual(cup_targets(jobs)["descend_to_cup"]["z"], 229)
                     if left_only:
                         self.assertEqual(bodies(jobs)["replace_cup"]["z"], 229)
 
@@ -82,21 +92,22 @@ class CameraZPlanTests(unittest.TestCase):
             for detected, tcp in ((-30, 40), (19.9, 40), (20, 40),
                                   (20.06, 40.1), (63.26, 83.3), (150, 170)):
                 with self.subTest(left_only=left_only, detected=detected):
-                    result = bodies(self.plan(left_only=left_only,
-                                              cup=dict(self.cup, z=detected), camera_z=True))
-                    self.assertAlmostEqual(result["descend_to_cup"]["z"], tcp + 159)
+                    jobs = self.plan(left_only=left_only, cup=dict(self.cup, z=detected), camera_z=True)
+                    descent = cup_targets(jobs)["descend_to_cup"]
+                    self.assertAlmostEqual(descent["z"], tcp + 159)
                     if left_only:
-                        self.assertEqual(result["replace_cup"]["z"], result["descend_to_cup"]["z"])
+                        self.assertEqual(bodies(jobs)["replace_cup"]["z"], descent["z"])
 
-    def test_travel_is_250_tcp_and_409_flange_in_both_modes(self):
+    def test_smooth_dual_arm_travels_at_175_tcp_and_left_only_stays_at_250(self):
         for left_only in (False, True):
             for camera_z in (False, True):
                 with self.subTest(left_only=left_only, camera_z=camera_z):
-                    result = bodies(self.plan(left_only=left_only, camera_z=camera_z))
+                    jobs = self.plan(left_only=left_only, camera_z=camera_z)
+                    result = cup_targets(jobs)
                     for name in ("approach_cup", "lift_cup"):
-                        self.assertEqual(result[name]["z"], 409)
+                        self.assertEqual(result[name]["z"], 409 if left_only else 334)
                     if left_only:
-                        self.assertEqual(result["left_clear"]["z"], 409)
+                        self.assertEqual(bodies(jobs)["left_clear"]["z"], 409)
                     self.assertEqual(scene(80)["hover_motion"]["travel_tcp_z_mm"], 250)
 
     def test_camera_mode_changes_only_descent_and_same_height_replacement(self):
@@ -105,11 +116,12 @@ class CameraZPlanTests(unittest.TestCase):
                 original = self.plan(left_only=left_only)
                 changed = self.plan(left_only=left_only, camera_z=True)
                 self.assertEqual([job["name"] for job in original], [job["name"] for job in changed])
-                changed_names = {"descend_to_cup", "replace_cup"}
                 for baseline, actual in zip(original, changed):
                     expected = copy.deepcopy(baseline)
-                    if expected["name"] in changed_names:
+                    if left_only and expected["name"] in {"descend_to_cup", "replace_cup"}:
                         expected["body"]["z"] = 259
+                    elif not left_only and expected["name"] == "approach_cup":
+                        expected["body"]["points"][1]["z"] = 259
                     self.assertEqual(actual, expected)
                 names = [job["name"] for job in changed]
                 self.assertFalse(any(job["endpoint"].endswith("/home") for job in changed))
@@ -117,15 +129,15 @@ class CameraZPlanTests(unittest.TestCase):
                     self.assertEqual(names[-1], "left_clear")
                     self.assertTrue(all(job["body"]["arm"] == "left" for job in changed))
                 else:
-                    self.assertEqual(names[-1], "right_clear")
+                    self.assertEqual(names[-2:], ["right_clear", "right_close"])
 
     def test_camera_height_does_not_apply_tag_offset_z_twice_or_mutate_cup(self):
         original = copy.deepcopy(self.cup)
         for left_only in (False, True):
             for offset_z in (-1000, 0, 20, 40, 1000):
                 with self.subTest(left_only=left_only, offset_z=offset_z):
-                    result = bodies(self.plan(left_only=left_only, camera_z=True,
-                                              tag_offset=(-115, 25, offset_z)))
+                    result = cup_targets(self.plan(left_only=left_only, camera_z=True,
+                                                   tag_offset=(-115, 25, offset_z)))
                     for name in ("approach_cup", "descend_to_cup", "lift_cup"):
                         self.assertEqual((result[name]["x"], result[name]["y"]), (385, 125))
                     self.assertEqual(result["descend_to_cup"]["z"], 259)
@@ -221,7 +233,7 @@ class CameraZSessionTests(unittest.TestCase):
                     session.scan()
                     self.execute(session)
                     self.assertEqual(capture.call_count, 1)
-                    self.assertEqual(bodies(robot.jobs)["descend_to_cup"]["z"], 249)
+                    self.assertEqual(cup_targets(robot.jobs)["descend_to_cup"]["z"], 249)
                     self.assertTrue(session.scan_usable)
 
     def test_scanned_camera_height_reaches_jobs_and_audit(self):
@@ -233,10 +245,10 @@ class CameraZSessionTests(unittest.TestCase):
                     session.scan()
                     jobs = self.execute(session)
                     self.assertEqual(robot.jobs, jobs)
-                    result = bodies(jobs)
+                    result = cup_targets(jobs)
                     self.assertEqual(result["descend_to_cup"]["z"], scanned + 20 + 159)
                     if left_only:
-                        self.assertEqual(result["replace_cup"]["z"], result["descend_to_cup"]["z"])
+                        self.assertEqual(bodies(jobs)["replace_cup"]["z"], result["descend_to_cup"]["z"])
                     audit = session.inventory["cups"][0]["last_verification"]
                     self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], scanned + 20)
                     self.assertIs(audit["motion_settings"]["camera_z"], True)
@@ -246,7 +258,7 @@ class CameraZSessionTests(unittest.TestCase):
         session, _, robot, _ = self.session(scanned=10, fresh=19, camera_z=True)
         session.scan()
         self.execute(session)
-        self.assertEqual(bodies(robot.jobs)["descend_to_cup"]["z"], 199)
+        self.assertEqual(cup_targets(robot.jobs)["descend_to_cup"]["z"], 199)
         audit = session.inventory["cups"][0]["last_verification"]
         self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], 40)
 
@@ -255,14 +267,14 @@ class CameraZSessionTests(unittest.TestCase):
         session.scan()
         jobs = self.execute(session)
         self.assertEqual(robot.jobs, jobs)
-        self.assertAlmostEqual(bodies(jobs)["descend_to_cup"]["z"], 255.1)
+        self.assertAlmostEqual(cup_targets(jobs)["descend_to_cup"]["z"], 255.1)
         self.assertEqual(capture.call_count, 1)
 
     def test_fixed_mode_keeps_70_mm_descent_when_observed_height_changes(self):
         session, _, robot, _ = self.session(scanned=70, fresh=80)
         session.scan()
         self.execute(session)
-        self.assertEqual(bodies(robot.jobs)["descend_to_cup"]["z"], 229)
+        self.assertEqual(cup_targets(robot.jobs)["descend_to_cup"]["z"], 229)
         audit = session.inventory["cups"][0]["last_verification"]
         self.assertEqual(audit["grip_geometry"]["pick_tcp_z_mm"], 70)
         self.assertIs(audit["motion_settings"]["camera_z"], False)

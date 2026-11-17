@@ -292,53 +292,51 @@ send Stop. Demo and dry-run Stop make no robot or gateway requests.
 
 ## What goto does
 
-The shared plan in `handover_plan.py` defines the cup handover poses and sequence.
-Without a speed override, normal moves use
-**250 mm/s** and optional homes within the cup sequence use **200 mm/s**, with
-**100% acceleration and ramp**. Left-arm descent, loaded lift and travel to the
-handover use at most **100 mm/s**. The two cup-turning moves use **100 mm/s**
-and **30% acceleration**, with 100% ramp.
-Every job must return `accepted: true` and exactly `message: "DONE"` before the
-next job on that arm starts. Explicit handover dependencies allow the two arms
-to overlap only after the required clearance/grip steps complete. An explicit
-`--speed` value sets normal speed (1–1500 mm/s) and caps
-sequence home speed at the lower of that value and 200 mm/s; loaded picking
-and turning default to the lower of that setting and 100 mm/s. **Settings → Movement speeds**
-also allows separate pick/lift, right handover, flip and placement settings.
-The overall speed caps every stage. For example, applying 75 mm/s sets normal, loaded-pick, turning and
-sequence-home speeds to 75 mm/s. Actual speed
-also depends on the robot controller. Both arms share one control lease and
-renewal loop, with at most one outstanding request per arm,
-planning from the saved snapshot before each cup's motion. The sequence below is the default in
-the UI and advanced shell. It omits the initial Home and both return sequences.
+The shared plan in `handover_plan.py` adapts the normal smooth handover from
+`smooth-dual-arm-handover` at `46fd6f2`, with **no automatic home before,
+between or after cups**. It is used by the UI, Assistant actions, shared device
+services and `picker_workflow.py`; the original V4 `capture_and_detect.py` is
+unchanged. The branch's simulation-only overlapping multi-cup plan is not used.
 
-1. Use the selected cup and clear destination from the saved scan, validate the
-   placement reservation, then close the empty right gripper.
-2. Close the empty left gripper and move the left arm to ready.
-3. Approach above the verified cup with its detected grip rotation, open the
-   left gripper to the measured opening, descend, grip, and lift.
-4. After the left arm lifts the cup, move it toward the handover while the closed
-   right hand follows one buffered path through the existing via position to
-   beside the handover, blending through the intermediate point by 10 mm.
-5. Wait for both arms to reach those positions, then open the right hand, move
-   below and up to receive the cup and grip.
-6. Only after the right grip reports completion, release the left hand and lift it clear.
-7. Lower the right arm, then follow one buffered path through the sideways
-   midpoint toward the downward pose above the destination. This blends through
-   the midpoint by 10 mm and stops exactly above the destination. The left arm
-   remains at its lifted handover pose.
-8. Lower the right hand to the selected grid location, release, lift to the
-   confirmed clearance 80 mm above placement and remain there.
-9. Wait for both branches to finish before completing the placement reservation
-   or beginning another cup.
+Normal paths use **60% acceleration and 40% ramp**. Loaded paths also request
+**1.5 m/s²** maximum TCP acceleration/deceleration; turnover keeps **30%
+acceleration**. Existing UI speed controls are preserved: default overall speed
+is **250 mm/s**, pick/lift and turnover default to **100 mm/s**, and receiving
+and placement follow overall speed unless set separately. The slide under the
+cup is additionally capped at **150 mm/s**. Every waypoint speed respects the
+overall cap. These are the UI's speed settings, rather than the source branch's
+50 mm/s final-approach default. Actual speed also depends on the controller.
 
-The two buffered paths use the controller's loaded `RunPath` implementation and
-the gateway's `POST /api/v1/robot/rws/path` endpoint. The client checks the
-path request shape locally before dispatch; discovery is informational. Every path ends at a
-fine stop; gripper changes and cross-arm clearance waits remain separate.
-Existing joint-space targets, orientations, phase speeds and turnover
-acceleration are retained. Receiving offsets are fixed at zero. Blending changes
-the curve near intermediate points, so physical clearance still needs checking.
+The UI preserves detected grip yaw/opening, optional camera-Z picking, placement
+reservations, Stop/recovery and the V4 saved scan. There are no captures or
+rematches between cups. Each cup finishes completely before the next starts.
+
+1. Close the empty grippers and move the left arm to ready. Open it to the
+   detected cup opening there.
+2. Follow one path above the cup and straight down to grasp it, using the
+   detected yaw. At the same time, move the closed right hand to its via pose.
+3. After both picking and the right via move finish, lift the cup straight up
+   and continue to the handover in one path, while the right moves beside it.
+4. Wait for both arms, open the right hand, then slide below and straight up to
+   the receiving pose in one path, with a 3 mm blend under the cup.
+5. Grip with the right hand. Only after it reports completion, release the left.
+6. Lift the left hand and lower the right hand simultaneously in straight lines.
+   Wait for both to finish before turning the cup.
+7. Turn the cup through the sideways midpoint to the downward pose above its
+   destination, blending through the midpoint by 10 mm. The left stays clear.
+8. Lower the right hand straight to the selected grid location, release, lift
+   straight to 80 mm above it, close the empty gripper and remain there.
+9. Complete the placement reservation only after every job finishes. The next
+   cup starts through left ready; neither arm automatically goes home.
+
+All normal dual-arm movements use the controller's loaded `RunPath` routine via
+`POST /api/v1/robot/rws/path`. Intermediate approach/lift/turn points blend by
+10 mm, and each path ends at a fine stop. Gripper actions remain separate.
+Each job must return `accepted: true` and exactly `message: "DONE"` before its
+dependent jobs start. Both arms share one control lease with at most one request
+per arm. A failed path is not retried or replaced with individual moves.
+The state reports `handover_plan=smooth_dual_arm_v1` and `home_after_cup=false`
+for the default shared workflow. Left-only picking and manual Home are unchanged.
 
 With advanced-shell `--home-after-cup` (or explicit `CupSession(..., home_after_cup=True)`),
 step 1 also homes the right arm and checks its joints before picking. After the
@@ -754,7 +752,8 @@ The detected base Z is checked. Without `--camera-z`, heights are fixed:
 
 | Position | Gripper TCP Z | Flange Z sent to RWS |
 | --- | ---: | ---: |
-| Above selected cup | 250 mm | 409 mm |
+| Above selected cup, smooth dual-arm | 175 mm | 334 mm |
+| Above selected cup, hover / left-only | 250 mm | 409 mm |
 | Pick selected cup | 70 mm | 229 mm |
 
 With `--camera-z`, the pick TCP is `max(40, round(cup_base_z + 20, 1))`.

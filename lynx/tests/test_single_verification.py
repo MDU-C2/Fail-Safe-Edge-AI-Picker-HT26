@@ -64,17 +64,17 @@ class SingleVerificationTests(unittest.TestCase):
         self.save.side_effect = lambda _: now.__setitem__(0, now[0] + 1000)
         self.robot.after_move = lambda _: now.__setitem__(0, now[0] + 1000)
         self.execute(session)
-        self.assertEqual(self.robot.jobs[-1]["name"], "right_clear")
+        self.assertEqual(self.robot.jobs[-1]["name"], "right_close")
         self.assertFalse(any("home" in job["name"] for job in self.robot.jobs))
         self.capture.assert_called_once_with("scan")
         self.assertFalse(session.motion_uncertain)
 
     def test_stop_after_descent_still_blocks_grip_and_requires_recovery(self):
         session = self.session()
-        self.robot.after_move = lambda _: session.latch_stop() if self.robot.jobs[-1]["name"] == "descend_to_cup" else None
+        self.robot.after_move = lambda _: session.latch_stop() if self.robot.jobs[-1]["name"] == "approach_cup" else None
         with self.assertRaisesRegex(SelectionError, "Software stop"):
             self.execute(session)
-        self.assertEqual(self.robot.jobs[-1]["name"], "descend_to_cup")
+        self.assertEqual(self.robot.jobs[-1]["name"], "approach_cup")
         self.assertNotIn("grip_cup", [job["name"] for job in self.robot.jobs])
         self.assertTrue(session.motion_uncertain)
         self.assertTrue(self.recovery.required())

@@ -176,7 +176,7 @@ class NamedCupFlowTests(unittest.TestCase):
         self.assertEqual(audit["matched_cup_id"], 2)
         self.assertEqual(audit["named_identity"]["matched_cup_id"], 2)
         approach = next(job for job in self.robot.jobs if job["name"] == "approach_cup")
-        self.assertEqual(approach["body"]["x"], 500)
+        self.assertEqual(approach["body"]["points"][-1]["x"], 500)
         self.assertEqual([c["cup_id"] for c in self.matcher.match.call_args.args[1]], [1, 2, 3])
         self.assertEqual(self.fixture.captures, ["scan", "scan"])
 

@@ -682,8 +682,15 @@ class RobotClient:
         pick = job["endpoint"] == self.MOVE_ENDPOINT and job["name"] in {
             "descend_to_cup", "replace_cup", "right_place"}
         points = job["body"].get("points", [job["body"]])
-        for point in points:
-            if point["z"] > 700 or (point["z"] < 199 and not pick):
+        for index, point in enumerate(points):
+            # A smooth approach includes travel and descent in one job. Only
+            # its final linear picking/placing target gets the existing low-Z
+            # exception; intermediate transit targets keep the travel limit.
+            path_pick = (job["endpoint"] == self.PATH_ENDPOINT
+                         and (job["name"], job["body"]["arm"]) in {
+                             ("approach_cup", "left"), ("right_place", "right")}
+                         and index == len(points) - 1 and point.get("linear") is True)
+            if point["z"] > 700 or (point["z"] < 199 and not (pick or path_pick)):
                 raise RobotCommandError(
                     f"Step '{job['name']}' flange Z {point['z']} refused: "
                     "ordinary motion requires 199..700 mm; only picking/placing may go lower.")

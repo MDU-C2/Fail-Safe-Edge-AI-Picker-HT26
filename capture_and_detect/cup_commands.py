@@ -497,6 +497,12 @@ class CupSession:
                 audit["placement_visibility"] = copy.deepcopy(slot)
             jobs = plan(original)
             bodies = {job["name"]: job["body"] for job in jobs}
+            pick_target = None
+            if action == "goto":
+                # Dual-arm descent is the final waypoint of one buffered
+                # approach; the left-only workflow still uses a separate move.
+                pick_target = (bodies["descend_to_cup"] if self.left_only else
+                               bodies["approach_cup"]["points"][-1])
             identity = (context["identity_check"](self.inventory, original)
                         if context["identity_check"] is not None else None)
             audit.update(state="verified", matched_cup_id=original["id"],
@@ -504,8 +510,8 @@ class CupSession:
                          jobs=copy.deepcopy(jobs), motion_settings=self.motion_settings(),
                          grip_geometry={**{key: original.get(key) for key in
                                              ("diameter", "aperture", "rz", "has_handle")},
-                                        "pick_tcp_z_mm": (bodies["descend_to_cup"]["z"] - GRIPPER_TCP_Z
-                                                            if action == "goto" else None)})
+                                        "pick_tcp_z_mm": (pick_target["z"] - GRIPPER_TCP_Z
+                                                            if pick_target is not None else None)})
             if identity is not None:
                 audit["named_identity"] = identity
             self._check_stop()
@@ -605,7 +611,7 @@ class CupSession:
             if (execution["pending_jobs"] or len(execution["completed_steps"]) != len(jobs)
                     or {job["name"] for job in execution["completed_steps"]} != {job["name"] for job in jobs}):
                 raise SelectionError("Not every robot step was confirmed. Inspect both arms before recovery.")
-            # This means all planned jobs completed. The default branch-4
+            # This means all planned jobs completed. The default smooth
             # choreography ends at clearance poses; it must never claim Home.
             if place is not None:
                 self.placing_grid.complete(context["reservation"], place["id"])
@@ -641,6 +647,7 @@ class CupSession:
                 "left_only": self.left_only, "camera_z": self.camera_z,
                 "home_after_cup": self.home_after_cup,
                 "handover_motion": "blended_path" if not self.left_only else "single_arm",
+                "handover_plan": "smooth_dual_arm_v1" if not self.left_only else "single_arm",
                 "workflow": "v4_snapshot",
                 "phase_speeds": normalize_phase_speeds(self.phase_speeds),
                 "effective_phase_speeds": phases,

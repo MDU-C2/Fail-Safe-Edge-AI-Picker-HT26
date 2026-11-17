@@ -228,6 +228,34 @@ class ParallelRobotClientTests(unittest.TestCase):
         self.assertEqual(self.sent.count("left_path"), 1)
         self.assertEqual(self.sent.count("right_path"), 1)
 
+    def test_smooth_separation_overlaps_and_turn_waits_for_both_arms(self):
+        self.launch(self.plan(), blocked=("left_clear", "right_lower"))
+        self.wait_started("left_clear")
+        self.wait_started("right_lower")
+        self.assertIn("left_release", self.completed)
+        self.assertFalse(self.started["right_retreat"].is_set())
+        self.gates["right_lower"].set()
+        self.assertTrue(self.returned["right_lower"].wait(1))
+        self.assertFalse(self.started["right_retreat"].wait(.03))
+        self.gates["left_clear"].set()
+        self.finish()
+        self.assertLess(self.trace.index(("after", "left_clear")),
+                        self.trace.index(("before", "right_retreat")))
+
+    def test_failed_separation_path_blocks_turn_and_placement_without_retry(self):
+        self.failures["left_clear"] = {"accepted": False, "message": "ERR move failed"}
+        self.launch(self.plan(), blocked=("left_clear", "right_lower"))
+        self.wait_started("left_clear")
+        self.wait_started("right_lower")
+        self.gates["left_clear"].set()
+        self.assertTrue(self.returned["left_clear"].wait(1))
+        self.assertFalse(self.finished.wait(.03))
+        self.gates["right_lower"].set()
+        self.finish(error=True)
+        self.assertFalse(self.started["right_retreat"].is_set())
+        self.assertFalse(self.started["right_place"].is_set())
+        self.assertEqual(self.sent.count("left_clear"), 1)
+
     def test_left_home_inflight_does_not_block_right_placement(self):
         self.launch(self.plan(home_after_cup=True), blocked=("left_home", "right_place"))
         self.wait_started("left_home")

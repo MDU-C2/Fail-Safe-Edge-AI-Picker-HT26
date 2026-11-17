@@ -325,7 +325,7 @@ class WebStartupTests(unittest.TestCase):
             scan = session.scan()
             proposal = language.propose_selection(action="goto", capture_id=scan["capture"], cup_id=1)
             result = language.confirm(proposal["token"])
-            self.assertEqual(result["jobs"][-1]["name"], "right_clear")
+            self.assertEqual(result["jobs"][-1]["name"], "right_close")
             self.assertIn("left_clear", [job["name"] for job in result["jobs"]])
             self.assertFalse(any("home" in job["name"] for job in result["jobs"]))
 

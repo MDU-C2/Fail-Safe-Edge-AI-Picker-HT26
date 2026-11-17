@@ -278,3 +278,23 @@ def test_v4_height_rule_allows_lower_pick_place_and_defers_xy_to_gateway():
         job["body"]["z"] = 701
         with pytest.raises(RobotCommandError, match="ordinary motion requires"):
             client._check_motion_height(job)
+
+
+@pytest.mark.parametrize("name,arm", (("approach_cup", "left"), ("right_place", "right")))
+def test_smooth_pick_place_low_height_exception_only_applies_to_final_linear_point(gateway, name, arm):
+    job = path_job(arm=arm)
+    job["name"] = name
+    job["body"]["points"][-1].update(z=100, linear=True)
+    gateway["client"].execute_jobs([job])
+    assert len(path_calls(gateway)) == 1
+
+    for index, changes in ((0, {"z": 100}), (1, {"linear": False}), (1, {"z": 701})):
+        invalid = copy.deepcopy(job)
+        invalid["body"]["points"][index].update(changes)
+        with pytest.raises(RobotCommandError, match="ordinary motion requires"):
+            gateway["client"]._check_motion_height(invalid)
+
+    invalid = copy.deepcopy(job)
+    invalid["body"]["arm"] = "left" if arm == "right" else "right"
+    with pytest.raises(RobotCommandError, match="ordinary motion requires"):
+        gateway["client"]._check_motion_height(invalid)
