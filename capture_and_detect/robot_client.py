@@ -761,9 +761,13 @@ class RobotClient:
         first = [self._prepare_grouped_job(lane[0][0], lane[0][1], before_send, hooks)
                  for lane in lanes]
         failed, errors, error_lock = threading.Event(), [], threading.Lock()
+        launch_ready = threading.Event()
 
         def run(lane, prepared, finished):
             try:
+                # A start can raise after spawning its worker. No arm may send
+                # until every successful start has its completion registered.
+                launch_ready.wait()
                 for position, (index, job) in enumerate(lane):
                     if failed.is_set():
                         return
@@ -788,6 +792,7 @@ class RobotClient:
                                           name="robot-group-arm", daemon=True)
                 thread.start()
                 finished.append(done)
+            launch_ready.set()
             self._wait_grouped_workers(finished)
         except BaseException:
             failed.set()
@@ -797,6 +802,9 @@ class RobotClient:
             # interrupted Python's Thread.join/is_alive bookkeeping. Repeated
             # interrupts must not release control while a request is in flight.
             failed.set()
+            # Release even an unregistered worker whose start was interrupted;
+            # the closed launch gate kept it from sending, and it now exits.
+            launch_ready.set()
             while not all(done.is_set() for done in finished):
                 try:
                     for done in finished:

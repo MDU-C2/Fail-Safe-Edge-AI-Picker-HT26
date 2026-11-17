@@ -949,6 +949,57 @@ class RobotClientTests(unittest.TestCase):
         self.assertEqual(self.job_calls(), [])
         self.assertEqual(self.endpoints(), ["/control/acquire"])
 
+    def test_group_launch_failure_never_sends_or_waits_for_unstarted_worker(self):
+        original_start = threading.Thread.start
+        jobs = [self.grouped("left first", "left", "stage"),
+                self.grouped("right first", "right", "stage"),
+                job("next stage", "/robot/rws/path", path_body())]
+        cases = [(error, spawned, number)
+                 for error, spawned in ((KeyboardInterrupt, False),
+                                        (KeyboardInterrupt, True), (RuntimeError, False))
+                 for number in (1, 2)]
+        for error, spawned, number in cases:
+            with self.subTest(error=error.__name__, spawned=spawned, arm=number):
+                self.post.reset_mock()
+                request_started, finish = threading.Event(), threading.Event()
+                workers, launches = [], []
+
+                def serve(url, **options):
+                    if url.endswith("/robot/rws/path"):
+                        request_started.set()
+                        self.assertTrue(finish.wait(2), "Mocked request was never released")
+                    return self.serve(url, **options)
+
+                def start(thread):
+                    if thread.name != "robot-group-arm":
+                        return original_start(thread)
+                    launches.append(thread)
+                    fail_here = len(launches) == number
+                    if fail_here and not spawned:
+                        raise error("mock launch failure")
+                    original_start(thread)
+                    workers.append(thread)
+                    if fail_here:
+                        # Allow a spawned worker to try sending before start
+                        # raises. The stage gate must keep this request idle.
+                        request_started.wait(0.05)
+                        raise error("mock launch failure")
+
+                self.post.side_effect = serve
+                try:
+                    with patch.object(threading.Thread, "start", start):
+                        with self.assertRaisesRegex(error, "mock launch failure"):
+                            self.client.execute_jobs(jobs)
+                finally:
+                    finish.set()
+                    for worker in workers:
+                        worker.join(2)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
+                self.assertFalse(request_started.is_set())
+                self.assertEqual(self.job_calls(), [])
+                self.assertEqual(self.endpoints().count("/control/acquire"), 1)
+                self.assertEqual(self.endpoints().count("/control/release"), 1)
+
     def test_repeated_coordinator_interrupts_wait_for_actual_group_completion(self):
         active = {arm: threading.Event() for arm in ("left", "right")}
         finish, draining = threading.Event(), threading.Event()
