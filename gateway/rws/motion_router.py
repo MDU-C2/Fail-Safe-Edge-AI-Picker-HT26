@@ -9,7 +9,7 @@ from fastapi import (
     status,
 )
 
-from gateway.control.router import require_control
+from gateway.control.router import get_control_manager, require_control, robot_authorization
 from gateway.events.manager import event_manager
 from gateway.models.commands import CommandResponse
 from gateway.models.rws import (
@@ -25,7 +25,6 @@ from gateway.rws.motion import (
     MotionConflict,
     MotionSpeed,
     MotionTimeout,
-    PathPoint,
     rws_motion,
 )
 from gateway.security.authentication import require_permission
@@ -122,6 +121,19 @@ async def run(
     return response
 
 
+async def run_authorized(identity, request, function, *args, **kwargs):
+    manager = get_control_manager()
+    if manager.require_session and not request.wait:
+        raise HTTPException(status_code=409, detail="Session-fenced mode requires wait=true so command completion remains owned")
+    authorization = robot_authorization(identity, require_clear=True)
+
+    def execute():
+        with authorization.operation():
+            return function(*args, authorization=authorization, **kwargs)
+
+    return await run(execute)
+
+
 # ================================================================
 # Endpoints
 # ================================================================
@@ -147,7 +159,7 @@ async def run(
 )
 async def move(
     request: RwsMoveRequest,
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
@@ -158,7 +170,9 @@ async def move(
         else (request.rx, request.ry, request.rz)
     )
 
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.move,
         request.arm,
         (request.x, request.y, request.z),
@@ -171,48 +185,38 @@ async def move(
 @router.post(
     "/path",
     response_model=CommandResponse,
-    summary="Move an arm through several points without stopping",
+    summary="Run a blended path for one arm over Robot Web Services",
     description=(
-        "One job with 1 to 8 points (tool0 in wobj0, mm and degrees, "
-        "rx/ry/rz required). The arm blends through the middle points "
-        "(zone, mm, per point or the request's, default 10; 0 stops "
-        "there) and stops only at the last. linear=true moves in a "
-        "straight line to the point (MoveL), otherwise a joint move. "
-        "speed per point or the request's, in mm/s; acceleration and "
-        "ramp as for /move. max_acceleration limits the TCP "
-        "acceleration in m/s2 (RAPID PathAccLim), e.g. while carrying "
-        "a cup. Every point must be in the safe zone (ERR outside safe "
-        "zone, nothing is sent) and reachable (ERR move failed, the arm "
-        "does not move). 409 if the RAPID program has no path "
-        "variables (upload rapid/ again). wait as for /move."
+        "Runs 1..8 points as one RAPID job. Each point supplies tool0 "
+        "position in wobj0 (mm) and rx/ry/rz (degrees). linear selects "
+        "MoveL instead of a joint move. Point speed and zone override "
+        "request defaults; zone 0 stops there and the last point always "
+        "stops (fine). Every target and intermediate blend-radius "
+        "envelope must be inside the configured safe zone. This does "
+        "not check the swept volume of joint moves. max_acceleration "
+        "optionally limits path acceleration/deceleration in m/s2. "
+        "Requires the path-enabled RAPID program; missing variables "
+        "reject the entire job before any writes. Lease, wait, errors "
+        "and speed settings are as for /move."
     ),
 )
 async def path(
     request: RwsPathRequest,
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
-    points = [
-        PathPoint(
-            position=(point.x, point.y, point.z),
-            rotation=(point.rx, point.ry, point.rz),
-            linear=point.linear,
-            speed=point.speed,
-            zone=point.zone,
-        )
-        for point in request.points
-    ]
-
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.path,
         request.arm,
-        points,
-        request.zone,
-        request.max_acceleration,
-        request.wait,
-        motion_speed(request),
+        request.points,
+        wait=request.wait,
+        speed=motion_speed(request),
+        zone=request.zone,
+        max_acceleration=request.max_acceleration,
     )
 
 
@@ -227,7 +231,7 @@ async def path(
     ),
 )
 async def home(
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
@@ -235,7 +239,9 @@ async def home(
 ) -> CommandResponse:
     request = request or RwsMotionRequest()
 
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.home,
         request.arm,
         request.wait,
@@ -262,12 +268,14 @@ async def home(
 )
 async def gripper(
     request: RwsGripperRequest,
-    _: Annotated[
+    identity: Annotated[
         Identity,
         Depends(require_control("robot.control")),
     ],
 ) -> CommandResponse:
-    return await run(
+    return await run_authorized(
+        identity,
+        request,
         rws_motion.gripper,
         request.arm,
         request.action,

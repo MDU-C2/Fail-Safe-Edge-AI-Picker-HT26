@@ -127,7 +127,7 @@ def test_camera_needs_token(
 ) -> None:
     anonymous = strict_gateway.client(None)
 
-    for path in ("/camera/status", "/camera/rgb", "/camera/depth", "/camera/intrinsics"):
+    for path in ("/camera/status", "/camera/rgb", "/camera/depth", "/camera/frame", "/camera/intrinsics"):
         expect(anonymous.get(path), 401)
 
 
@@ -156,7 +156,7 @@ def test_stale_frames_are_refused(
 
         time.sleep(0.2)
 
-        for path in ("/camera/rgb", "/camera/depth"):
+        for path in ("/camera/rgb", "/camera/depth", "/camera/frame"):
             detail = expect(client.get(path), 503)["detail"]
 
             assert "the camera has stalled" in detail

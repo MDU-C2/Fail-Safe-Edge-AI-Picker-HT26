@@ -56,7 +56,7 @@ class LocalLLMTests(unittest.TestCase):
         self.assertIs(kwargs["allow_redirects"], False)
         payload = kwargs["json"]
         self.assertEqual(set(payload), {"model", "messages", "stream", "think", "format", "options", "keep_alive"})
-        self.assertEqual(payload["model"], "qwen3:4b")
+        self.assertEqual(payload["model"], "qwen3-vl:4b-instruct")
         self.assertIs(payload["stream"], False)
         self.assertIs(payload["think"], False)
         self.assertEqual(payload["format"], INTENT_SCHEMA)
@@ -136,7 +136,7 @@ class LocalLLMTests(unittest.TestCase):
                 session.post.assert_not_called()
 
     def test_all_supported_intent_shapes(self):
-        for action in ("scan", "list", "clarify", "reply"):
+        for action in ("scan", "list", "clarify", "reply", "goto_all"):
             candidate = intent(action, "none", None, "")
             self.assertEqual(validate_intent(candidate), candidate)
         for action in ("show", "goto", "hover"):
@@ -151,6 +151,8 @@ class LocalLLMTests(unittest.TestCase):
                    intent(cup_id="2"), intent(cup_id=0), intent(cup_id=-1), intent(cup_id=None),
                    intent(selector="none"), intent(selector="leftmost"), intent(selector="rightmost"),
                    intent("scan", "id", 2), intent("list", "leftmost", None),
+                   intent("goto_all", "id", 2), intent("goto_all", "leftmost", None),
+                   intent("goto_all", "none", 2),
                    intent("reply", "none", 2), intent(message=None), intent(message="a" * 501)]
         for candidate in invalid:
             with self.subTest(candidate=candidate), self.assertRaises(LLMError):
@@ -219,7 +221,7 @@ class LocalLLMTests(unittest.TestCase):
                 self.assertTrue(response.closed)
                 self.assertEqual(session.post.call_count, 1)
                 if status == 404:
-                    self.assertIn("ollama pull qwen3:4b", str(error.exception))
+                    self.assertIn("ollama pull qwen3-vl:4b-instruct", str(error.exception))
 
     def test_transport_errors_do_not_retry_or_invent_action(self):
         for failure, expected in [(requests.ConnectTimeout("secret detail"), "timed out"),

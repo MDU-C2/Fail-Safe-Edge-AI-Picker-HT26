@@ -22,7 +22,7 @@ from pathlib import Path
 import requests
 
 
-URL = "http://169.254.125.202:8000/api/v1"
+URL = "http://169.254.219.127:8000/api/v1"   # C++ gateway on the Lynx (was the Pi 169.254.125.202 until 2026-11-11)
 HEADERS = {"Authorization": "Bearer BAD_TOKEN_OPERATOR"}
 RAPIDCTL = Path(__file__).resolve().parents[2] / "rapid" / "rapidctl.py"
 HOME_SPEED = 200

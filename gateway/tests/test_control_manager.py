@@ -28,12 +28,14 @@ PRIORITY = {
 class Clock:
     def __init__(self) -> None:
         self.now = START
+        self.monotonic = 0.0
 
     def advance(
         self,
         seconds: float,
     ) -> None:
         self.now += timedelta(seconds=seconds)
+        self.monotonic += seconds
 
 
 @pytest.fixture
@@ -52,12 +54,13 @@ def make_manager(
     )
 
     manager._now = lambda: clock.now  # type: ignore[method-assign]
+    manager._monotonic = lambda: clock.monotonic
 
     #
     # The grace is measured from creation, which used the real
     # clock; restart it on the fake one.
     #
-    manager._grace_until = clock.now + timedelta(seconds=grace)
+    manager._grace_until = clock.monotonic + grace
 
     return manager
 
@@ -298,3 +301,46 @@ def test_startup_grace_of_zero_hands_out_control_at_once(
     manager: ControlManager,
 ) -> None:
     assert acquire(manager, "tertiary").success
+
+
+def test_wall_clock_changes_do_not_end_grace_or_contention(clock: Clock) -> None:
+    manager = make_manager(clock, grace=5.0)
+    assert not acquire(manager, "primary").success
+    clock.now += timedelta(days=10)
+    assert acquire(manager, "tertiary").retry_after == pytest.approx(5.0)
+    clock.advance(4.0)
+    assert not acquire(manager, "primary").success
+    clock.now -= timedelta(days=20)
+    clock.advance(1.0)
+    refused = acquire(manager, "tertiary")
+    assert not refused.success and "primary" in refused.message
+    assert refused.retry_after == pytest.approx(2.0)
+    assert acquire(manager, "primary").success
+
+
+def test_fenced_preemption_keeps_priority_and_invalidates_old_session(clock: Clock) -> None:
+    from gateway.control.manager import ControlConflict
+
+    manager = ControlManager(LEASE, contention_seconds=WINDOW, require_session=True)
+    manager._monotonic = lambda: clock.monotonic
+    manager._grace_until = 0.0
+    first = acquire(manager, "tertiary").lease
+    authorization = manager.authorize("tertiary", first.session_id)
+    manager.clear_recovery(authorization)
+    next_lease = acquire(manager, "primary").lease
+    assert next_lease.session_id != first.session_id
+    assert manager.recovery_required
+    with pytest.raises(ControlConflict):
+        authorization()
+    assert not manager.renew("tertiary", PRIORITY["tertiary"], session_id=first.session_id)[0]
+    assert manager.renew("primary", PRIORITY["primary"], session_id=next_lease.session_id)[0]
+
+
+def test_stale_same_token_release_does_not_withdraw_current_contender(clock: Clock) -> None:
+    manager = make_manager(clock)
+    first = acquire(manager, "primary").lease
+    assert manager.release("primary", first.session_id)[0]
+    current = acquire(manager, "primary").lease
+    assert not manager.release("primary", first.session_id)[0]
+    assert manager.owns_control("primary", current.session_id)
+    assert manager._attempts["primary"].priority == PRIORITY["primary"]

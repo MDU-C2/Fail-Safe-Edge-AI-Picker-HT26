@@ -4,6 +4,8 @@ from pydantic import (
     BaseModel,
     Field,
     FiniteFloat,
+    StrictBool,
+    StrictInt,
     model_validator,
 )
 
@@ -90,6 +92,7 @@ class RapidStatus(BaseModel):
     operation_mode: str
 
     tasks: list[RapidTask]
+    stop_generation: int | None = None
 
 
 class RapidModuleUpload(BaseModel):
@@ -101,6 +104,21 @@ class RapidModuleUpload(BaseModel):
 
 class RapidStartRequest(BaseModel):
     reset_program_pointer: bool = False
+
+
+class RapidResetRequest(BaseModel):
+    start: StrictBool = False
+    stop_generation: StrictInt | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def start_requires_generation(self) -> Self:
+        if self.start and self.stop_generation is None:
+            raise ValueError("Fresh start requires stop_generation from GET /robot/rapid")
+        return self
+
+
+class CollisionStatus(BaseModel):
+    collision_state: Literal["INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"]
 
 
 class RwsArmRequest(BaseModel):

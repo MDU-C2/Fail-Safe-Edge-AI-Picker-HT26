@@ -1,0 +1,14 @@
+diff --git a/src/utility/ArchiveUtil.cpp b/src/utility/ArchiveUtil.cpp
+--- a/src/utility/ArchiveUtil.cpp
++++ b/src/utility/ArchiveUtil.cpp
+@@ -233,6 +233,10 @@ void ArchiveUtil::readEntry(struct archive_entry* entry, std::vector<uint8_t>& out)
+ 
+     // Resize vector to actual read size
+     out.resize(finalSize);
++    // Firmware resource maps retain these vectors for the process lifetime.
++    // The EOF probe above can double capacity, so release that unused storage.
++    // This changes capacity only; archive bytes and read/error handling stay intact.
++    out.shrink_to_fit();
+ }
+ 
+ bool ArchiveUtil::readEntry(const std::string& entryName, std::vector<uint8_t>& out) {

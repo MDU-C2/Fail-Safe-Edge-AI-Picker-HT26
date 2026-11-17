@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     auth_clients_file: str = "gateway/auth_clients.json"
 
     control_lease_seconds: float = 5.0
+    control_require_session: bool = False
 
     #
     # A free lease goes to the highest-priority client that tried
@@ -90,7 +91,7 @@ class Settings(BaseSettings):
     # behind the TCP in x, at its height).
     #
     rws_safe_zone_min: tuple[float, float, float] = (180.0, -400.0, 50.0)
-    rws_safe_zone_max: tuple[float, float, float] = (800.0, 500.0, 600.0)
+    rws_safe_zone_max: tuple[float, float, float] = (800.0, 500.0, 700.0)
 
     #
     # Speed of /robot/rws/move and /home when the request gives

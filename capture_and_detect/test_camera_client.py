@@ -129,6 +129,20 @@ class CameraClientTests(unittest.TestCase):
         self.assertEqual(metadata["observation_started_monotonic"], 100.0)
         self.assertGreater(metadata["received_monotonic"], 100.0)
 
+    def test_v4_latest_pair_has_no_newer_than_status_gate(self):
+        responses = [frame("rgb", 10), frame("depth", 10)]
+        client, session = self.client(responses)
+        _, depth, metadata = client.capture_latest()
+        self.assertEqual(metadata["sequence"], 10)
+        self.assertEqual([url.rsplit("/", 1)[-1] for url, _ in session.calls], ["rgb", "depth"])
+        np.testing.assert_array_equal(depth, [[0x1234, 0x5678]])
+        self.assertTrue(all(response.closed for response in responses))
+
+    def test_latest_pair_still_rejects_a_mismatched_payload(self):
+        client, _ = self.client([frame("rgb", 10, body=b"short"), frame("depth", 10)])
+        with self.assertRaisesRegex(CameraError, "bytes"):
+            client.capture_latest()
+
     def test_sequence_race_retries_without_downloading_mismatched_bodies(self):
         events = []
         responses = [status(), frame("rgb", 11, events=events), frame("depth", 12, events=events),

@@ -1,0 +1,9 @@
+# Runtime only. Export/training tools deliberately belong on the build machine.
+# requirements-arm64.lock also pins every transitive wheel and its SHA-256.
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic-settings==2.16.2
+requests==2.32.5
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+depthai==3.1.0

@@ -7,6 +7,7 @@ class Identity:
     authenticated: bool
     permissions: frozenset[str]
     control_priority: int
+    control_session: str | None = None
 
     def can(self, permission: str) -> bool:
         return "*" in self.permissions or permission in self.permissions

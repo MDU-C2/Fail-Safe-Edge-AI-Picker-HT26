@@ -831,7 +831,8 @@ def test_rws_motion_path_writes_padded_arrays_and_length_last() -> None:
     # Per point speed and zone, else the path's.
     #
     assert written["path_speed_left"].startswith("[250.000000,150.000000,40.000000,150.000000,")
-    assert written["path_zone_left"].startswith("[5.000000,20.000000,5.000000,5.000000,")
+    # The last point is always fine; unused slots cannot add a blend.
+    assert written["path_zone_left"].startswith("[5.000000,20.000000,0.000000,0.000000,")
     assert written["path_acc_left"] == "2.000000"
     assert written["move_acc_left"] == "60.000000"
     assert written["move_ramp_left"] == "40.000000"
@@ -886,7 +887,7 @@ def test_rws_motion_path_needs_the_path_variables() -> None:
 
     del controller.symbols["path_len_left"]
 
-    with pytest.raises(MotionConflict, match="no path variables"):
+    with pytest.raises(MotionConflict, match="no path support"):
         motion(controller).path("left", path_points((400.0, 100.0, 300.0)))
 
     assert controller.writes == []

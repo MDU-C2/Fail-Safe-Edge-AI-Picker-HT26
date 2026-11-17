@@ -14,6 +14,11 @@ def test_no_lease_initially(
         "priority": None,
         "acquired_at": None,
         "expires_at": None,
+        "session_id": None,
+        "session_required": False,
+        "watchdog_enabled": False,
+        "recovery_required": False,
+        "recovery_reason": None,
     }
 
 

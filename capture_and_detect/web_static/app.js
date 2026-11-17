@@ -7,29 +7,145 @@
   let state = null;
   let connected = false;
   let posting = false;
+  let stopPosting = false;
+  let quickPosting = false;
+  let quickGeneration = 0;
+  let localStopInhibit = false;
   let selectedId = null;
   let selectedCapture = null;
   let imageCapture = null;
   let imageLoaded = false;
   let cardsKey = "";
   let eventsKey = "";
+  let inferenceEventsKey = "";
+  let deviceChoice = "";
+  let deviceSelectionKey = "";
+  let deviceOptionsKey = "";
+  let placementsKey = "";
+  let savedCupsKey = "";
+  let saveSelectionKey = "";
   let pollNumber = 0;
   let appliedPoll = 0;
   let proposalDeadline = 0;
+  let controlDeadline = 0;
+  let speedDirty = false;
+  let phaseSpeedDirty = false;
+  let releaseReview = null;
+  let releaseMessage = "";
   let transientError = "";
 
   const text = (id, value) => { const el = dom[id]; const next = value == null ? "" : String(value); if (el.textContent !== next) el.textContent = next; };
   const hide = (id, hidden) => { dom[id].hidden = hidden; };
   const cups = () => Array.isArray(state?.inventory?.cups) ? state.inventory.cups : [];
   const currentCup = () => selectedCapture === state?.inventory?.capture ? cups().find((cup) => cup.id === selectedId) : null;
-  const actionable = () => connected && Boolean(state?.ready) && !state?.busy && !posting;
-  const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !state?.recovery_required);
+  const idle = () => connected && Boolean(state?.ready) && !state?.busy && !state?.devices?.switching && !posting && !stopPosting;
+  const actionable = () => idle() && !localStopInhibit && !state?.stop_requested;
+  const controlActionable = () => actionable() && !state?.recovery_required;
+  const canStop = () => connected && Boolean(state?.ready || state?.devices?.active_id) && !stopPosting && !state?.stop_in_flight;
+  const isStop = (value) => ["stop", "halt", "stop robot", "stop the robot"].includes(value.trim().toLowerCase().replace(/\s+/g, " "));
+  const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !state?.recovery_required && !localStopInhibit && !state?.stop_requested);
+  const pickableCups = () => cups().filter((cup) => cup.selectable && cup.pick_available);
+  const placementLocations = () => Array.isArray(state?.placement_grid?.locations) ? state.placement_grid.locations : [];
+  const placementAvailable = (location) => location.occupied === false && !location.reserved && !location.vision_blocked;
+  const placementStatus = (location) => location.reserved ? "reserved" : location.vision_blocked ? "unknown" : location.occupied ? "occupied" : placementAvailable(location) ? "available" : "unknown";
+  const availableLocations = () => placementLocations().filter(placementAvailable);
+  const gridReady = () => Boolean(state?.placement_grid && !state.placement_grid.error && Array.isArray(state.placement_grid.locations));
+  const releaseActionable = () => idle() && !state?.stop_in_flight && gridReady() && placementLocations().length > 0 && typeof state.placement_grid.fingerprint === "string" && state.placement_grid.fingerprint.length > 0;
+  const releaseContext = (snapshot) => JSON.stringify([snapshot?.instance_id, snapshot?.device_epoch, snapshot?.placement_grid?.fingerprint, snapshot?.stop_requested, snapshot?.recovery_required, snapshot?.stop]);
+  const selectedIds = () => state?.proposal?.action === "goto_all" ? (state.proposal.cup_ids || []) : [state?.proposal?.cup_id ?? selectedId];
+  const speedText = (value) => Number.isFinite(value) ? `${value} mm/s` : "unavailable";
+  const accelerationText = (value) => Number.isFinite(value) ? `${value}% acceleration` : "acceleration unavailable";
+  const handoverAxes = ["x", "y", "z"];
+  const coordinatesAvailable = (point) => handoverAxes.every((axis) => Number.isFinite(point?.[axis]));
+  const coordinatesText = (point, signed = false) => coordinatesAvailable(point) ? handoverAxes.map((axis) => `${axis.toUpperCase()} ${signed && point[axis] > 0 ? "+" : ""}${point[axis]}`).join(", ") + " mm" : "unavailable";
   const clockText = (value) => {
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
   };
   const asMessage = (value) => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
   const humanize = (value) => String(value || "").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
+  const savedImageUrl = (value) => {
+    if (typeof value !== "string" || !value) return null;
+    try {
+      const url = new URL(value, window.location.origin);
+      const path = /^\/api\/saved-image\/(?:[0-9a-f]{32}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$/i;
+      return url.origin === window.location.origin && !url.search && !url.hash && path.test(url.pathname) ? url.pathname : null;
+    } catch { return null; }
+  };
+
+  function setSavedImage(image, fallback, url, name) {
+    const path = savedImageUrl(url);
+    image.alt = `Saved reference for ${name}`;
+    if (image.getAttribute("src") === path) return;
+    image.hidden = !path;
+    fallback.hidden = Boolean(path);
+    if (path) image.setAttribute("src", path);
+    else image.removeAttribute("src");
+  }
+
+  // Workspace navigation changes only the local view, never controller state.
+  const workspaceTabs = ["pick", "assistant", "robot", "settings"];
+  let activeWorkspaceTab = "pick";
+  const navigationProposalKeys = { pick: null, robot: null };
+
+  function activateWorkspaceTab(tab, focus = false) {
+    if (!workspaceTabs.includes(tab)) return;
+    activeWorkspaceTab = tab;
+    workspaceTabs.forEach((id) => {
+      const button = dom[`nav-${id}`];
+      const panel = dom[`view-${id}`];
+      const selected = id === tab;
+      if (button) {
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = selected ? 0 : -1;
+      }
+      if (panel) panel.hidden = !selected;
+    });
+    if (focus) dom[`nav-${tab}`]?.focus({ preventScroll: true });
+  }
+
+  function renderNavigation() {
+    let proposalTab = null;
+    for (const [tab, proposal] of [["pick", state?.proposal], ["robot", state?.robot_controls?.proposal]]) {
+      if (state?.busy) continue; // Wait until preparation has published the complete review.
+      if (typeof proposal?.token !== "string" || !proposal.token) continue;
+      const key = JSON.stringify([state?.instance_id, state?.device_epoch, proposal.token]);
+      if (navigationProposalKeys[tab] !== key) {
+        navigationProposalKeys[tab] = key;
+        if (connected && !localStopInhibit && !state?.stop_requested) {
+          proposalTab = tab === "pick" && proposal.assistant_request_id ? "assistant" : tab;
+        }
+      }
+    }
+    // Repeated polls, cleared proposals and ordinary mode changes preserve a
+    // user's tab choice. Only a newly observed preview draws attention to its tab.
+    activateWorkspaceTab(proposalTab || activeWorkspaceTab, Boolean(proposalTab && proposalTab !== activeWorkspaceTab));
+    if (proposalTab) {
+      const panel = dom[proposalTab === "pick" ? "proposal-panel" : proposalTab === "assistant" ? "view-assistant" : "robot-control-proposal"];
+      if (panel && !panel.hidden) panel.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start",
+      });
+    }
+  }
+
+  function initializeNavigation() {
+    workspaceTabs.forEach((tab, index) => {
+      const button = dom[`nav-${tab}`];
+      if (!button) return;
+      button.addEventListener("click", () => activateWorkspaceTab(tab, true));
+      button.addEventListener("keydown", (event) => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const next = event.key === "Home" ? 0 : event.key === "End" ? workspaceTabs.length - 1
+          : ["ArrowRight", "ArrowDown"].includes(event.key) ? (index + 1) % workspaceTabs.length
+          : ["ArrowLeft", "ArrowUp"].includes(event.key) ? (index + workspaceTabs.length - 1) % workspaceTabs.length : null;
+        if (next === null) return;
+        event.preventDefault();
+        activateWorkspaceTab(workspaceTabs[next], true);
+      });
+    });
+    renderNavigation();
+  }
+  // End workspace navigation.
 
   function renderMode() {
     const mode = state?.mode;
@@ -44,6 +160,10 @@
     }
     dom["mode-panel"].classList.toggle("live", mode === "live");
     text("mode-footer", mode === "demo" ? "Local demo · no physical movement" : "One controller · one action at a time");
+    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
+    const smooth = state?.motion?.handover_plan === "smooth_dual_arm_v1" ? " · Smooth dual-arm handover"
+      : state?.motion?.handover_motion === "blended_path" ? " · Smooth handover" : "";
+    text("motion-summary", `${state?.motion?.workflow === "v4_snapshot" ? "Snapshot picking · " : ""}Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · ${home}${smooth}`);
   }
 
   function renderConnection() {
@@ -54,6 +174,200 @@
     const error = transientError || asMessage(state?.error);
     text("error-banner", error);
     hide("error-banner", !error);
+  }
+
+  // Device ownership is server-confirmed; a dropdown choice is only a draft.
+  const deviceSnapshot = () => state?.devices && typeof state.devices === "object" && !Array.isArray(state.devices) ? state.devices : null;
+  const deviceEntries = () => Array.isArray(deviceSnapshot()?.entries)
+    ? deviceSnapshot().entries.filter((entry) => entry && ["mac", "pi", "lynx"].includes(entry.id)) : [];
+  const deviceLabel = (entry) => typeof entry?.label === "string" && entry.label.trim() ? entry.label : ({ mac: "Computer", pi: "Raspberry Pi", lynx: "Lynx" })[entry?.id] || "Unknown device";
+  const deviceNeedsInspection = (entry) => typeof entry?.status === "string" && entry.status.trim().toLowerCase().replaceAll("_", " ") === "needs inspection";
+  const deviceStartupStatus = (entry) => typeof entry?.status === "string" && ["starting", "startup failed"].includes(entry.status.trim().toLowerCase())
+    ? entry.status.trim().toLowerCase() : null;
+  const deviceSwitchReady = () => connected && Boolean(deviceSnapshot()) && state.devices.can_switch === true
+    && !state.devices.switching && !state.busy && !state.stop_in_flight && !posting && !stopPosting
+    && typeof state.device_epoch === "string" && state.device_epoch.length > 0;
+  const deviceSwitchAllowed = (id) => deviceSwitchReady() && id !== state.devices.active_id
+    && deviceEntries().some((entry) => entry.id === id && entry.available === true);
+
+  function renderDevices() {
+    const devices = deviceSnapshot();
+    hide("device-panel", !devices);
+    hide("inference-panel", Boolean(devices) || state?.mode === "demo" || state?.inference?.enabled !== true || state?.inference?.state === "local_only");
+    if (!devices) {
+      deviceChoice = "";
+      deviceSelectionKey = "";
+      return;
+    }
+    const entries = deviceEntries();
+    const selectionKey = JSON.stringify([state.instance_id, state.device_epoch, devices.selected_id]);
+    if (selectionKey !== deviceSelectionKey) {
+      deviceSelectionKey = selectionKey;
+      deviceChoice = entries.some((entry) => entry.id === devices.selected_id) ? devices.selected_id : "";
+    }
+    const optionsKey = JSON.stringify(entries);
+    if (optionsKey !== deviceOptionsKey) {
+      deviceOptionsKey = optionsKey;
+      dom["device-select"].replaceChildren();
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose a device";
+      placeholder.disabled = true;
+      dom["device-select"].append(placeholder);
+      entries.forEach((entry) => {
+        const option = document.createElement("option");
+        option.value = entry.id;
+        option.disabled = entry.available !== true;
+        option.textContent = `${deviceLabel(entry)}${deviceNeedsInspection(entry) ? " — needs inspection" : option.disabled ? " — unavailable" : ""}`;
+        option.title = typeof entry.reason === "string" ? entry.reason : "";
+        dom["device-select"].append(option);
+      });
+    }
+    dom["device-select"].value = deviceChoice;
+    dom["device-select"].disabled = !deviceSwitchReady();
+    dom["device-use-button"].disabled = !deviceSwitchAllowed(deviceChoice);
+    text("device-use-button", devices.switching ? "Switching…" : "Use device");
+    const active = entries.find((entry) => entry.id === devices.active_id);
+    const choice = entries.find((entry) => entry.id === deviceChoice);
+    text("device-active", active ? `${deviceLabel(active)}${devices.switching ? " · handoff pending" : ""}` : "None confirmed");
+    text("device-model", active && typeof active.model === "string" && active.model.trim() ? active.model : "Not available");
+    text("device-status", active && typeof active.status === "string" && active.status.trim() ? deviceNeedsInspection(active) ? "Needs inspection" : active.status.replaceAll("_", " ") : "Not available");
+    text("device-badge", !connected ? "LAST KNOWN STATE" : devices.switching ? "SWITCHING" : active ? deviceStartupStatus(active)?.toUpperCase()
+      || (active.available === true ? state.ready ? "READY" : "SELECTED · NOT READY" : "ACTIVE · UNAVAILABLE") : "NO ACTIVE DEVICE");
+    text("device-selection-note", choice && (choice.available !== true || deviceNeedsInspection(choice) || deviceStartupStatus(choice)) ? choice.reason || "This device is not ready."
+      : choice && choice.id !== devices.active_id ? `${deviceLabel(choice)} is selected in this menu. Use device to activate it.`
+      : active && state.assistant_available === true && devices.active_id === "mac" ? `${deviceLabel(active)} runs detection and picking. The Assistant can take a fresh photo when needed.`
+      : active ? "The active device runs detection and picking. This is not confirmation of a new scan."
+      : "Choose an available device, then select Use device.");
+    text("device-message", !connected ? "Connection lost. Device status is the last received snapshot; switching is disabled."
+      : typeof devices.message === "string" ? devices.message : "");
+    hide("device-message", !dom["device-message"].textContent);
+    const blockedDevices = entries.filter((entry) => (entry.available !== true || deviceNeedsInspection(entry) || deviceStartupStatus(entry) === "startup failed") && typeof entry.reason === "string" && entry.reason.trim());
+    dom["device-blocked-reasons"].replaceChildren();
+    blockedDevices.forEach((entry) => {
+      const item = document.createElement("li");
+      item.textContent = `${deviceLabel(entry)}${deviceNeedsInspection(entry) ? " · Needs inspection" : ""}: ${entry.reason}`;
+      dom["device-blocked-reasons"].append(item);
+    });
+    hide("device-blocked-reasons", !blockedDevices.length);
+  }
+
+  // Provider evidence comes only from the controller, never from probes or browser counters.
+  const inferenceObject = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  const inferenceString = (value, fallback = "") => typeof value === "string" && value.trim() ? value : fallback;
+  const inferenceCount = (value) => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const inferenceProvider = (value) => ({ mac: "MacBook", pi: "Raspberry Pi", local: "Local model" })[value] || "Unknown";
+  const inferenceTime = (value) => typeof value === "string" && value.trim() ? clockText(value) : "";
+
+  function renderInference() {
+    if (inferenceObject(state?.devices)) return;
+    const snapshot = inferenceObject(state?.inference);
+    const demo = state?.mode === "demo";
+    const enabled = !demo && snapshot?.enabled === true && snapshot.state !== "local_only";
+    hide("inference-panel", !enabled);
+    const localProvider = ["pi", "local"].includes(snapshot?.local_provider) ? snapshot.local_provider
+      : snapshot?.selected_provider === "local" ? "local" : "pi";
+    const permittedProviders = enabled ? ["mac", localProvider] : [localProvider];
+    const stale = !connected && Boolean(state);
+    const knownStates = {
+      mac_preferred: ["MAC PREFERRED", "Waiting for a result", "neutral"],
+      mac_active: ["MAC ACTIVE", "MacBook supplied the latest accepted result.", "mac"],
+      switching_to_pi: ["SWITCHING TO PI", "Waiting for a Raspberry Pi result.", "switching"],
+      pi_active: ["PI ACTIVE", "Raspberry Pi supplied the latest accepted result.", "pi"],
+      mac_recovering: ["CHECKING MAC", `${inferenceProvider(localProvider)} remains selected while the MacBook is checked.`, "switching"],
+      mac_probing: ["CHECKING MAC", "Checking whether the MacBook can accept requests again.", "switching"],
+      mac_ready: ["MAC PREFERRED", "Waiting for the first accepted MacBook result.", "neutral"],
+      failback_pending: ["MAC RETURN PENDING", "Recovery checks passed. The source will change at a request boundary.", "switching"],
+      switching_to_mac: ["SWITCHING TO MAC", "Waiting for a new MacBook result.", "switching"],
+      local_ready: ["LOCAL READY", "Waiting for a local inference result.", "neutral"],
+      local_active: ["LOCAL ACTIVE", "Local inference is selected.", "neutral"],
+      unavailable: ["INFERENCE UNAVAILABLE", "No provider result is available for the current request.", "error"],
+      audit_failed: ["RECORDING FAILED", "Inference records could not be saved. Check the controller before continuing.", "error"],
+      stopped: ["INFERENCE STOPPED", "Inference processing has stopped.", "neutral"],
+    };
+    if (localProvider === "local") {
+      knownStates.switching_to_pi = ["SWITCHING TO LOCAL", "Waiting for a local inference result.", "switching"];
+    }
+    const labels = enabled || (!demo && snapshot && ["unavailable", "audit_failed", "stopped"].includes(snapshot.state))
+      ? (Object.hasOwn(knownStates, snapshot.state) ? knownStates[snapshot.state] : ["STATUS UNKNOWN", "Waiting for a recognized provider status.", "neutral"])
+      : demo ? ["DEMO · NO FALLBACK", "The sample scene does not use MacBook or Raspberry Pi inference.", "neutral"]
+      : snapshot ? ["LOCAL ONLY · NO FALLBACK", `${inferenceProvider(localProvider)} supplies inference. MacBook fallback is not enabled in this controller.`, "neutral"]
+      : ["STATUS UNAVAILABLE", "This controller has not reported inference-source status. Fallback is not confirmed.", "neutral"];
+    dom["inference-panel"].dataset.tone = stale ? "stale" : labels[2];
+    text("inference-badge", stale ? "STALE · DISCONNECTED" : !state ? "CONNECTING" : labels[0]);
+    hide("inference-stale", !stale);
+    text("inference-reason", !state ? "Waiting for controller status." : enabled ? inferenceString(snapshot.reason, labels[1]) : labels[1]);
+
+    const candidate = inferenceObject(snapshot?.last_result);
+    const result = !demo && candidate && permittedProviders.includes(candidate.provider) ? candidate : null;
+    text("inference-provider", result ? inferenceProvider(result.provider) : demo ? "Sample scene" : "No accepted result");
+    const acceptedTime = inferenceTime(result?.accepted_at);
+    const duration = Number.isFinite(result?.duration_ms) && result.duration_ms >= 0
+      ? result.duration_ms < 1000 ? `${Math.round(result.duration_ms)} ms` : `${(result.duration_ms / 1000).toFixed(2)} s`
+      : "duration unavailable";
+    text("inference-result-time", result ? `${stale ? "Last known: " : ""}${acceptedTime ? `Accepted at ${acceptedTime}` : "Acceptance time unavailable"} · ${duration}`
+      : demo ? "No inference result is produced in demo mode." : "A selected provider is not evidence of a completed result.");
+    text("inference-observation", inferenceString(result?.observation_id, "None accepted"));
+    text("inference-request-id", inferenceString(result?.request_id, "None accepted"));
+    const selected = !demo && permittedProviders.includes(snapshot?.selected_provider) ? inferenceProvider(snapshot.selected_provider)
+      : demo ? "Sample scene" : "Unavailable";
+    const inFlight = !demo && permittedProviders.includes(snapshot?.in_flight_provider) ? inferenceProvider(snapshot.in_flight_provider) : "None reported";
+    text("inference-selected", `${stale ? "Last known: " : ""}${selected}`);
+    text("inference-requested", `${stale ? "Last known: " : ""}${inFlight}`);
+    const counters = inferenceObject(snapshot?.counters);
+    const countLabel = (provider) => inferenceCount(counters?.[provider]) ?? "—";
+    const localCount = `${localProvider === "pi" ? "Pi" : "Local"} ${countLabel(localProvider)}`;
+    text("inference-counters", demo ? "Not applicable" : enabled ? `Mac ${countLabel("mac")} · ${localCount}`
+      : snapshot && snapshot.selected_provider === localProvider ? localCount : "Unavailable");
+
+    const recovery = inferenceObject(snapshot?.recovery);
+    const successes = inferenceCount(recovery?.successes);
+    const required = inferenceCount(recovery?.required);
+    const recovering = enabled && ["pi_active", "local_active", "mac_recovering", "mac_probing", "failback_pending", "switching_to_mac"].includes(snapshot.state) && required > 0 && successes !== null;
+    hide("inference-recovery", !recovering);
+    // next_probe_at is a coordinator monotonic deadline, not a wall-clock time.
+    text("inference-recovery", recovering ? `${stale ? "Last known " : ""}Mac recovery checks: ${successes}/${required}${recovery.ready === true ? " · ready for the next request boundary" : ""}. These checks do not replace the last accepted result.` : "");
+
+    // Render the server's bounded history. Refresh/reconnection never fabricates events.
+    const events = !demo && Array.isArray(snapshot?.events) ? snapshot.events.filter((event) => inferenceObject(event) && typeof event.message === "string").slice(-8).reverse() : [];
+    const key = JSON.stringify([snapshot?.session_id, enabled, demo, events]);
+    text("inference-event-count", events.length);
+    text("inference-history-note", demo ? "Demo mode does not exercise inference failover."
+      : "Accepted results and this history come from the controller. Recovery checks do not count as accepted results.");
+    if (inferenceEventsKey === key) return;
+    inferenceEventsKey = key;
+    dom["inference-events"].replaceChildren();
+    if (!events.length) {
+      const empty = document.createElement("li");
+      empty.className = "inference-event-empty";
+      empty.textContent = demo ? "No inference-source events in demo mode." : "No source events reported.";
+      dom["inference-events"].append(empty);
+      return;
+    }
+    events.forEach((event) => {
+      const item = document.createElement("li");
+      item.className = "inference-event";
+      item.dataset.level = ["warning", "error", "info"].includes(event.level) ? event.level : "info";
+      const time = document.createElement("time");
+      time.textContent = inferenceTime(event.time) || "Time unknown";
+      if (inferenceTime(event.time)) time.dateTime = event.time;
+      const message = document.createElement("span");
+      message.textContent = event.message;
+      const evidence = [inferenceString(event.observation_id), inferenceString(event.request_id)].filter(Boolean);
+      if (evidence.length) item.title = evidence.join(" · ");
+      item.append(time, message);
+      dom["inference-events"].append(item);
+    });
+  }
+
+  function renderStop() {
+    const stopping = localStopInhibit || state?.stop_requested;
+    hide("stop-panel", !stopping);
+    const status = state?.stop?.state;
+    text("stop-title", status === "confirmed" ? "Controller reported software stop" : status === "previewed" ? "Dry run: stop latched locally" : status === "unconfirmed" ? "Software stop unconfirmed" : "Software stop requested");
+    text("stop-message", state?.stop?.message || "Waiting for confirmation of the stop request. The browser cannot guarantee that the robot has stopped.");
+    dom["stop-panel"].classList.toggle("unconfirmed", status === "unconfirmed");
+    text("stop-button", stopPosting || state?.stop_in_flight ? "Requesting stop…" : "Stop robot");
   }
 
   function chooseCup(id) {
@@ -107,7 +421,7 @@
       dot.className = "status-dot";
       const label = document.createElement("span");
       label.className = "cup-status-label";
-      label.textContent = cup.selectable ? (cup.pick_available ? "Available" : "Hover only") : "Blocked";
+      label.textContent = ["placed", "replaced"].includes(cup.status) ? "Completed" : cup.selectable ? (cup.pick_available ? "Available" : "Hover only") : "Blocked";
       status.append(dot, label);
       card.append(topline, confidence, status);
       card.title = cup.blocked_reason || `Select cup ${cup.id}`;
@@ -157,22 +471,44 @@
   }
 
   function renderSelection() {
-    const target = state?.proposal?.cup_id ?? selectedId;
+    const targets = selectedIds();
     document.querySelectorAll(".cup-card").forEach((card) => {
-      const selected = Number(card.dataset.cupId) === target;
+      const selected = targets.includes(Number(card.dataset.cupId));
       card.classList.toggle("selected", selected);
       card.setAttribute("aria-pressed", String(selected));
     });
-    const cup = currentCup();
-    hide("selection-tools", !cup || Boolean(state?.proposal));
-    if (cup) {
-      text("selected-label", `Cup ${cup.id} selected`);
-      text("selected-status", !state.scan_usable ? "New scan required" : cup.selectable ? "Review an action" : "Movement blocked");
-      const reason = cup.blocked_reason || (!cup.pick_available && cup.selectable ? "Pick is unavailable for this detection. Hover may still be available." : "");
-      text("selected-reason", reason);
-      hide("selected-reason", !reason);
-    }
+    renderSelectedActions();
     renderOverlay();
+  }
+
+  function selectedActionAllowed(action) {
+    const cup = currentCup();
+    if (!actionable() || state?.proposal || !safeScan() || !cup?.selectable) return false;
+    return action === "hover" || (action === "pick" && Boolean(cup.pick_available) && gridReady() && availableLocations().length > 0);
+  }
+
+  function renderSelectedActions() {
+    const cup = currentCup();
+    hide("selection-tools", false);
+    text("selected-label", cup ? `Cup ${cup.id} selected` : "Pick one selected cup");
+    text("selected-status", !state?.scan_usable ? "Fresh scan needed" : !cup ? "No cup selected" : selectedActionAllowed("pick") ? "Ready to preview" : "Check below");
+    const reason = !connected ? "Reconnect to the dashboard before selecting a cup."
+      : !state?.ready ? "Wait for the selected controller to become ready."
+      : state?.devices?.switching ? "Wait for the device switch, then scan and select a cup."
+      : state?.busy || posting || stopPosting ? "Wait for the current operation to finish before selecting an action."
+      : state?.recovery_required ? "Inspect the robot and acknowledge app recovery, then scan again and select a cup."
+      : localStopInhibit || state?.stop_requested ? "Stop is latched. Complete app recovery, then scan again and select a cup."
+      : state?.proposal ? "Review or cancel the current preview before choosing another action."
+      : !safeScan() ? "Scan workspace, then select a cup in the image or the detected cups list."
+      : !cup ? "Select one cup in the image or the detected cups list. Picking it opens a preview for your confirmation."
+      : !cup.selectable ? cup.blocked_reason || "This cup cannot be selected for movement. Scan again after checking the scene."
+      : !cup.pick_available ? cup.blocked_reason || "Picking is unavailable for this detection. Hover may still be available."
+      : !gridReady() ? "A valid placement grid is required to pick this cup. Hover may still be available."
+      : !availableLocations().length ? "No placement location is available. Inspect the saved placement records and camera blocks before picking. Hover may still be available."
+      : "Only this cup will be picked. Review its destination and confirm before movement.";
+    text("selected-reason", reason);
+    hide("selected-reason", false);
+    ["hover", "pick"].forEach((action) => { dom[`${action}-button`].disabled = !selectedActionAllowed(action); });
   }
 
   function renderOverlay() {
@@ -182,39 +518,439 @@
     const image = dom["camera-image"];
     overlay.setAttribute("viewBox", `0 0 ${image.naturalWidth} ${image.naturalHeight}`);
     overlay.setAttribute("preserveAspectRatio", "xMidYMid meet");
-    const target = state?.proposal?.cup_id ?? selectedId;
-    const cup = cups().find((item) => item.id === target);
-    if (!cup) return;
-    const box = cup.bbox_xyxy;
-    if (Array.isArray(box) && box.length === 4 && box.every(Number.isFinite) && box[2] > box[0] && box[3] > box[1]) {
-      const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-      rect.setAttribute("x", box[0] - 8);
-      rect.setAttribute("y", box[1] - 8);
-      rect.setAttribute("width", box[2] - box[0] + 16);
-      rect.setAttribute("height", box[3] - box[1] + 16);
-      rect.setAttribute("rx", "10");
-      rect.classList.add("selection-box");
-      overlay.append(rect);
-    } else if (Number.isFinite(cup.pixel?.u) && Number.isFinite(cup.pixel?.v)) {
-      const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      circle.setAttribute("cx", cup.pixel.u);
-      circle.setAttribute("cy", cup.pixel.v);
-      circle.setAttribute("r", "18");
-      circle.classList.add("selection-dot");
-      overlay.append(circle);
+    if (state?.inventory?.image_overlay === "native") renderNativeOverlay(overlay, image);
+    const targets = selectedIds();
+    cups().filter((item) => targets.includes(item.id)).forEach((cup) => {
+      const box = cup.bbox_xyxy;
+      if (Array.isArray(box) && box.length === 4 && box.every(Number.isFinite) && box[2] > box[0] && box[3] > box[1]) {
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("x", box[0] - 8);
+        rect.setAttribute("y", box[1] - 8);
+        rect.setAttribute("width", box[2] - box[0] + 16);
+        rect.setAttribute("height", box[3] - box[1] + 16);
+        rect.setAttribute("rx", "10");
+        rect.classList.add("selection-box");
+        overlay.append(rect);
+      } else if (Number.isFinite(cup.pixel?.u) && Number.isFinite(cup.pixel?.v)) {
+        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        circle.setAttribute("cx", cup.pixel.u);
+        circle.setAttribute("cy", cup.pixel.v);
+        circle.setAttribute("r", "18");
+        circle.classList.add("selection-dot");
+        overlay.append(circle);
+      }
+    });
+  }
+
+  function renderNativeOverlay(overlay, image) {
+    const validPoint = (point) => Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)
+      && Math.abs(point[0]) <= image.naturalWidth * 4 && Math.abs(point[1]) <= image.naturalHeight * 4;
+    const node = (tag, attributes, content) => {
+      const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      Object.entries(attributes).forEach(([key, value]) => element.setAttribute(key, value));
+      if (content !== undefined) element.textContent = content;
+      overlay.append(element);
+    };
+    const slots = state.inventory.placement_observation?.slots;
+    (Array.isArray(slots) ? slots.slice(0, 128) : []).forEach((slot) => {
+      const points = slot?.polygon_px;
+      if (!Number.isSafeInteger(slot?.id) || slot.id <= 0 || !Array.isArray(points) || points.length < 3 || points.length > 16 || !points.every(validPoint)) return;
+      const status = ["clear", "occupied", "unknown"].includes(slot.state) ? slot.state : "unknown";
+      node("polygon", { points: points.map((point) => point.join(",")).join(" "), class: `native-grid native-grid-${status}` });
+      const x = points.reduce((total, point) => total + point[0], 0) / points.length;
+      const y = points.reduce((total, point) => total + point[1], 0) / points.length;
+      node("text", { x, y, class: `native-label native-slot-label native-label-${status}`, "text-anchor": "middle" }, `P${slot.id}`);
+    });
+    cups().slice(0, 128).forEach((cup) => {
+      if (!Number.isSafeInteger(cup.id) || cup.id <= 0) return;
+      const box = cup.bbox_xyxy;
+      const validBox = Array.isArray(box) && box.length === 4 && validPoint(box.slice(0, 2)) && validPoint(box.slice(2)) && box[2] > box[0] && box[3] > box[1];
+      const point = validBox ? [box[0], box[1]] : [cup.pixel?.u, cup.pixel?.v];
+      if (!validPoint(point)) return;
+      if (validBox) node("rect", { x: box[0], y: box[1], width: box[2] - box[0], height: box[3] - box[1], class: "native-cup-box" });
+      node("text", { x: Math.max(0, Math.min(image.naturalWidth - 80, point[0])), y: Math.max(32, Math.min(image.naturalHeight - 4, point[1] - 10)), class: "native-label native-cup-label" }, `Cup ${cup.id}`);
+    });
+  }
+
+  function placementCupSummary(summary) {
+    if (!summary || !Number.isInteger(summary.assigned_count) || summary.assigned_count < 0
+        || !Array.isArray(summary.location_ids)
+        || !summary.location_ids.every((id) => Number.isInteger(id) && id > 0)
+        || new Set(summary.location_ids).size !== summary.location_ids.length
+        || summary.location_ids.length > summary.assigned_count
+        || (summary.assigned_count > 0 && !summary.location_ids.length)) return "";
+    const count = summary.assigned_count;
+    const cells = summary.location_ids.length;
+    let message = count ? `Last frame: ${count} cup${count === 1 ? "" : "s"} confidently located in ${cells} cell${cells === 1 ? "" : "s"}: ${summary.location_ids.map((id) => `P${id}`).join(", ")}.`
+      : "No cups confidently assigned to grid cells in the last frame.";
+    if (summary.stable_cell_counts === false) {
+      const minimum = summary.min_assigned_count;
+      const maximum = summary.max_assigned_count;
+      const range = Number.isInteger(minimum) && Number.isInteger(maximum)
+        && minimum >= 0 && minimum <= count && count <= maximum && minimum < maximum
+        ? ` (${minimum}–${maximum} confidently assigned cups)` : "";
+      message += ` Cup assignments changed across the scan${range}. Blocks from all frames are retained.`;
     }
+    return message;
+  }
+
+  function placementCameraLabel(camera, fallback) {
+    const evidence = Array.isArray(camera?.evidence) ? camera.evidence : [];
+    const labels = [];
+    if (Number.isInteger(camera?.cup_count) && camera.cup_count > 0) {
+      labels.push(`${camera.cup_count} cup${camera.cup_count === 1 ? "" : "s"}`);
+    } else if (evidence.includes("cup")) labels.push("cup seen earlier");
+    if (evidence.includes("detected_object")) labels.push("detected object");
+    if (evidence.includes("raised_depth") && !labels.length) labels.push("depth check");
+    return labels.length ? labels.join(" + ") : fallback;
+  }
+
+  function renderPlacements() {
+    const grid = state?.placement_grid;
+    const locations = placementLocations();
+    const available = availableLocations();
+    const reserved = locations.filter((location) => placementStatus(location) === "reserved").length;
+    const occupied = locations.filter((location) => placementStatus(location) === "occupied").length;
+    const unknown = locations.filter((location) => placementStatus(location) === "unknown").length;
+    const observation = state?.inventory?.placement_observation;
+    const observations = Array.isArray(observation?.slots) ? observation.slots : [];
+    const released = Array.isArray(observation?.released_ids) ? observation.released_ids : [];
+    const ready = gridReady();
+    text("placement-count", ready ? locations.length : "—");
+    text("placement-next", ready ? (available.length ? `Next: location ${available[0].id}` : "No available locations") : "Grid unavailable");
+    text("placement-summary", grid?.error ? asMessage(grid.error) : !ready ? "Placement grid unavailable. Picking is blocked until the controller loads it." : `${available.length} available · ${occupied} occupied · ${reserved} reserved · ${unknown} unknown / blocked${!connected ? " · view may be stale" : ""}`);
+    dom["placement-summary"].classList.toggle("has-error", !ready);
+    const observationMessage = observation ? [placementCupSummary(observation.cup_summary), asMessage(observation.message), released.length ? `${released.length} location${released.length === 1 ? "" : "s"} released: ${released.join(", ")}.` : "", observation.applied === false ? "Saved location status was not updated." : ""].filter(Boolean).join(" ") : state?.mode === "demo" ? "Sample placement status. This demo does not check a camera." : "No placement camera check in this scan.";
+    text("placement-observation", observationMessage);
+    text("placement-snapshot", state?.inventory ? `Last scan only${clockText(state.inventory.saved_at) ? ` · ${clockText(state.inventory.saved_at)}` : ""}. Scan again after removing a cup; this view does not update continuously.` : "Scan checks the placement area. Remove a cup and scan again to update its location.");
+    const key = JSON.stringify([grid, observation, state?.proposal?.placements]);
+    if (key === placementsKey) return;
+    placementsKey = key;
+    dom["placement-grid"].replaceChildren();
+    const proposed = Array.isArray(state?.proposal?.placements) ? state.proposal.placements.map((item) => item.id) : [];
+    locations.forEach((location) => {
+      const status = placementStatus(location);
+      const camera = observations.find((item) => item.id === location.id);
+      const cameraState = ["clear", "occupied", "unknown"].includes(camera?.state) ? camera.state : "not checked";
+      const cameraLabelText = placementCameraLabel(camera, cameraState);
+      const cameraDescription = `Camera: ${cameraLabelText}${camera?.reason ? ` (${asMessage(camera.reason)})` : ""}`;
+      const slot = document.createElement("div");
+      slot.className = `placement-slot ${status}${proposed.includes(location.id) ? " proposed" : ""}`;
+      slot.setAttribute("role", "listitem");
+      slot.setAttribute("aria-label", `Location ${location.id}: ${status}${proposed.includes(location.id) ? ", in current proposal" : ""}. ${cameraDescription}`);
+      const id = document.createElement("strong");
+      id.textContent = String(location.id);
+      const label = document.createElement("span");
+      label.textContent = proposed.includes(location.id) ? "Selected" : status === "unknown" ? "Blocked" : humanize(status);
+      slot.title = `Location ${location.id}: ${status}. X ${location.x}, Y ${location.y}, Z ${location.z} mm. ${cameraDescription}.`;
+      slot.append(id, label);
+      if (camera) {
+        const cameraLabel = document.createElement("span");
+        cameraLabel.className = "placement-camera-state";
+        cameraLabel.textContent = `Camera: ${cameraLabelText}`;
+        slot.append(cameraLabel);
+      }
+      dom["placement-grid"].append(slot);
+    });
   }
 
   function renderProposal() {
     const proposal = state?.proposal;
-    hide("proposal-panel", !proposal);
-    if (!proposal) return;
-    text("proposal-cup", proposal.cup_id);
-    text("proposal-action", proposal.action === "hover" ? "Hover above the cup" : "Pick → handover → place → return home");
+    hide("proposal-panel", !proposal || Boolean(proposal.assistant_request_id) || state?.busy || localStopInhibit || state?.stop_requested);
+    if (!proposal || proposal.assistant_request_id) return;
+    const batch = proposal.action === "goto_all";
+    const ids = batch && Array.isArray(proposal.cup_ids) ? proposal.cup_ids : [proposal.cup_id];
+    const cupCount = `${ids.length} cup${ids.length === 1 ? "" : "s"}`;
+    text("proposal-cup", batch ? `Pick ${cupCount}` : `Cup ${proposal.cup_id}`);
+    const homeAfterCup = proposal.home_after_cup ?? state?.motion?.home_after_cup ?? false;
+    text("proposal-action", proposal.action === "hover" ? "Hover above the cup"
+      : homeAfterCup ? "Pick → handover → place → return home" : "Pick → handover → place → lift clear");
     text("proposal-description", proposal.description);
-    text("proposal-context", `Selected from scan ${proposal.capture_id}. Check the highlighted cup before continuing.`);
-    text("confirm-button", `${state.mode === "live" ? "Confirm" : "Preview"} cup ${proposal.cup_id}`);
+    const saved = proposal.saved_cup;
+    hide("proposal-saved-cup", !saved);
+    if (saved) {
+      text("proposal-saved-name", saved.name);
+      text("proposal-saved-reason", `Model match: ${asMessage(saved.match_reason) || "No match explanation provided."}`);
+      setSavedImage(dom["proposal-saved-image"], dom["proposal-saved-image-fallback"], saved.thumbnail_url, saved.name);
+    }
+    const placements = Array.isArray(proposal.placements) ? proposal.placements : [];
+    hide("proposal-destinations", !placements.length);
+    text("proposal-destinations", placements.map((place, index) => `Cup ${ids[index] ?? "?"} → location ${place.id}`).join(" · "));
+    const excluded = Array.isArray(proposal.excluded_cup_ids) ? proposal.excluded_cup_ids : [];
+    hide("proposal-excluded", !excluded.length);
+    text("proposal-excluded", `Not included because no destination slots remain: ${excluded.map((id) => `cup ${id}`).join(", ")}.`);
+    const motion = state?.motion;
+    const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(proposal.acceleration ?? motion?.acceleration)}`;
+    const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
+    const home = homeAfterCup ? `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`
+      : "Automatic home off; arms remain at clearance poses";
+    const phases = proposal.phase_speeds;
+    const phaseReview = phases && ["pick_lift", "handover", "flip", "placement"].every((key) => Number.isFinite(phases[key]))
+      ? `Pick & lift: ${speedText(phases.pick_lift)}. Right handover: ${speedText(phases.handover)}. Cup flip: ${speedText(phases.flip)}, ${accelerationText(motion?.flip_acceleration)}. Place & clear: ${speedText(phases.placement)}.` : `${flip}.`;
+    text("proposal-motion", proposal.action === "hover" ? normal : `${normal}. ${phaseReview} ${home}.`);
+    const transfer = ["goto", "goto_all"].includes(proposal.action);
+    const handover = proposal.handover;
+    hide("proposal-handover", !transfer);
+    text("proposal-handover", transfer ? `Reviewed right receiving target: ${coordinatesText(handover?.receive_mm)}. Receiving approach: ${speedText(handover?.approach_speed)}.` : "");
+    text("proposal-context", `Selected from scan ${proposal.capture_id}. ${batch ? `Cups ${ids.join(", ")} run in this order. Check all highlighted cups and destinations.` : proposal.action === "hover" ? "Check the highlighted cup before continuing." : "Check the highlighted cup and destination before continuing."}`);
+    text("confirm-button", `${state.mode === "live" ? "Confirm" : "Preview"} ${batch ? cupCount : `cup ${proposal.cup_id}`}`);
     updateCountdown();
+  }
+
+  function renderSavedCups() {
+    const library = state?.saved_cups;
+    const entries = Array.isArray(library?.cups) ? library.cups.filter((cup) => cup && typeof cup.id === "string" && typeof cup.name === "string") : [];
+    const enabled = library?.enabled === true;
+    const canManage = controlActionable() && enabled;
+    const canFind = canManage && library?.matcher_enabled === true;
+    text("saved-cup-count", entries.length);
+    const error = asMessage(library?.error);
+    const busyMessage = state?.busy && state.operation === "pick_saved" ? "Scanning and comparing the saved reference…" : state?.busy && state.operation === "save_cup" ? "Saving the selected cup reference…" : "";
+    text("saved-cups-status", error || busyMessage || (!state ? "Loading saved cups…" : !enabled ? "Saved cup references are unavailable in this session." : !library.matcher_enabled ? "References are saved locally. Visual matching is unavailable in this session." : entries.length ? "Choose a saved reference to find it in a fresh scan." : "No saved cups yet."));
+    dom["saved-cups-status"].classList.toggle("has-error", Boolean(error));
+    const key = JSON.stringify(entries);
+    if (key !== savedCupsKey) {
+      savedCupsKey = key;
+      dom["saved-cup-list"].replaceChildren();
+      if (!entries.length) {
+        const empty = document.createElement("p");
+        empty.className = "saved-cups-empty";
+        empty.textContent = "Scan, select a cup, and save it with a name to find it again later.";
+        dom["saved-cup-list"].append(empty);
+      }
+      entries.forEach((saved) => {
+        const card = document.createElement("article");
+        card.className = "saved-cup-card";
+        card.dataset.savedCupId = saved.id;
+        const thumbnail = document.createElement("div");
+        thumbnail.className = "saved-cup-thumbnail";
+        const image = document.createElement("img");
+        image.hidden = true;
+        image.loading = "lazy";
+        const fallback = document.createElement("span");
+        fallback.textContent = "Reference unavailable";
+        image.addEventListener("error", () => { image.hidden = true; fallback.hidden = false; });
+        thumbnail.append(image, fallback);
+        setSavedImage(image, fallback, saved.thumbnail_url, saved.name);
+        const details = document.createElement("div");
+        details.className = "saved-cup-details";
+        const name = document.createElement("h3");
+        name.textContent = saved.name;
+        const label = document.createElement("p");
+        label.textContent = "Saved visual reference";
+        details.append(name, label);
+        const actions = document.createElement("div");
+        actions.className = "saved-cup-actions";
+        const find = document.createElement("button");
+        find.type = "button";
+        find.className = "button button-secondary";
+        find.dataset.savedPick = saved.id;
+        find.textContent = "Find & preview pick";
+        find.setAttribute("aria-label", `Find ${saved.name} and preview pick`);
+        find.addEventListener("click", () => { if (!find.disabled) post("/api/pick_saved", { id: saved.id }); });
+        const forget = document.createElement("button");
+        forget.type = "button";
+        forget.className = "cancel-button";
+        forget.dataset.savedForget = saved.id;
+        forget.textContent = "Forget";
+        forget.setAttribute("aria-label", `Forget saved cup ${saved.name}`);
+        forget.addEventListener("click", () => { if (!forget.disabled) post("/api/forget_cup", { id: saved.id }); });
+        actions.append(find, forget);
+        card.append(thumbnail, details, actions);
+        dom["saved-cup-list"].append(card);
+      });
+    }
+    dom["saved-cup-list"].querySelectorAll("[data-saved-pick]").forEach((button) => { button.disabled = !canFind; });
+    dom["saved-cup-list"].querySelectorAll("[data-saved-forget]").forEach((button) => { button.disabled = !canManage; });
+    const cup = currentCup();
+    const selection = cup ? `${selectedCapture}:${cup.id}` : "";
+    if (selection !== saveSelectionKey) {
+      saveSelectionKey = selection;
+      dom["save-cup-name"].value = "";
+    }
+    const name = dom["save-cup-name"].value.trim();
+    const canSave = canManage && safeScan() && cup?.can_save === true && !state?.proposal;
+    dom["save-cup-name"].disabled = !canSave;
+    dom["save-cup-button"].disabled = !canSave || !name || name.length > 48;
+    text("save-cup-hint", !enabled ? "Saving references is unavailable in this session." : !safeScan() ? "Scan again and select a cup before saving its reference." : cup?.can_save !== true ? "This detection cannot be saved. Choose a cup with a usable reference image." : "Save a name and reference image locally. Saving sends no movement command.");
+  }
+
+  // Discovery describes the gateway; reviewed allowlisted actions remain available.
+  // Ownership, Stop, recovery and confirmation still control dispatch.
+  function robotCapability(action) {
+    const capabilities = state?.robot_controls?.capabilities;
+    const capability = capabilities && !Array.isArray(capabilities) && typeof capabilities === "object"
+      && Object.hasOwn(capabilities, action) ? capabilities[action] : null;
+    return capability && !Array.isArray(capability) && typeof capability === "object" ? capability : null;
+  }
+
+  const robotActionSupported = (action) => ["home", "open", "grip", "rapid_reset", "rapid_start", "collision_ack"].includes(action);
+  const robotActionVisible = (action) => robotActionSupported(action);
+  const robotStatusAvailable = () => true;
+  const capabilityText = (action, field, fallback = "") => {
+    const value = robotCapability(action)?.[field];
+    return typeof value === "string" && value.trim() ? value : fallback;
+  };
+
+  function robotRequestSupported(path, payload) {
+    if (path === "/api/phase_speeds") return state?.motion?.phase_speeds_supported === true;
+    if (path === "/api/control_preview") return robotActionSupported(payload.action);
+    if (path === "/api/control_confirm") return robotActionSupported(state?.robot_controls?.proposal?.action);
+    if (path === "/api/robot_status") return robotStatusAvailable();
+    return true; // Stop remains a best-effort request; local settings need no gateway action.
+  }
+
+  const phaseSpeedKeys = ["pick_lift", "handover", "flip", "placement"];
+  const phaseSpeedNullable = (key) => ["handover", "placement"].includes(key);
+  const enteredPhaseSpeeds = () => Object.fromEntries(phaseSpeedKeys.map((key) => {
+    const value = dom[`phase-speed-${key}`].value.trim();
+    return [key, value === "" && phaseSpeedNullable(key) ? null : value === "" ? NaN : Number(value)];
+  }));
+  const validPhaseSpeeds = (values) => phaseSpeedKeys.every((key) => values?.[key] === null && phaseSpeedNullable(key)
+    || Number.isFinite(values?.[key]) && values[key] >= 1 && values[key] <= 1500);
+
+  function renderPhaseSpeedControls() {
+    const motion = state?.motion;
+    const supported = motion?.phase_speeds_supported === true;
+    const settings = motion?.phase_speed_settings;
+    const defaults = motion?.phase_speed_defaults;
+    const enabled = supported && controlActionable() && validPhaseSpeeds(settings);
+    hide("robot-phase-speeds", !supported);
+    text("robot-speed-policy", supported
+      ? "Overall speed is the ceiling for every stage. Automatic Home, when enabled, is limited to 200 mm/s and manual Home to 100 mm/s. Changes cancel pending previews and apply to future actions."
+      : "Apply sets normal speed and caps automatic Home, when enabled, at this speed, up to 200 mm/s. Applies until restart and cancels pending previews. Loaded pick and cup flip stay capped at 100 mm/s.");
+    phaseSpeedKeys.forEach((key) => {
+      const input = dom[`phase-speed-${key}`];
+      if (!supported || !phaseSpeedDirty) {
+        input.value = Number.isFinite(settings?.[key]) ? String(settings[key]) : "";
+      }
+      input.disabled = !enabled;
+      const effective = motion?.phase_speeds?.[key];
+      const approach = motion?.handover?.approach_speed;
+      text(`phase-speed-${key}-current`, `Applied: ${speedText(effective)}${key === "handover" && Number.isFinite(approach) && approach !== effective ? ` · Receiving: ${speedText(approach)}` : ""}`);
+      const defaultValue = defaults?.[key];
+      text(`phase-speed-${key}-default`, Number.isFinite(defaultValue) ? `Default: ${speedText(defaultValue)}`
+        : defaultValue === null && phaseSpeedNullable(key) ? "Default: follow overall" : "Default unavailable");
+    });
+    if (!supported) phaseSpeedDirty = false;
+    const entered = enteredPhaseSpeeds();
+    const changed = phaseSpeedKeys.some((key) => entered[key] !== settings?.[key]);
+    dom["robot-phase-speed-apply"].disabled = !enabled || !validPhaseSpeeds(entered) || !changed;
+    dom["robot-phase-speed-defaults"].disabled = !enabled || !validPhaseSpeeds(defaults)
+      || phaseSpeedKeys.every((key) => entered[key] === defaults[key]);
+    text("robot-phase-speed-status", !supported ? "" : !enabled ? "Wait until the controller is idle and ready to change speeds."
+      : !validPhaseSpeeds(entered) ? "Enter a speed from 1 to 1500 mm/s. Right receiving and placement may be left blank to follow overall."
+      : changed ? "Changes have not been applied. Review the values, then apply stage speeds." : "These settings are applied. No movement is started by changing a speed.");
+    const aligned = state?.motion?.handover?.adjusted === true;
+    text("robot-phase-speed-cap", aligned
+      ? "Each applied speed is limited by overall speed. The adjusted handover alignment also limits the right receiving approach to 25 mm/s. Blank right receiving or placement follows overall speed."
+      : "Each applied speed is limited by overall speed. Blank right receiving or placement follows overall speed. The cup flip keeps its reduced acceleration.");
+  }
+
+  function renderRobotControls() {
+    const controls = state?.robot_controls;
+    const snapshot = controls?.status;
+    const proposal = controls?.proposal;
+    const enabled = controlActionable();
+    const currentSpeed = state?.motion?.speed;
+    if (!speedDirty && document.activeElement !== dom["robot-speed-input"]) dom["robot-speed-input"].value = Number.isFinite(currentSpeed) ? String(currentSpeed) : "";
+    const enteredSpeed = Number(dom["robot-speed-input"].value);
+    const validSpeed = dom["robot-speed-input"].value.trim() !== "" && Number.isFinite(enteredSpeed) && enteredSpeed >= 1 && enteredSpeed <= 1500;
+    const speedChanged = enteredSpeed !== currentSpeed || Math.min(enteredSpeed, 200) !== state?.motion?.home_speed;
+    dom["robot-speed-input"].disabled = !enabled;
+    dom["robot-speed-button"].disabled = !enabled || !validSpeed || !speedChanged;
+    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
+    text("robot-speed-current", `Applied overall ${speedText(currentSpeed)} · ${home}.`);
+    renderPhaseSpeedControls();
+    renderReleaseLocations();
+    text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
+    hide("robot-status-button", !robotStatusAvailable());
+    dom["robot-status-button"].disabled = !idle() || Boolean(state?.stop_in_flight) || !robotStatusAvailable();
+    text("robot-status-button", state?.busy && state.operation === "robot_status" ? "Reading controller…" : "Refresh robot status");
+    const actionButtons = Array.from(document.querySelectorAll("[data-robot-action]"));
+    actionButtons.forEach((button) => {
+      const action = button.dataset.robotAction;
+      const supported = robotActionSupported(action);
+      button.hidden = !robotActionVisible(action);
+      button.disabled = !enabled || !supported;
+      button.dataset.defaultLabel ||= button.textContent;
+      if (!button.dataset.arm) button.textContent = capabilityText(action, "label", button.dataset.defaultLabel);
+      button.title = supported ? capabilityText(action, "description", capabilityText(action, "reason")) : capabilityText(action, "reason", "This control is not ready.");
+    });
+    hide("robot-home-tool", !robotActionVisible("home"));
+    hide("robot-gripper-tool", !robotActionVisible("open") && !robotActionVisible("grip"));
+    const blockedReasons = (actions) => [...new Set(actions.filter((action) => robotActionVisible(action) && !robotActionSupported(action))
+      .map((action) => capabilityText(action, "reason", "This control is not ready.")))].join(" ");
+    for (const [id, actions] of [["robot-home-reason", ["home"]], ["robot-gripper-reason", ["open", "grip"]]]) {
+      const reason = blockedReasons(actions);
+      text(id, reason);
+      hide(id, !reason);
+    }
+    const discoveryReason = capabilityText("robot_status", "reason");
+    text("robot-capability-notice", `Gateway discovery is informational. Review and confirm each robot action.${discoveryReason && robotCapability("robot_status")?.supported !== true ? ` ${discoveryReason}` : ""}`);
+    dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
+    text("robot-controls-badge", !connected ? "Disconnected" : state?.recovery_required ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
+    dom["robot-controls-panel"].classList.toggle("live", state?.mode === "live");
+    text("robot-rapid-state", snapshot?.execution_state ? humanize(snapshot.execution_state) : "Not read");
+    text("robot-controller-state", snapshot?.controller_state ? humanize(snapshot.controller_state) : "Not read");
+    text("robot-operation-mode", snapshot?.operation_mode ? humanize(snapshot.operation_mode) : "Not read");
+    text("robot-collision-state", snapshot?.collision_state != null ? humanize(snapshot.collision_state) : "Unknown");
+    text("robot-status-time", snapshot ? `${state?.mode === "demo" ? "Demo snapshot" : state?.mode === "dry_run" ? "Dry-run snapshot" : "Read from controller"}${snapshot.read_at ? ` · ${clockText(snapshot.read_at)}` : ""}. Refresh before recovery; this is not a continuous safety monitor.` : "Refresh to read the robot controller.");
+    const statusError = asMessage(snapshot?.collision_error);
+    text("robot-status-error", statusError);
+    hide("robot-status-error", !statusError);
+    const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : state?.recovery_required ? "Inspect both arms and the cup, then use Acknowledge app recovery to clear the local block. This does not clear the robot’s collision fault." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
+    text("robot-control-inhibit", inhibit);
+    hide("robot-control-inhibit", !inhibit);
+    hide("robot-control-proposal", !proposal || localStopInhibit || state?.stop_requested);
+    dom["robot-control-cancel"].disabled = !enabled || !proposal;
+    const proposalSupported = Boolean(proposal && robotActionSupported(proposal.action));
+    dom["robot-control-ack"].disabled = !enabled || !proposalSupported;
+    hide("robot-control-ack-row", !proposalSupported);
+    hide("robot-control-confirm", !proposalSupported);
+    if (!proposalSupported) dom["robot-control-ack"].checked = false;
+    if (proposal) {
+      const titles = {home: "Move to home", open: "Open gripper", grip: "Close gripper", collision_ack: "Acknowledge controller collision", rapid_reset: "Reset robot program (leave stopped)", rapid_start: "Initialize robot program"};
+      text("robot-control-proposal-heading", `${capabilityText(proposal.action, "label", titles[proposal.action] || humanize(proposal.action))}${proposal.arm ? ` · ${proposal.arm === "both" ? "both arms" : `${proposal.arm} arm`}` : ""}`);
+      text("robot-control-description", proposalSupported ? proposal.description
+        : capabilityText(proposal.action, "reason", "This action is no longer available from the gateway. Cancel this preview and refresh robot status."));
+      text("robot-control-proposal-speed", Number.isFinite(proposal.speed) ? `Reviewed speed: ${speedText(proposal.speed)}.` : "");
+      hide("robot-control-proposal-speed", !Number.isFinite(proposal.speed));
+      text("robot-control-confirm", state?.mode === "live" ? "Confirm robot action" : "Run preview only");
+    }
+    updateControlCountdown();
+  }
+
+  function cancelReleaseReview(message = "") {
+    releaseReview = null;
+    releaseMessage = message;
+    dom["release-locations-ack"].checked = false;
+  }
+
+  function renderReleaseLocations() {
+    const enabled = releaseActionable();
+    if (releaseReview && (!enabled || releaseReview.context !== releaseContext(state))) {
+      cancelReleaseReview("The controller or placement status changed. Review the locations again before clearing them.");
+    }
+    const locations = placementLocations();
+    const occupied = locations.filter((location) => location.occupied).length;
+    const reserved = locations.filter((location) => location.reserved).length;
+    const blocked = locations.filter((location) => location.vision_blocked).length;
+    text("release-locations-status", releaseMessage || (!connected ? "Reconnect to review the placement locations." : !gridReady() || !locations.length ? "Load a valid, nonempty placement grid before clearing locations." : !enabled ? "Wait for the current operation to finish before reviewing locations." : `${locations.length} locations · ${occupied} occupied · ${reserved} reserved · ${blocked} camera-blocked. Counts can overlap.`));
+    dom["release-locations-button"].disabled = !enabled || Boolean(releaseReview);
+    hide("release-locations-review", !releaseReview);
+    dom["release-locations-ack"].disabled = !enabled || !releaseReview;
+    dom["release-locations-confirm"].disabled = !enabled || !releaseReview || !dom["release-locations-ack"].checked;
+    dom["release-locations-cancel"].disabled = !releaseReview;
+    if (releaseReview) text("release-locations-description", `Mark all ${releaseReview.count} placement locations available: ${releaseReview.labels.join(", ")}. This clears their occupied, reserved and camera-blocked records. Their positions stay the same.`);
+  }
+
+  function updateControlCountdown() {
+    const proposal = state?.robot_controls?.proposal;
+    const remaining = proposal ? Math.max(0, Math.ceil((controlDeadline - performance.now()) / 1000)) : 0;
+    text("robot-control-countdown", remaining ? `${remaining}s to confirm` : "Preview expired");
+    dom["robot-control-countdown"].classList.toggle("expired", remaining === 0);
+    dom["robot-control-confirm"].disabled = !proposal || !robotActionSupported(proposal.action) || !controlActionable() || remaining === 0 || !dom["robot-control-ack"].checked;
   }
 
   function updateCountdown() {
@@ -226,7 +962,7 @@
   }
 
   function renderActivity() {
-    const busy = Boolean(state?.busy || posting);
+    const busy = Boolean(state?.busy || posting || stopPosting);
     const progress = state?.progress;
     text("activity-status", !connected ? "Offline" : busy ? "Working" : state?.recovery_required ? "Check required" : "Idle");
     dom["activity-indicator"].classList.toggle("busy", connected && busy);
@@ -234,15 +970,17 @@
     let description = "Scan the workspace, then select a cup or type a command.";
     if (!state) title = "Waiting for the controller";
     else if (!connected) { title = "Controller disconnected"; description = "This display may be stale. Active motion may continue."; }
+    else if (localStopInhibit || state.stop_requested) { title = state.stop?.state === "unconfirmed" ? "Software stop unconfirmed" : "Stop requested · new commands blocked"; description = state.stop?.message || "Waiting for the controller response. Nothing resumes automatically."; }
     else if (busy) { title = progress?.step ? humanize(progress.step) : humanize(state.operation || "Processing request"); description = state.mode === "live" ? "Follow the controller status. Use physical safety controls if needed." : "Processing locally. No physical movement is enabled."; }
     else if (state.recovery_required) { title = "Operator inspection required"; description = "Acknowledge recovery only after checking both arms and the cup."; }
-    else if (state.proposal) { title = "Waiting for your confirmation"; description = `Review the action for cup ${state.proposal.cup_id}. No movement has been requested yet.`; }
+    else if (state.robot_controls?.proposal) { title = "Review the robot control action"; description = "Inspect both arms and the held cup, then confirm the preview in Robot controls. Nothing has been sent to the robot yet."; }
+    else if (state.proposal) { title = "Waiting for your confirmation"; description = `Review the action for ${state.proposal.action === "goto_all" ? `cups ${(state.proposal.cup_ids || []).join(", ")}` : `cup ${state.proposal.cup_id}`}. No movement has been requested yet.`; }
     else if (state.error) { title = "Request blocked or interrupted"; description = asMessage(state.error); }
     else if (state.inventory && !state.scan_usable) description = "Capture a fresh scan before selecting another cup.";
     else if (state.inventory) description = "Choose a detected cup to see its available actions.";
     text("operation-title", asMessage(title));
     text("operation-description", description);
-    text("operation-symbol", !connected ? "○" : state?.error || state?.recovery_required ? "!" : busy ? "↻" : state?.proposal ? "◇" : "✓");
+    text("operation-symbol", !connected ? "○" : state?.error || state?.recovery_required || localStopInhibit ? "!" : busy ? "↻" : state?.proposal ? "◇" : "✓");
     const showProgress = progress && Number.isFinite(progress.total) && progress.total > 0;
     hide("progress-section", !showProgress);
     if (showProgress) {
@@ -253,6 +991,9 @@
       text("progress-step", humanize(progress.step || progress.state || "Sequence"));
       text("progress-count", `${completed} / ${progress.total}`);
     }
+    const batch = state?.batch || progress?.batch;
+    hide("batch-progress", !batch);
+    if (batch) text("batch-progress", `Cup ${batch.current} of ${batch.total}${batch.cup_id != null ? ` · selected ID ${batch.cup_id}` : ""} · ${Array.isArray(batch.completed_cups) ? batch.completed_cups.length : Number(batch.completed_cups) || 0} completed`);
     const events = Array.isArray(state?.events) ? state.events.slice(-7).reverse() : [];
     const key = JSON.stringify(events);
     if (key === eventsKey) return;
@@ -282,33 +1023,50 @@
   function renderControls() {
     const canAct = actionable();
     const pending = Boolean(state?.proposal);
-    const cup = currentCup();
+    dom["start-button"].disabled = !canAct || pending || Boolean(state?.recovery_required);
+    dom["stop-button"].disabled = !canStop();
+    dom["status-button"].disabled = !connected || quickPosting;
+    dom["help-button"].disabled = !connected || quickPosting;
     dom["scan-button"].disabled = !canAct || Boolean(state?.recovery_required);
     text("scan-button-label", state?.busy && state.operation === "scan" ? "Scanning…" : "Scan workspace");
-    dom["command-input"].disabled = !canAct || pending || Boolean(state?.recovery_required);
-    dom["command-button"].disabled = !canAct || pending || Boolean(state?.recovery_required) || !dom["command-input"].value.trim();
-    document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = !canAct || pending || !state?.llm_enabled || Boolean(state?.recovery_required); });
-    dom["hover-button"].disabled = !canAct || pending || !safeScan() || !cup?.selectable;
-    dom["pick-button"].disabled = !canAct || pending || !safeScan() || !cup?.pick_available;
+    const command = dom["command-input"].value.trim();
+    const readOnly = ["status", "help"].includes(command.toLowerCase());
+    dom["command-input"].disabled = !connected || !state?.ready;
+    dom["command-button"].disabled = isStop(command) ? !canStop() : readOnly ? !connected || quickPosting : !canAct || pending || Boolean(state?.recovery_required) || !command;
+    document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = !canAct || pending || (!state?.llm_enabled && !button.dataset.direct) || Boolean(state?.recovery_required); });
+    renderSelectedActions();
+    const pickable = pickableCups();
+    const capacity = availableLocations().length;
+    hide("batch-tools", !pickable.length);
+    text("batch-summary", `${pickable.length} cup${pickable.length === 1 ? "" : "s"} available for picking`);
+    text("batch-hint", !safeScan() ? "Scan again before selecting a batch." : !gridReady() ? "Load a valid placement grid before picking." : !capacity ? "No available placement locations remain." : capacity < pickable.length ? `Room for ${capacity} of ${pickable.length} cups. The preview selects the highest confidence cups that fit.` : "Review every cup and destination before confirming.");
+    dom["batch-button"].disabled = !canAct || pending || !safeScan() || !pickable.length || !gridReady() || !capacity;
     dom["cancel-button"].disabled = !canAct || !pending;
-    dom["recovery-button"].disabled = !canAct || !dom["recovery-ack"].checked || !state?.recovery_required;
-    dom["recovery-ack"].disabled = !canAct;
+    dom["recovery-button"].disabled = !idle() || !dom["recovery-ack"].checked || !state?.recovery_required;
+    dom["recovery-ack"].disabled = !idle();
     document.querySelectorAll(".cup-card").forEach((card) => { card.disabled = !connected || Boolean(state?.busy) || posting || pending; });
-    text("model-label", state?.llm_enabled ? `${state.model || "Local model"} · local` : "Terminal commands enabled");
-    text("command-hint", state?.llm_enabled ? "Every movement starts with an action preview." : "Use scan, list, goto 2, or hover 2. All movement requires confirmation.");
+    text("model-label", state?.mode === "demo" ? "Sample commands · demo" : "Commands · use Assistant for Astra");
+    text("command-hint", "Start prepares a batch. Stop, status and help also work while the controller is busy. Every movement requires confirmation.");
     dom["command-input"].placeholder = state?.llm_enabled ? "Pick cup two…" : "Try goto 2 or hover 2…";
     updateCountdown();
+    renderRobotControls();
+    renderSavedCups();
   }
 
   function render() {
     renderMode();
     renderConnection();
+    renderDevices();
+    renderInference();
+    renderStop();
     renderInventory();
     renderSelection();
+    renderPlacements();
     renderProposal();
     hide("recovery-panel", !state?.recovery_required || Boolean(state?.busy));
     renderActivity();
     renderControls();
+    renderNavigation();
   }
 
   async function readState() {
@@ -323,44 +1081,111 @@
       if (number < appliedPoll) return;
       appliedPoll = number;
       if (!state) transientError = "";
-      if (state && incoming.instance_id !== state.instance_id) {
+      if (releaseReview && (!incoming.ready || incoming.busy || incoming.stop_in_flight || releaseReview.context !== releaseContext(incoming))) {
+        cancelReleaseReview("The controller or placement status changed. Review the locations again before clearing them.");
+      }
+      if (state && (incoming.instance_id !== state.instance_id || incoming.device_epoch !== state.device_epoch)) {
+        const expectedDeviceTransition = Boolean(state.devices && incoming.devices
+          && incoming.device_epoch !== state.device_epoch
+          && (state.devices.switching || incoming.devices.switching
+            || state.devices.active_id !== incoming.devices.active_id));
         selectedId = null;
         selectedCapture = null;
+        imageCapture = null;
+        imageLoaded = false;
+        cardsKey = "";
+        placementsKey = "";
+        savedCupsKey = "";
+        saveSelectionKey = "";
+        quickGeneration += 1;
+        hide("quick-panel", true);
+        dom["selection-overlay"].replaceChildren();
+        dom["camera-image"].removeAttribute("src");
+        hide("image-stage", true);
         proposalDeadline = 0;
+        controlDeadline = 0;
+        speedDirty = false;
+        phaseSpeedDirty = false;
         dom["recovery-ack"].checked = false;
-        transientError = "The controller restarted. Review its current state and scan again before selecting a cup.";
+        dom["robot-control-ack"].checked = false;
+        transientError = expectedDeviceTransition ? "" : incoming.instance_id !== state.instance_id
+          ? "The controller restarted. Review its current state and scan again before selecting a cup."
+          : "The active device changed. Scan again before selecting a cup.";
       }
       if (state?.recovery_required !== incoming.recovery_required) dom["recovery-ack"].checked = false;
+      if (state?.robot_controls?.proposal?.token !== incoming.robot_controls?.proposal?.token) {
+        dom["robot-control-ack"].checked = false;
+        if (incoming.robot_controls?.proposal) dom["robot-controls-panel"].open = true;
+      }
+      if (incoming.stop_requested && !state?.stop_requested) {
+        quickGeneration += 1;
+        hide("quick-panel", true);
+      }
+      if (incoming.stop_requested || (state?.stop_requested && !incoming.stop_requested)) localStopInhibit = false;
       state = incoming;
       connected = true;
       proposalDeadline = state.proposal && Number.isFinite(state.proposal.expires_in) ? performance.now() + Math.max(0, state.proposal.expires_in) * 1000 : 0;
+      controlDeadline = state.robot_controls?.proposal && Number.isFinite(state.robot_controls.proposal.expires_in) ? performance.now() + Math.max(0, state.robot_controls.proposal.expires_in) * 1000 : 0;
       render();
+      window.dispatchEvent?.(new CustomEvent("assistant-state", { detail: state }));
     } catch (error) {
       if (number < appliedPoll) return;
       appliedPoll = number;
       connected = false;
+      if (releaseReview) cancelReleaseReview("Connection lost. Review the current placement locations after reconnecting.");
       if (!state) transientError = "Could not reach the local controller. Keep the web app process running and this page will reconnect.";
       render();
+      window.dispatchEvent?.(new CustomEvent("assistant-disconnected"));
     } finally {
       clearTimeout(timeout);
     }
   }
 
   async function post(path, payload = {}) {
-    if (!actionable() || !state?.csrf_token) return;
+    // randomUUID is HTTPS-only in browsers. getRandomValues is also available
+    // on an ordinary Wi-Fi HTTP origin, so request deduplication works there.
+    function requestId() {
+      if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      bytes[6] = (bytes[6] & 15) | 64;
+      bytes[8] = (bytes[8] & 63) | 128;
+      const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
+    const stopping = path === "/api/stop";
+    const adminMutation = ["/api/speed", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
+    const permitted = stopping ? canStop() : path === "/api/device_select" ? deviceSwitchAllowed(payload.device_id) : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
+    if (!permitted || !state?.csrf_token || !robotRequestSupported(path, payload)) return;
+    const deviceEpoch = state.device_epoch;
+    const ownerContext = state.devices ? { _device_id: state.devices.active_id, _device_epoch: deviceEpoch } : {};
+    if (state.devices && (typeof deviceEpoch !== "string" || !deviceEpoch)) {
+      transientError = "Device ownership is unavailable. Refresh controller status before sending a request.";
+      render();
+      return;
+    }
+    const csrfToken = state.csrf_token;
+    if (releaseReview) cancelReleaseReview();
     const instance = state.instance_id;
-    posting = true;
+    quickGeneration += 1;
+    hide("quick-panel", true);
+    if (stopping) {
+      stopPosting = true;
+      localStopInhibit = true;
+      window.dispatchEvent?.(new CustomEvent("assistant-local-stop"));
+      proposalDeadline = 0;
+      controlDeadline = 0;
+      dom["robot-control-ack"].checked = false;
+    } else posting = true;
     transientError = "";
-    renderControls();
-    renderActivity();
+    render();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
     try {
       const response = await fetch(path, {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf_token },
-        body: JSON.stringify({ ...payload, request_id: crypto.randomUUID() }),
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+        body: JSON.stringify({ ...payload, ...ownerContext, request_id: requestId() }),
         signal: controller.signal,
       });
       let result;
@@ -370,19 +1195,67 @@
         throw unknown;
       }
       if (!response.ok || !result.accepted) throw new Error(asMessage(result.detail || result.error) || `Request rejected (${response.status}).`);
+      if (path === "/api/speed") speedDirty = false;
+      if (path === "/api/phase_speeds") phaseSpeedDirty = false;
       await readState();
-      if (state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
+      if (path !== "/api/device_select" && state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
+      else if (path !== "/api/device_select" && state?.device_epoch !== deviceEpoch) transientError = "Device ownership changed during this request. Check the current state; the request was not retried.";
     } catch (error) {
       transientError = ["AbortError", "UnknownOutcomeError"].includes(error.name) || error instanceof TypeError ? "Request outcome unknown: the connection was interrupted or its response was unreadable. Check the controller before continuing. The request was not retried." : error.message;
       await readState();
     } finally {
       clearTimeout(timeout);
-      posting = false;
+      if (stopping) stopPosting = false;
+      else posting = false;
       render();
     }
   }
 
+  async function showQuick(kind) {
+    if (!connected || quickPosting) return;
+    quickPosting = true;
+    const generation = quickGeneration;
+    renderControls();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4500);
+    try {
+      const response = await fetch(`/api/${kind}`, {cache: "no-store", credentials: "same-origin", signal: controller.signal});
+      if (!response.ok) throw new Error(`${humanize(kind)} unavailable (${response.status}).`);
+      const result = await response.json();
+      if (generation !== quickGeneration) return;
+      text("quick-title", kind === "help" ? "Available commands" : `Status snapshot · ${clockText(new Date().toISOString())}`);
+      const lines = kind === "help" ? result.message : [
+        result.source || "Cached application status", `Mode: ${humanize(result.mode)}`,
+        `Controller: ${result.busy ? "Busy" : "Idle"}${result.operation ? ` · ${humanize(result.operation)}` : ""}`,
+        `Software stop: ${result.stop_requested ? humanize(result.stop?.state || "requested") : "Not requested"}`,
+        `Recovery inspection: ${result.recovery_required ? "Required" : "Not required"}`,
+        `Scan: ${result.scan_usable ? "Usable" : "Scan required"}`,
+        result.progress ? `Sequence: ${result.progress.completed} / ${result.progress.total} steps` : "",
+        result.message || "", result.error ? `Attention: ${result.error}` : ""
+      ].filter(Boolean).join("\n");
+      text("quick-content", lines);
+      hide("quick-panel", false);
+    } catch (error) {
+      transientError = error.name === "AbortError" ? `${humanize(kind)} request timed out.` : error.message;
+    } finally {
+      clearTimeout(timeout);
+      quickPosting = false;
+      render();
+    }
+  }
+
+  initializeNavigation();
+  dom["device-select"].addEventListener("change", () => { deviceChoice = dom["device-select"].value; renderDevices(); });
+  dom["device-use-button"].addEventListener("click", () => post("/api/device_select", { device_id: deviceChoice }));
+  dom["start-button"].addEventListener("click", () => post("/api/start"));
+  dom["stop-button"].addEventListener("click", () => post("/api/stop"));
+  dom["status-button"].addEventListener("click", () => showQuick("status"));
+  dom["help-button"].addEventListener("click", () => showQuick("help"));
+  dom["quick-close"].addEventListener("click", () => hide("quick-panel", true));
   dom["scan-button"].addEventListener("click", () => post("/api/scan"));
+  dom["batch-button"].addEventListener("click", () => {
+    if (!dom["batch-button"].disabled) post("/api/batch", { capture_id: state.inventory.capture });
+  });
   dom["command-input"].addEventListener("input", renderControls);
   dom["command-input"].addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -394,6 +1267,8 @@
     event.preventDefault();
     const command = dom["command-input"].value.trim();
     if (!command || dom["command-button"].disabled) return;
+    if (isStop(command)) { post("/api/stop"); return; }
+    if (["status", "help"].includes(command.toLowerCase())) { showQuick(command.toLowerCase()); return; }
     post("/api/command", { text: command });
   });
   document.querySelectorAll("[data-example]").forEach((button) => button.addEventListener("click", () => {
@@ -403,9 +1278,20 @@
   }));
   ["hover", "pick"].forEach((action) => dom[`${action}-button`].addEventListener("click", () => {
     const cup = currentCup();
-    if (!cup || dom[`${action}-button`].disabled) return;
+    if (!cup || dom[`${action}-button`].disabled || !selectedActionAllowed(action)) return;
     post("/api/select", { capture_id: selectedCapture, cup_id: cup.id, action: action === "pick" ? "goto" : "hover" });
   }));
+  dom["save-cup-name"].addEventListener("input", renderSavedCups);
+  dom["save-cup-form"].addEventListener("submit", (event) => {
+    event.preventDefault();
+    const cup = currentCup();
+    if (!cup || dom["save-cup-button"].disabled) return;
+    post("/api/save_cup", { capture_id: selectedCapture, cup_id: cup.id, name: dom["save-cup-name"].value.trim() });
+  });
+  dom["proposal-saved-image"].addEventListener("error", () => {
+    dom["proposal-saved-image"].hidden = true;
+    dom["proposal-saved-image-fallback"].hidden = false;
+  });
   dom["confirm-button"].addEventListener("click", () => {
     const proposal = state?.proposal;
     if (!proposal || dom["confirm-button"].disabled) return;
@@ -416,6 +1302,63 @@
   dom["recovery-button"].addEventListener("click", () => {
     if (!dom["recovery-button"].disabled) post("/api/recovery", { acknowledged: true });
   });
+  dom["robot-speed-input"].addEventListener("input", () => { speedDirty = true; renderRobotControls(); });
+  dom["release-locations-button"].addEventListener("click", () => {
+    if (dom["release-locations-button"].disabled || !releaseActionable()) return;
+    releaseReview = {
+      fingerprint: state.placement_grid.fingerprint,
+      context: releaseContext(state),
+      count: placementLocations().length,
+      labels: placementLocations().map((location) => `P${location.id}`),
+    };
+    releaseMessage = "";
+    dom["release-locations-ack"].checked = false;
+    renderReleaseLocations();
+  });
+  dom["release-locations-ack"].addEventListener("change", renderReleaseLocations);
+  dom["release-locations-cancel"].addEventListener("click", () => {
+    cancelReleaseReview();
+    renderReleaseLocations();
+  });
+  dom["release-locations-confirm"].addEventListener("click", () => {
+    if (dom["release-locations-confirm"].disabled || !releaseReview || !releaseActionable() || releaseReview.context !== releaseContext(state)) return;
+    post("/api/release_locations", { fingerprint: releaseReview.fingerprint, acknowledged: true });
+  });
+  dom["robot-speed-form"].addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!dom["robot-speed-button"].disabled) post("/api/speed", { speed: Number(dom["robot-speed-input"].value) });
+  });
+  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener("input", () => { phaseSpeedDirty = true; renderPhaseSpeedControls(); }));
+  dom["robot-phase-speed-form"].addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = enteredPhaseSpeeds();
+    if (!dom["robot-phase-speed-apply"].disabled && validPhaseSpeeds(values)) post("/api/phase_speeds", values);
+  });
+  dom["robot-phase-speed-defaults"].addEventListener("click", () => {
+    const defaults = state?.motion?.phase_speed_defaults;
+    if (dom["robot-phase-speed-defaults"].disabled || !validPhaseSpeeds(defaults)) return;
+    phaseSpeedKeys.forEach((key) => { dom[`phase-speed-${key}`].value = defaults[key] === null ? "" : String(defaults[key]); });
+    phaseSpeedDirty = true;
+    renderPhaseSpeedControls();
+  });
+
+  dom["robot-status-button"].addEventListener("click", () => { if (!dom["robot-status-button"].disabled) post("/api/robot_status"); });
+  document.querySelectorAll("[data-robot-action]").forEach((button) => button.addEventListener("click", () => {
+    if (!button.disabled && !button.hidden && robotActionSupported(button.dataset.robotAction)) post("/api/control_preview", { action: button.dataset.robotAction, arm: button.dataset.arm || null });
+  }));
+  dom["robot-local-recovery-button"].addEventListener("click", () => {
+    if (dom["robot-local-recovery-button"].disabled) return;
+    dom["recovery-panel"].scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "center" });
+    dom["recovery-ack"].focus({ preventScroll: true });
+  });
+  dom["robot-control-ack"].addEventListener("change", updateControlCountdown);
+  dom["robot-control-confirm"].addEventListener("click", () => {
+    const proposal = state?.robot_controls?.proposal;
+    if (!proposal || dom["robot-control-confirm"].disabled) return;
+    post("/api/control_confirm", { token: proposal.token, acknowledged: true });
+    dom["robot-control-ack"].checked = false;
+  });
+  dom["robot-control-cancel"].addEventListener("click", () => { if (!dom["robot-control-cancel"].disabled) post("/api/control_cancel"); });
   dom["camera-image"].addEventListener("load", () => {
     imageLoaded = true;
     hide("image-stage", false);
@@ -439,7 +1382,11 @@
     const hits = cups().filter((cup) => Array.isArray(cup.bbox_xyxy) && x >= cup.bbox_xyxy[0] && x <= cup.bbox_xyxy[2] && y >= cup.bbox_xyxy[1] && y <= cup.bbox_xyxy[3]);
     if (hits.length === 1) chooseCup(hits[0].id);
   });
+  window.addEventListener("assistant-preview-ready", () => {
+    readState();
+  });
   setInterval(updateCountdown, 250);
+  setInterval(updateControlCountdown, 250);
   async function poll() {
     await readState();
     setTimeout(poll, 700);
