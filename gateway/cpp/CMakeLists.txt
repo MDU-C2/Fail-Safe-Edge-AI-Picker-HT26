@@ -71,6 +71,7 @@ add_library(
     src/rws/errors.cpp
     src/rws/motion.cpp
     src/rws/motion_routes.cpp
+    src/rws/queue.cpp
     src/rws/rapid.cpp
     src/rws/rapid_routes.cpp
     src/security/auth.cpp

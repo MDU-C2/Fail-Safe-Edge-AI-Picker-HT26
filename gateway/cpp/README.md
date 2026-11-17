@@ -108,7 +108,7 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/camera/` | `camera/` |
 | `src/calibration/` | `calibration/` (same file format, so either reads the other's file) |
 | `src/robot/` | `robot/` (only `GET /robot/status`; no `/robot/command`) |
-| `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes |
+| `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes; `queue.*` (C++ only, see "Motion queue") |
 | `src/http/validate.*` | Pydantic's coercions and FastAPI's 422 for request bodies, query and path |
 | `src/health.cpp` | `health.py` |
 | `openapi/openapi.json` | FastAPI's schema, exported by `tools/export_openapi.py` and served as is |
@@ -159,6 +159,52 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
   `2026-11-09T12:00:00.123456Z` (always six digits), and
   `/openapi.json` from the Python app. `/health` adds
   `"implementation": "cpp"`; there is no `/docs`.
+
+## Motion queue (C++ only)
+
+A client that dies half way through a pick leaves the arm half way
+through it: each RWS job finishes in RAPID, but nobody sends the
+next. With the queue the client hands the gateway the whole
+sequence and the gateway runs it to the end, whoever holds the
+lease meanwhile. `src/rws/queue.*`, routes in
+`src/rws/motion_routes.cpp`; not in the Python gateway, so not in
+`/openapi.json`.
+
+- `POST /robot/rws/queue` (`robot.control` + lease) –
+  `{"steps": [{"name", "type": "move"|"path"|"home"|"gripper",
+  "body": {...}, "group"?}, ...]}`, 1–64 steps. `body` is the body
+  of `POST /robot/rws/<type>` with the same rules (`wait` is
+  ignored; optional for `home`). Consecutive steps with the same
+  `group` run one lane per arm at the same time, as
+  `capture_and_detect`'s `RobotClient.execute_jobs`. Everything is
+  checked first (422, safe zone included), then RAPID running and
+  the arms used idle (409/503); nothing runs unless all of it
+  passes. 202 with the queue.
+- `GET /robot/rws/queue` (`robot.read`) – `state`
+  (`idle|running|done|failed|cancelled`), `owner`, `length`,
+  `step` (first running job, or where it failed / stopped),
+  `cancel_requested`, `message`, `started_at`, `finished_at`, and
+  `steps` (`name`, `type`, `arm`, `group`, `state`
+  `pending|running|done|failed|skipped`, `message`).
+- `DELETE /robot/rws/queue` (`robot.control` + lease, whoever holds
+  it, not only the owner) – running: cancel, i.e. send nothing more
+  and end as `cancelled` once the jobs running now finish (a RAPID
+  job is not interrupted); `done`/`failed`/`cancelled`: clear to
+  `idle`.
+
+Rules: one queue for both arms. While it runs, every new queue and
+every single job (`/move|path|home|gripper`) is 409, admin
+included; `POST /robot/rapid/stop` still works (the queue fails).
+The lease does not stop it: when the owner's lease lapses or a
+higher tier preempts it, the queue goes on until done or cancelled
+by the new holder. `failed` and `cancelled` leave the arm part way
+through the plan, so they refuse a new queue until a lease holder
+clears them; single jobs are allowed meanwhile, for recovery. Events
+`robot.queue.started|step|cancelling|done|failed|cancelled|cleared`
+(subscribe to `robot.queue`), the queue as data. `/health` reports
+`robot_controller.queue_state`, and `move_in_progress` is true while
+a queue runs. The queue lives in memory: a gateway restart loses it
+(the job RAPID is running finishes).
 
 ## Migration status
 

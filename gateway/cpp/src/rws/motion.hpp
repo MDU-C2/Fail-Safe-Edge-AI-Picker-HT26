@@ -211,6 +211,14 @@ public:
     ) const;
 
     //
+    // RAPID runs, the program is loaded and the arm has no job
+    // (MotionConflict otherwise), as before a job is written.
+    //
+    void check_idle(
+        Arm arm
+    );
+
+    //
     // A job sent through the gateway has not finished yet.
     //
     bool is_moving() const;

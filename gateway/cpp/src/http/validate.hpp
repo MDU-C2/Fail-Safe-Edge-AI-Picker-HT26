@@ -59,7 +59,19 @@ public:
     ) const;
 
     //
-    // Takes over the errors of an item().
+    // The fields of the nested model under name (errors located
+    // under it, e.g. body.steps.0.body.x). Absent or null is an
+    // empty object, or a missing error with required; a non-object
+    // value is an error of model.
+    //
+    Fields object(
+        const std::string& name,
+        const std::string& model,
+        bool required
+    );
+
+    //
+    // Takes over the errors of an item() or object().
     //
     void merge(
         const Fields& other
