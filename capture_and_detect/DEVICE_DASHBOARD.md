@@ -326,6 +326,12 @@ activations; 150 one-second samples peaked at 237,088,768 bytes against the
 counts remained zero. These checks sent no robot motion and do not constitute
 physical-picking or long-duration validation.
 
+Lynx package **0.2.9** is installed with the V4 snapshot workflow, smooth handover
+paths and no automatic Home after each cup. Its installed source and worker
+hashes were verified, and existing device state was preserved. See the
+[2026-11-17 workflow update](../lynx/deploy/WORKFLOW_UPDATE_2026-11-17.md) for
+validation details. This update was checked without a live scan or robot motion.
+
 All services default to dry-run without `--live`. The dashboard and all configured
 services must agree on live/dry-run mode. For a dry-run installation, omit
 `--live` from all four commands. Activation loads the selected model; startup

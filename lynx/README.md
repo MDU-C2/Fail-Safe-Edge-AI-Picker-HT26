@@ -18,14 +18,15 @@ Ultralytics, FastAPI or Ollama. Native OpenCV **core and imgproc** are still lin
 into the C++ worker. The Mac dashboard stays on the Mac; do not operate two live
 controllers against the robot concurrently.
 
-**Release status:** **0.2.5 is deployed and passed its single-observation camera
-check**. The scan completed in 23 seconds including startup and saving, reported
-three cup candidates as available, and sent no robot commands. Saved evidence
-confirms one observation; the five raw depth samples and 60-second age default
-were verified. Placement and recovery hashes were unchanged, the existing
-gateway remained healthy, and no picker or inference worker remained afterward.
-Physical picking was not tested. See the
-[2026-11-13 CLI validation report](deploy/CLI_CHECK_2026-11-13.md). The older combined
+**Release status:** **0.2.9 is installed and the Lynx service is ready** with the
+V4 snapshot workflow, smooth handover and no automatic Home. Installed hashes and
+preservation of calibration, placement state and recovery were verified. Offline replay passed;
+no live scan or physical picking was performed for this update. See the
+[2026-11-17 workflow update](deploy/WORKFLOW_UPDATE_2026-11-17.md) for package
+identity and validation scope. The
+[2026-11-13 CLI validation report](deploy/CLI_CHECK_2026-11-13.md) records historical
+0.2.5 camera and memory checks; it does not validate physical picking or 0.2.9.
+The older combined
 Python gateway/dashboard profile remains available as `--profile combined`;
 its [2026-11-06 measurements](deploy/LIVE_CHECK_2026-11-06.md) concern that older
 profile, not this command-line runtime.
@@ -85,13 +86,13 @@ previous host's movement finished. Preserve the old state and recovery history;
 after inspecting the robot, use the explicit recovery procedure. Reuse the same
 state directory for later restarts; preparation refuses an existing directory.
 Mount persistent SD storage at `/state`, with this deployment under
-`/state/cli-0.2.0`. The deployed 0.2.5 package reuses this path; a package update must not
+`/state/cli-0.2.0`. Package updates reuse this path; a package update must not
 reinitialize or discard existing state. Keep captures, grid and recovery journal off the RAM-backed
 container filesystem.
 
 ## Start and use the picker
 
-The next launch uses the installed 0.2.5 single-pass defaults. Do not
+Installed package 0.2.9 uses the snapshot defaults described below. Do not
 replace or restart an application while an operator is using its live CLI.
 
 Connect to the configured Lynx application:
@@ -147,10 +148,10 @@ controller from connecting, so close that controller before live use.
 | `scan` | Capture and assess the scene once; no movement |
 | Empty Enter | Ignore; no camera check or movement |
 | `list`, `show 2` | Inspect cups in the current capture |
-| `goto 2` | Recheck cup 2, then run the shared pick/handover/place sequence |
+| `goto 2` | Pick cup 2 using the saved scan, hand it over and place it; finish above the destination |
 | `goto all` | Preview the available batch; `confirm <code>` starts it |
 | `start` | Scan and preview a batch; still requires confirmation |
-| `hover 2` | Recheck and approach above cup 2 |
+| `hover 2` | Approach above cup 2 using its saved scan coordinates |
 | `status`, `robot status` | Application state, or refreshed gateway/controller state |
 | `home right`, `home left`, `home both` | Preview a supported Home action |
 | `confirm-home <code>` | Confirm the inspected return path and execute that Home proposal |
@@ -169,8 +170,10 @@ the gateway/controller; use the physical stop when immediate stopping is needed.
 
 ## Preserved motion and camera checks
 
-The CLI uses the shared controller and plans, including their overlapping arm
-choreography, completion checks, reservations and recovery journal. Defaults are:
+The CLI uses the shared controller and plans, including their smooth handover
+paths, overlapping arm movements, completion checks, reservations and recovery
+journal. Each completed pick ends above the destination; Home remains a separate
+operator command. Defaults are:
 
 | Setting | Value |
 | --- | --- |
@@ -178,7 +181,7 @@ choreography, completion checks, reservations and recovery journal. Defaults are
 | Fixed picking TCP height | 70 mm |
 | Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
 | Ordinary travel speed | 250 mm/s |
-| Automatic Home speed | 200 mm/s, subject to an explicitly selected lower speed cap |
+| Home speed when requested | 200 mm/s, subject to an explicitly selected lower speed cap |
 | Camera-derived picking height | Off; `--camera-z` explicitly selects the existing measured-height policy |
 | Object-depth samples | Up to five distinct frames; `--depth-frames` accepts 1..9 |
 | Normal scan | One full YOLO/perception pass |
@@ -200,9 +203,8 @@ There is no automatic recapture, cup rematching or observation-age deadline
 before or between picks. Completed cups become unavailable; untouched cups stay
 selectable from the same scan. Scan again when the physical scene changes.
 Confirmation expiry, Stop, lease/session checks, placement reservations and the
-recovery journal remain. These are current source defaults; the 0.2.5 deployment
-report above records the earlier deployed behavior. Rebuild and deploy the
-updated runtime to apply the current workflow on a device.
+recovery journal remain. These settings are verified in the running 0.2.9
+service. The 0.2.5 report records earlier deployed behavior.
 
 Native grid assessment preserves cup-to-cell ownership, connected depth groups,
 cup-edge uncertainty, visibility and other-object checks. Oversized cup masks or

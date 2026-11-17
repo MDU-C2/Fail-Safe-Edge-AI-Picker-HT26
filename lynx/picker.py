@@ -29,8 +29,8 @@ HELP = """Commands:
   scan                  Detect cups and check all placement cells; no movement.
   list / show <id>      Inspect the saved cup list or one cup's details.
   start / goto all      Scan/preview a batch, then use confirm <code>.
-  goto <id>             Recheck, pick, hand over, place and return home.
-  hover <id>            Recheck and approach above a cup without gripping.
+  goto <id>             Pick, hand over and place using the saved scan.
+  hover <id>            Approach above a saved cup without gripping.
   stop / halt          Block further jobs and request a software stop.
   status               Show application state.
   robot status         Refresh gateway/controller status.
@@ -40,6 +40,7 @@ HELP = """Commands:
   reset                Acknowledge inspection after recovery; sends no motion.
   help / quit          Show commands or exit.
 Default mode is DRY RUN. --live is required for robot commands.
+Picks finish above the destination. Home is a separate operator command.
 Close the Mac controller before operating this picker live. After a failure,
 inspect both arms, grippers and the paths before reset or confirming Home.
 Software Stop depends on the gateway; physical emergency stop remains available.

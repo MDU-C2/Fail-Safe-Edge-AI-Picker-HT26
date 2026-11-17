@@ -8,14 +8,14 @@ process retains the shared motion/stop/recovery controller and uses only
 DepthAI, PyTorch, Ultralytics, FastAPI or Uvicorn. Native OpenCV core/imgproc are
 statically linked into the worker.
 
-The **0.2.5 single-pass package is deployed and passed its camera-only check**:
-one observation, five fresh raw depth samples, 23 seconds including startup and
-saving, and three candidates listed as available. No robot commands were sent;
-placement/recovery hashes were unchanged. Only `cuppicker` was reloaded, and the
-existing gateway remained healthy. No picker or inference worker remained after
-the check. Physical picking was not tested. See the
-[2026-11-13 CLI validation report](CLI_CHECK_2026-11-13.md) for the exact scope and
-memory measurements. The old combined gateway/dashboard build is still selected by
+**0.2.9 is installed and the Lynx service is ready** with the V4 snapshot
+workflow, smooth handover and no automatic Home. Installed hashes and preservation
+of calibration, placement state and recovery were verified, and offline replay passed. No live
+scan or physical picking was performed for this update. See the
+[2026-11-17 workflow update](WORKFLOW_UPDATE_2026-11-17.md) for package identity and
+validation scope. The [2026-11-13 CLI validation report](CLI_CHECK_2026-11-13.md)
+records historical 0.2.5 camera and memory checks, not 0.2.9 validation.
+The old combined gateway/dashboard build is still selected by
 `--profile combined` (also the preparer's default). Its historical
 [2026-11-06 report](LIVE_CHECK_2026-11-06.md) does not validate the CLI profile.
 
@@ -29,7 +29,7 @@ export, generate the manifest once with the export's actual precision:
 python -m lynx.prepare_model "$MODEL_DIR" \
   --input-size 640 --classes-file "$MODEL_DIR/classes.txt" --precision int8
 python lynx/deploy/prepare_context.py --profile cli \
-  --model-dir "$MODEL_DIR" --output /tmp/lynx-cli-0.2.5-context
+  --model-dir "$MODEL_DIR" --output /tmp/lynx-cli-0.2.9-context
 ```
 
 A manifest argument does not quantize or resize an export. Keep the FP32 baseline;
@@ -48,7 +48,7 @@ credentials, `.env`, calibration, grid/recovery records and captures.
 
 ```sh
 docker buildx build --platform linux/arm64 --load \
-  --tag lynx-picker-cli:0.2.5 /tmp/lynx-cli-0.2.5-context
+  --tag lynx-picker-cli:0.2.9 /tmp/lynx-cli-0.2.9-context
 ```
 
 Use the staged context, never the full checkout. An ARM64 Linux host or Docker
@@ -99,7 +99,7 @@ directories. Preserve earlier state/journals; reuse the prepared directory on
 updates instead of reinitializing it.
 
 Mount persistent SD storage at `/state` and put the prepared directory at
-`/state/cli-0.2.0`. Keep this existing state path when updating to package 0.2.5;
+`/state/cli-0.2.0`. Keep this existing state path when updating to package 0.2.9;
 package version changes do not require reinitializing robot state. The CLI reference identity must match calibration, actual camera
 intrinsics, seven-cell geometry, 90 mm cell size and table height exactly. The
 current profile requires its calibrated 1920×1080 aligned frames; reducing camera
@@ -113,9 +113,9 @@ Use a Linux/WSL host with Docker, `squashfs-tools`, `u-boot-tools`,
 
 ```sh
 python lynx/deploy/package_weos.py \
-  --image lynx-picker-cli:0.2.5 --version 0.2.5 \
+  --image lynx-picker-cli:0.2.9 --version 0.2.9 \
   --description "Lynx command-line picker with native perception and external gateway" \
-  --output /tmp/lynx-picker-0.2.5.wmopkg
+  --output /tmp/lynx-picker-0.2.9.wmopkg
 ```
 
 On macOS/Windows with Docker Desktop, add `--container-tools`. Add
@@ -132,10 +132,10 @@ exposes that gateway there. Do not start a second camera owner.
 
 ## Startup commands
 
-The installed 0.2.5 package supplies the single-pass defaults below. Exit any
-current live CLI before replacing or reloading its application. The WeOS app's
-cosmetic description still says 0.2.4; the verified package and installed-module
-hashes establish that the running image is 0.2.5.
+Installed package 0.2.9 supplies the snapshot defaults below. Exit any
+current live CLI before replacing or reloading its application. Verify the
+package version and installed-module hashes; the WeOS app's cosmetic description
+alone does not establish which code is running.
 
 Connect with `ssh admin@192.168.125.20`. At the WeOS prompt:
 
@@ -185,11 +185,14 @@ to five distinct raw depth samples for object coordinates and uses the latest
 raw aligned frame for placement evidence. Legacy verification-age arguments
 remain accepted for compatibility but do not expire the snapshot. Confirmation,
 reservations, Stop and recovery checks still apply.
+The shared smooth handover paths finish above the destination after each cup.
+Home remains a separate operator command.
 
 The CLI and combined dashboard use the enhanced shared workflow. The combined
 profile's `web_app.py` imports `picker_workflow.py`, independently of the unchanged
-V4 `capture_and_detect.py` terminal. These are source changes; an existing deployed
-image keeps its prior behavior until rebuilt and replaced.
+V4 `capture_and_detect.py` terminal. Package 0.2.9 applies the updated shared
+workflow to the native CLI and managed Lynx service; older images retain their
+earlier behavior until replaced.
 
 Camera-derived picking height remains off by default, with 250 mm travel TCP
 height and the existing diameter + 70 mm opening allowance. Shared library speed defaults remain
