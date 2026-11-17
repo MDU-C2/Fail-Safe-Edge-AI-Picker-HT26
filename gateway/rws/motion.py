@@ -1,12 +1,11 @@
 import math
 import threading
 import time
-from contextlib import nullcontext
-from typing import Callable, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 from gateway.config import Settings, get_settings
 from gateway.models.commands import CommandResponse
-from gateway.models.rws import RwsPathPoint, RwsPathRequest
+from gateway.models.rws import MAX_PATH_POINTS
 from gateway.rws.client import (
     RwsClient,
     RwsError,
@@ -53,6 +52,7 @@ NEWER_VARIABLES = {
     "move_speed": "speed variables",
     "grip_pos": "gripper position variables",
     "grip_force": "gripper force variables",
+    "path_len": "path variables",
 }
 
 
@@ -62,12 +62,6 @@ NEWER_VARIABLES = {
 # degrees/s.
 #
 SPEEDDATA_REST = (500.0, 5000.0, 1000.0)
-
-PATH_CAPACITY = 8
-PATH_VARIABLES = frozenset({
-    "path_pos", "path_rot", "path_lin", "path_speed",
-    "path_zone", "path_acc", "path_len",
-})
 
 
 class MotionSpeed(NamedTuple):
@@ -83,7 +77,11 @@ class MotionSpeed(NamedTuple):
 
 
 class PathPoint(NamedTuple):
-    """The original direct-call point shape; HTTP uses RwsPathPoint."""
+    """One point of a path job (see RwsMotion.path).
+
+    rotation is (rx, ry, rz) in degrees; speed (mm/s) and zone (mm)
+    None take the path's own.
+    """
 
     position: tuple[float, float, float]
     rotation: tuple[float, float, float]
@@ -151,12 +149,19 @@ def rapid_array(
     return "[" + ",".join(f"{value:.6f}" for value in values) + "]"
 
 
+def rapid_list(
+    items: list[str],
+) -> str:
+    return "[" + ",".join(items) + "]"
+
+
 class RwsMotion:
     """Commands the arm tasks of the RAPID program over Robot Web
     Services.
 
     Uses the PERS variables of rapid/SharedVars.mod: the
-    job is written first (target, go_home or grip_cmd, for moves
+    job is written first (target, path_* for a path, go_home or
+    grip_cmd, for moves
     and home the speed: move_speed, move_acc, move_ramp, for the
     gripper grip_force or grip_pos), then
     move_request_<arm> is set to TRUE. The arm task does the job,
@@ -200,7 +205,6 @@ class RwsMotion:
         rotation: tuple[float, float, float] | None,
         wait: bool = True,
         speed: MotionSpeed | None = None,
-        authorization=None,
     ) -> CommandResponse:
         """Move the arm's tool0 to position (mm, wobj0).
 
@@ -220,6 +224,12 @@ class RwsMotion:
             "go_home": "FALSE",
             "grip_cmd": '""',
             **self._speed_values(speed),
+            #
+            # A path job left behind (RAPID stopped half way) would
+            # otherwise run instead of this move. Older programs
+            # have no path_len and skip it.
+            #
+            "path_len": "0",
         }
 
         if rotation is not None:
@@ -227,90 +237,81 @@ class RwsMotion:
 
             values["target_rot"] = rapid_array(orient_zyx(rz, ry, rx))
 
-        return self._run(arm, values, wait, authorization=authorization)
+        return self._run(arm, values, wait, {"path_len"})
 
     def path(
         self,
         arm: Arm,
-        points: list[RwsPathPoint | PathPoint],
+        points: list[PathPoint],
         zone: float = 10.0,
         max_acceleration: float | None = None,
         wait: bool = True,
         speed: MotionSpeed | None = None,
-        authorization=None,
     ) -> CommandResponse:
-        """Stage one path with blending and a mandatory final stop.
+        """Run points in one job, blended through the middle ones.
 
-        Every waypoint and each intermediate blend-radius envelope
-        must fit inside the configured safe-zone box. As with move(),
-        this is a target check, not a swept-volume collision check.
+        The arm stops only at the last point, so a path through
+        several waypoints is one smooth motion instead of a stop at
+        each. zone is the default blend radius in mm, speed.speed
+        the default TCP speed of the points; max_acceleration is
+        RAPID PathAccLim in m/s2 (None: no limit). The arm task
+        checks every point is reachable before it moves at all.
         """
-        speed = speed or self.default_speed
-        points = [RwsPathPoint(
-            x=point.position[0], y=point.position[1], z=point.position[2],
-            rx=point.rotation[0], ry=point.rotation[1], rz=point.rotation[2],
-            linear=point.linear, speed=point.speed, zone=point.zone,
-        ) if isinstance(point, PathPoint) else point for point in points]
-        # Validate direct callers as well as the HTTP route, before
-        # reading or changing any controller state.
-        request = RwsPathRequest(
-            arm=arm, points=points, wait=wait, speed=speed.speed,
-            acceleration=speed.acceleration, ramp=speed.ramp,
-            zone=zone, max_acceleration=max_acceleration,
-        )
-        positions = []
-        rotations = []
-        linear = []
-        speeds = []
-        zones = []
-        for index, point in enumerate(request.points):
-            position = (point.x, point.y, point.z)
-            radius = (
-                0.0 if index == len(request.points) - 1
-                else request.zone if point.zone is None else point.zone
-            )
-            if not all(
-                self.in_safe_zone(tuple(value + offset for value in position))
-                for offset in (-radius, radius)
-            ):
-                return CommandResponse(accepted=False, message="ERR outside safe zone")
-            positions.append(rapid_array(position))
-            rotations.append(rapid_array(orient_zyx(point.rz, point.ry, point.rx)))
-            linear.append("TRUE" if point.linear else "FALSE")
-            speeds.append(speed.speed if point.speed is None else point.speed)
-            zones.append(radius)
 
-        # RAPID array assignments must have the declared eight slots.
-        # Padding cannot execute because path_len selects active points.
-        padding = PATH_CAPACITY - len(request.points)
-        positions.extend(["[0,0,0]"] * padding)
-        rotations.extend(["[1,0,0,0]"] * padding)
-        linear.extend(["FALSE"] * padding)
-        speeds.extend([speed.speed] * padding)
-        zones.extend([0.0] * padding)
+        if not 1 <= len(points) <= MAX_PATH_POINTS:
+            raise ValueError(f"A path has 1 to {MAX_PATH_POINTS} points")
+
+        if not all(self.in_safe_zone(point.position) for point in points):
+            return CommandResponse(
+                accepted=False,
+                message="ERR outside safe zone",
+            )
+
+        speed = speed or self.default_speed
+        padding = MAX_PATH_POINTS - len(points)
+
+        positions = [rapid_array(point.position) for point in points]
+        rotations = [
+            rapid_array(orient_zyx(rz, ry, rx))
+            for rx, ry, rz in (point.rotation for point in points)
+        ]
+        linear = ["TRUE" if point.linear else "FALSE" for point in points]
+        speeds = [
+            f"{speed.speed if point.speed is None else point.speed:.6f}"
+            for point in points
+        ]
+        zones = [
+            f"{zone if point.zone is None else point.zone:.6f}"
+            for point in points
+        ]
+
         values = {
             "go_home": "FALSE",
             "grip_cmd": '""',
             **self._speed_values(speed),
-            "path_pos": "[" + ",".join(positions) + "]",
-            "path_rot": "[" + ",".join(rotations) + "]",
-            "path_lin": "[" + ",".join(linear) + "]",
-            "path_speed": rapid_array(tuple(speeds)),
-            "path_zone": rapid_array(tuple(zones)),
-            "path_acc": f"{max_acceleration or 0.0:.6f}",
-            "path_len": str(len(request.points)),
+            #
+            # RWS writes whole arrays, so they are padded to the
+            # size declared in SharedVars.mod.
+            #
+            "path_pos": rapid_list(positions + ["[0,0,0]"] * padding),
+            "path_rot": rapid_list(rotations + ["[1,0,0,0]"] * padding),
+            "path_lin": rapid_list(linear + ["FALSE"] * padding),
+            "path_speed": rapid_list(speeds + [f"{speed.speed:.6f}"] * padding),
+            "path_zone": rapid_list(zones + [f"{zone:.6f}"] * padding),
+            "path_acc": f"{max_acceleration or 0:.6f}",
+            #
+            # Last: path_len > 0 is what makes it a path job.
+            #
+            "path_len": str(len(points)),
         }
-        return self._run(
-            arm, values, wait, required=frozenset(values),
-            authorization=authorization,
-        )
+
+        return self._run(arm, values, wait)
 
     def home(
         self,
         arm: Arm,
         wait: bool = True,
         speed: MotionSpeed | None = None,
-        authorization=None,
     ) -> CommandResponse:
         return self._run(
             arm,
@@ -320,7 +321,6 @@ class RwsMotion:
                 **self._speed_values(speed),
             },
             wait,
-            authorization=authorization,
         )
 
     def gripper(
@@ -330,8 +330,6 @@ class RwsMotion:
         wait: bool = True,
         position: float | None = None,
         force: float | None = None,
-        *,
-        authorization=None,
     ) -> CommandResponse:
         """Close ("grip"), open ("open") or move ("move") the gripper.
 
@@ -366,7 +364,7 @@ class RwsMotion:
             if force is None:
                 optional.add("grip_force")
 
-        return self._run(arm, values, wait, optional=optional, authorization=authorization)
+        return self._run(arm, values, wait, optional)
 
     def status(
         self,
@@ -387,71 +385,6 @@ class RwsMotion:
             )
 
         return self._result(arm)
-
-    def reset_program(self, start: bool = False, stop_generation: int | None = None,
-                      check_authorization: Callable[[], None] | None = None) -> None:
-        """Discard pending jobs and reset PP; optional fresh start is explicit.
-
-        Both per-arm locks exclude command staging, including wait=False jobs.
-        Stop remains callable independently. No motor or collision settings are
-        changed. Starting main may initialize/calibrate the grippers.
-        """
-        with self._client.program_change():
-            self._reset_program(start, stop_generation, check_authorization)
-
-    def _reset_program(self, start: bool, stop_generation: int | None, check_authorization) -> None:
-        generation = self._client.stop_generation() if stop_generation is None else stop_generation
-        self._client.check_stop_generation(generation)
-        deadline = time.monotonic() + 30
-
-        def check():
-            self._client.check_stop_generation(generation)
-            if check_authorization is not None:
-                check_authorization()
-            if time.monotonic() >= deadline:
-                raise MotionConflict("Program reset exceeded 30 seconds; no start will be sent")
-
-        check()
-        self._client.stop_for_reset()
-        held = []
-        try:
-            for arm in ARM_TASKS:
-                if not self._busy[arm].acquire(blocking=False):
-                    raise MotionConflict("Wait for the previous arm request to unwind before resetting RAPID")
-                held.append(self._busy[arm])
-            self._client.check_stop_generation(generation)
-            values = {"move_request": "FALSE", "go_home": "FALSE", "use_rot": "FALSE",
-                      "grip_cmd": '""', "move_ok": "FALSE"}
-            arm_values = {}
-            # Validate all required symbols before changing any of them.
-            for arm in ARM_TASKS:
-                for name in values:
-                    check()
-                    self._check_variable(arm, name, f"Missing {name}_{arm}; reset was not performed")
-                check()
-                arm_values[arm] = dict(values)
-                if self._has_variable(arm, "path_len"):
-                    arm_values[arm]["path_len"] = "0"
-            with self._client.mastership():
-                for arm in ARM_TASKS:
-                    for name, value in arm_values[arm].items():
-                        check()
-                        self._write(arm, name, value)
-                for arm in ARM_TASKS:
-                    for name, value in arm_values[arm].items():
-                        check()
-                        if self._read(arm, name).strip().upper() != value:
-                            raise MotionConflict(f"Reset could not verify {name}_{arm}; RAPID remains stopped")
-            check()
-            self._client.reset_program_pointer()
-            if self._client.execution_state() != "stopped":
-                raise MotionConflict("RAPID did not remain stopped after resetting its program pointer")
-            self._client.check_stop_generation(generation)
-            if start:
-                self._client.start_fresh(generation, deadline, check_authorization)
-        finally:
-            for lock in reversed(held):
-                lock.release()
 
     def in_safe_zone(
         self,
@@ -495,62 +428,26 @@ class RwsMotion:
         arm: Arm,
         values: dict[str, str],
         wait: bool,
-        *,
-        optional: set[str] | frozenset[str] = frozenset(),
-        required: set[str] | frozenset[str] = frozenset(),
-        authorization=None,
+        optional: set[str] = frozenset(),
     ) -> CommandResponse:
         """Write the job and set move_request.
 
         Of NEWER_VARIABLES, those in optional are left out when the
         program lacks them; any other missing one refuses the job
-        before anything is written. The path protocol also supplies
-        required symbols, all checked before any staging writes.
+        before anything is written.
         """
 
         if not self._busy[arm].acquire(blocking=False):
             raise MotionConflict(f"A {arm} arm job is already in progress")
 
         try:
-            generation = self._client.stop_generation() if hasattr(self._client, "stop_generation") else None
-
-            def check():
-                if authorization is not None:
-                    authorization()
-                if generation is not None:
-                    self._client.check_stop_generation(generation)
-
-            check()
             self._check_ready(arm)
 
             values = dict(values)
 
-            # A failed/aborted path may leave its selector set. Single
-            # moves must never accidentally replay that path. Older
-            # controller programs have no selector and remain supported.
-            if "path_len" not in values:
-                check()
-                if self._has_variable(arm, "path_len"):
-                    values = {"path_len": "0", **values}
-
-            # Preflight the complete path protocol (and its speed and
-            # dispatch selectors) before staging anything. No partial
-            # compatibility fallback is safe for a path command.
-            for name in values:
-                if name not in required:
-                    continue
-                check()
-                self._check_variable(
-                    arm, name,
-                    f"The RAPID program in {ARM_TASKS[arm]} has no "
-                    f"path support (no {name}_{arm}); load the path-enabled RAPID program",
-                )
-
             for name, description in NEWER_VARIABLES.items():
-                if name not in values or name in required:
+                if name not in values:
                     continue
-
-                check()
 
                 if name in optional:
                     if not self._has_variable(arm, name):
@@ -566,21 +463,10 @@ class RwsMotion:
                     f"again (rapidctl.py upload)",
                 )
 
-            if "path_len" in required:
-                # Disable a selector left by an interrupted earlier path
-                # before replacing its arrays. The active length is staged
-                # last below, immediately before guarded dispatch.
-                check()
-                self._write(arm, "path_len", "0")
-
             for name, value in values.items():
-                check()
                 self._write(arm, name, value)
 
-            scope = self._client.dispatch_guard(generation, authorization) if generation is not None else nullcontext()
-            with scope:
-                check()
-                self._write(arm, "move_request", "TRUE")
+            self._write(arm, "move_request", "TRUE")
 
             #
             # The arm task now owns the job; a new one is refused
@@ -592,7 +478,7 @@ class RwsMotion:
                     message="STARTED",
                 )
 
-            self._wait_for_job(arm, check)
+            self._wait_for_job(arm)
 
             return self._result(arm)
 
@@ -675,13 +561,10 @@ class RwsMotion:
     def _wait_for_job(
         self,
         arm: Arm,
-        check=None,
     ) -> None:
         deadline = time.monotonic() + self._timeout
 
         while self._read(arm, "move_request") == "TRUE":
-            if check is not None:
-                check()
             if self._client.execution_state() != "running":
                 raise MotionConflict("RAPID stopped before the move finished")
 

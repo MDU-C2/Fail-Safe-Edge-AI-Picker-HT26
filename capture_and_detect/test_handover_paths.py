@@ -3,11 +3,10 @@
 import unittest
 
 from cup_inventory import GRIPPER_TCP_Z, LEFT_DOWN, LEFT_READY, X_MIN, SelectionError
-from sim_handover_plan import (
+from handover_plan import (
     CARRY_MAX_ACC, FLIP_ACCELERATION, FLIP_SPEED, LEFT_LIFT, OVERLAP_MIN_Y, PLACE_ABOVE, RIGHT_DOWN,
     RIGHT_SIDE, RIGHT_UP, RUN_HANDOVER_L, RUN_LEFT_CLEAR, RUN_LEFT_TOP, RUN_PICK_Z, RUN_PLACE,
-    RUN_R_BELOW, RUN_R_BESIDE, RUN_R_TAKE, RUN_R_VIA, RUN_TRAVEL_Z, SLIDE_SPEED,
-    handover_batch, handover_paths,
+    RUN_R_BELOW, RUN_R_BESIDE, RUN_R_TAKE, RUN_R_VIA, RUN_TRAVEL_Z, handover_batch, handover_paths,
 )
 from robot_client import RobotClient
 
@@ -148,13 +147,11 @@ class HandoverPathTests(unittest.TestCase):
         self.assertEqual((xyz(below), xyz(take)), (RUN_R_BELOW, RUN_R_TAKE))
         # A small corner under the cup, so it cannot rise early into the rim.
         self.assertLessEqual(below["zone"], 5)
-        self.assertEqual(below["speed"], SLIDE_SPEED)
         self.assertEqual([xyz(p) for p in lower], [RUN_R_BELOW])
         for point in (below, take, *lower):
             self.assertTrue(point["linear"])
-            self.assertEqual(rot(point), RIGHT_UP)
-        for point in (take, *lower):
             self.assertEqual(point["speed"], 40)
+            self.assertEqual(rot(point), RIGHT_UP)
         self.assertEqual(jobs["right_lower"]["body"]["max_acceleration"], CARRY_MAX_ACC)
 
     def test_cup_is_turned_over_in_two_slow_steps_as_in_the_real_runs(self):
@@ -269,19 +266,15 @@ class HandoverBatchTests(unittest.TestCase):
         # Not home in between: from the place spot straight to beside the handover.
         self.assertEqual(right, ["right_place#1", "right_release#1", "right_clear#1", "right_close#1",
                                  "right_to_beside#2"])
-        self.assertEqual(left, ["approach_cup#2", "grip_cup#2"])
+        self.assertEqual(left, ["left_ready#2", "left_open#2", "approach_cup#2", "grip_cup#2"])
         names = [j["name"] for j in jobs]
         self.assertNotIn("right_home#1", names)
         beside = next(j for j in together if j["name"] == "right_to_beside#2")
         self.assertEqual([xyz(p) for p in beside["body"]["points"]], [RUN_R_BESIDE])
         # Only once cup 1 is turned over, with the left waiting at its top.
-        assert_order(self, names, "left_release#1", "left_clear#1", "right_retreat#1", "approach_cup#2")
-        self.assertNotIn("left_ready#2", names)
-        self.assertNotIn("left_open#2", names)
-        approach = next(j for j in together if j["name"] == "approach_cup#2")
-        self.assertEqual([xyz(p) for p in approach["body"]["points"]],
-                         [(500, 200, RUN_TRAVEL_Z + GRIPPER_TCP_Z),
-                          (500, 200, RUN_PICK_Z + GRIPPER_TCP_Z)])
+        assert_order(self, names, "left_release#1", "left_clear#1", "right_retreat#1", "left_ready#2")
+        ready = next(j for j in together if j["name"] == "left_ready#2")
+        self.assertEqual([xyz(p) for p in ready["body"]["points"]], [LEFT_READY])
         # The right is already waiting, so the left lifts on its own.
         lift = jobs[names.index("lift_to_handover#2")]
         self.assertNotIn("group", lift)
@@ -299,10 +292,8 @@ class HandoverBatchTests(unittest.TestCase):
         near = self.cup(y=OVERLAP_MIN_Y - 1)
         jobs = handover_batch([self.cup(), near])
         left = [j["name"] for j in stage(jobs, "next#2") if j["body"]["arm"] == "left"]
-        self.assertEqual(left, [])
+        self.assertEqual(left, ["left_ready#2", "left_open#2"])
         names = [j["name"] for j in jobs]
-        self.assertNotIn("left_ready#2", names)
-        self.assertNotIn("left_open#2", names)
         # Near the place spots: the right goes home first, it does not wait beside.
         assert_order(self, names, "right_home#1", "approach_cup#2")
         self.assertNotIn("right_to_beside#2", [j["name"] for j in stage(jobs, "next#2")])
@@ -320,7 +311,7 @@ class HandoverBatchTests(unittest.TestCase):
             for step in ("right_open", "right_take", "right_grip", "left_release", "right_retreat"):
                 self.assertNotIn("group", jobs[names.index(f"{step}#{n}")])
             if n > 1:
-                assert_order(self, names, f"right_retreat#{n - 1}", f"approach_cup#{n}", f"right_take#{n}")
+                assert_order(self, names, f"right_retreat#{n - 1}", f"left_ready#{n}", f"right_take#{n}")
         self.assertEqual([n for n in names if n.startswith("left_home")], ["left_home#3"])
         # Cup 2 is on the far side (right waits beside), cup 3 near the place spots
         # (right homes first), and after the last cup the right homes.

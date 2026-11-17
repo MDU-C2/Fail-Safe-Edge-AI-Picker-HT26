@@ -63,13 +63,11 @@ LEGACY_ONLY = (
 )
 
 #
-# Modules dedicated to APIs the C++ gateway does not have yet. Remove a
+# Modules whose routes the C++ gateway does not have yet, and the
+# migration step that brings them (gateway/cpp/README.md). Remove a
 # line once its tests pass with --impl cpp.
 #
-NOT_PORTED_TO_CPP: dict[str, str] = {
-    "test_camera_pair.py": "paired GET /camera/frame with frame waits",
-    "test_robot_admin.py": "verified RAPID reset, stop generations and collision acknowledgement",
-}
+NOT_PORTED_TO_CPP: dict[str, str] = {}
 
 GATEWAY_FIXTURES = (
     "strict_gateway",
@@ -133,7 +131,7 @@ def pytest_collection_modifyitems(
 
             elif "python_internals" in item.keywords:
                 item.add_marker(
-                    pytest.mark.skip(reason="tests Python internals, not the selected C++ binary")
+                    pytest.mark.skip(reason="tests Python internals; C++ counterparts in gateway/cpp/tests")
                 )
 
             elif module in LEGACY_ONLY or "legacy_command" in item.keywords:
@@ -148,12 +146,13 @@ def pytest_collection_modifyitems(
 
     else:
         #
-        # These tests cover behavior currently implemented only in C++.
+        # The Python gateway is legacy and gets no new behaviour, so
+        # tests of what only the C++ gateway does skip it.
         #
         for item in items:
             if "cpp_only" in item.keywords:
                 item.add_marker(
-                    pytest.mark.skip(reason="behavior implemented only by the C++ gateway")
+                    pytest.mark.skip(reason="C++ gateway only: the Python gateway is legacy (no new features)")
                 )
 
     for option in ("robotstudio", "oak", "real_robot", "real_robot_gripper"):

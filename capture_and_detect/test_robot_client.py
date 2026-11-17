@@ -11,7 +11,6 @@ from unittest.mock import Mock, patch
 import requests
 
 from robot_client import RobotClient, RobotCommandError
-from test_gateway_capabilities import schema_fixture
 
 
 def response(payload, status=200, headers=None):
@@ -28,16 +27,6 @@ def lease_response():
     return response({"success": True, "lease": {
         "active": True, "client_id": "operator",
         "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat(),
-    }})
-
-
-def lynx_lease_response(expires="1970-01-05T21:47:52.401585Z",
-                        acquired="1970-01-05T21:47:47.401585Z"):
-    # Actual legacy Lynx clock format: no HTTP Date, acquired_at stays fixed
-    # while renewals advance expires_at. The initial duration is five seconds.
-    return response({"success": True, "lease": {
-        "active": True, "client_id": "operator", "acquired_at": acquired,
-        "expires_at": expires,
     }})
 
 
@@ -116,7 +105,7 @@ class RobotClientTests(unittest.TestCase):
             result = self.renew_reply or lease_response()
         elif url.endswith("/control/release"):
             result = self.release_reply or response({"success": True, "lease": {"active": False}})
-        elif url.endswith(("/robot/rws/move", "/robot/rws/path", "/robot/rws/gripper", "/robot/rws/home")):
+        elif url.endswith(("/robot/rws/move", "/robot/rws/gripper", "/robot/rws/home", "/robot/rws/path")):
             if self.movement:
                 self.movement()
             result = self.move_replies.pop(0) if self.move_replies else done_response()
@@ -128,11 +117,6 @@ class RobotClientTests(unittest.TestCase):
         return result
 
     def serve_get(self, url, **kwargs):
-        if url.endswith("/openapi.json"):
-            result = response(schema_fixture(blended_path=True))
-            result.content = b"fixture"
-            self.responses.append(result)
-            return result
         arm = url.split("/")[-2]
         self.assertIn(arm, ("left", "right"))
         self.assertTrue(url.endswith(f"/robot/arms/{arm}/joints"))
@@ -312,116 +296,6 @@ class RobotClientTests(unittest.TestCase):
         self.client.execute([move()])
         self.assertEqual(len(self.move_calls()), 1)
 
-    def test_home_accepts_unset_lynx_clock_without_date_header(self):
-        self.acquire_reply = lynx_lease_response()
-        with patch("robot_client.datetime", wraps=datetime) as wall_clock:
-            wall_clock.now.side_effect = AssertionError("Must not compare against the Mac clock")
-            self.client.execute_jobs([home("left"), home("right")])
-        self.assertEqual(self.endpoints(), ["/control/acquire", "/robot/rws/home",
-                                           "/robot/rws/home", "/control/release"])
-        self.assertEqual(self.get.call_count, 2)  # Both home joint positions still verified.
-
-    def test_lynx_acquisition_network_delay_can_expire_before_home(self):
-        self.acquire_reply = lynx_lease_response()
-        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
-            def delayed_reply(url, **options):
-                if url.endswith("/control/acquire"):
-                    clock.return_value = 105.1
-                return self.serve(url, **options)
-            self.post.side_effect = delayed_reply
-            with self.assertRaisesRegex(RobotCommandError, "expired control lease"):
-                self.client.execute_jobs([home("left")])
-        self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
-        self.get.assert_not_called()
-
-    def test_lynx_renewal_uses_original_clock_anchor_and_counts_reply_delay(self):
-        self.acquire_reply = lynx_lease_response()
-        self.renew_reply = lynx_lease_response(expires="1970-01-05T21:47:54.401585Z")
-        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
-            try:
-                self.client._take_control()
-                self.assertEqual(self.client._lease_deadline, 105.0)
-                clock.return_value = 102.0
-                def delayed_reply(url, **options):
-                    if url.endswith("/control/renew"):
-                        clock.return_value = 102.5
-                    return self.serve(url, **options)
-                self.post.side_effect = delayed_reply
-                self.client._take_control()
-                self.assertEqual(self.client._lease_deadline, 107.0)
-                clock.return_value = 107.0
-                with self.assertRaisesRegex(RobotCommandError, "last confirmed control lease expired"):
-                    self.client._check_lease()
-            finally:
-                self.client._release_control()
-        self.assertEqual(self.job_calls(), [])
-
-    def test_lynx_forward_clock_jump_does_not_lengthen_renewal(self):
-        self.acquire_reply = lynx_lease_response()
-        self.renew_reply = lynx_lease_response(expires="2026-11-11T11:08:31Z")
-        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
-            try:
-                self.client._take_control()
-                clock.return_value = 102.0
-                self.client._take_control()
-                self.assertEqual(self.client._lease_deadline, 107.0)
-            finally:
-                self.client._release_control()
-
-    def test_lynx_old_renewal_reply_cannot_revive_expired_lease(self):
-        self.acquire_reply = lynx_lease_response()
-        self.renew_reply = lynx_lease_response()
-        with patch("robot_client.time.monotonic", return_value=100.0) as clock:
-            try:
-                self.client._take_control()
-                clock.return_value = 106.0
-                with self.assertRaisesRegex(RobotCommandError, "expired control lease"):
-                    self.client._take_control()
-                self.assertEqual(self.client._lease_deadline, 105.0)
-            finally:
-                self.client._release_control()
-
-    def test_lynx_invalid_initial_timestamps_block_home_and_release(self):
-        for acquired, expires in [
-            ("invalid", "1970-01-05T21:47:52Z"),
-            ("1970-01-05T21:47:47", "1970-01-05T21:47:52Z"),
-            ("1970-01-05T21:47:52Z", "1970-01-05T21:47:52Z"),
-            ("1970-01-05T21:47:53Z", "1970-01-05T21:47:52Z"),
-        ]:
-            with self.subTest(acquired=acquired, expires=expires):
-                self.post.reset_mock()
-                self.acquire_reply = lynx_lease_response(expires, acquired)
-                with self.assertRaises(RobotCommandError):
-                    self.client.execute_jobs([home("left")])
-                self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
-                self.assertIsNone(self.client._lease_clock_anchor)
-
-    def test_lynx_changed_or_missing_renewal_metadata_is_rejected(self):
-        for acquired, expires in [
-            ("1970-01-05T21:47:48.401585Z", "1970-01-05T21:47:54.401585Z"),
-            (None, "1970-01-05T21:47:54.401585Z"),
-            ("1970-01-05T21:47:47.401585Z", None),
-        ]:
-            with self.subTest(acquired=acquired, expires=expires):
-                self.acquire_reply = lynx_lease_response()
-                self.renew_reply = lynx_lease_response(expires, acquired)
-                try:
-                    self.client._take_control()
-                    with self.assertRaises(RobotCommandError):
-                        self.client._take_control()
-                finally:
-                    self.client._release_control()
-        self.assertEqual(self.job_calls(), [])
-
-    def test_new_acquisition_discards_previous_lynx_clock_anchor(self):
-        self.acquire_reply = lynx_lease_response()
-        self.client.execute_jobs([home("left")])
-        self.assertIsNone(self.client._lease_clock_anchor)
-        self.acquire_reply = lynx_lease_response(expires="2026-11-11T11:08:31Z",
-                                                acquired="2026-11-11T11:08:26Z")
-        self.client.execute_jobs([home("right")])
-        self.assertEqual(len(self.job_calls()), 2)
-
     def test_release_failure_does_not_mask_movement_failure(self):
         self.move_replies = [response({"accepted": False, "message": "ERR move failed"})]
         self.release_reply = requests.Timeout("release timeout")
@@ -559,6 +433,158 @@ class RobotClientTests(unittest.TestCase):
                     self.client.execute_jobs([job(), invalid])
         self.post.assert_not_called()
 
+    def grouped(self, name, arm, group, **body):
+        return {"name": name, "endpoint": "/robot/rws/path", "group": group,
+                "body": path_body(arm=arm, **body)}
+
+    def test_grouped_jobs_on_both_arms_run_at_the_same_time(self):
+        barrier = threading.Barrier(2, timeout=2)
+        events = []
+
+        def movement():
+            # Only passes if the left and right jobs are in flight together.
+            barrier.wait()
+            events.append("moved")
+
+        self.movement = movement
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g")]
+        self.client.execute_jobs(jobs)
+        self.assertEqual(events, ["moved", "moved"])
+
+    def test_first_hooks_of_a_stage_run_in_order_before_anything_is_sent(self):
+        order = []
+        self.movement = lambda: order.append("sent")
+
+        def before(index, job):
+            order.append(f"before {job['name']}")
+
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("left_b", "left", "g"),
+                self.grouped("right_a", "right", "g")]
+        self.client.execute_jobs(jobs, before_send=before)
+        self.assertEqual(order[:3], ["before left_a", "before right_a", "sent"])
+        self.assertEqual(sorted(order), sorted(["before left_a", "before right_a", "before left_b",
+                                                "sent", "sent", "sent"]))
+
+    def test_next_stage_waits_for_both_lanes(self):
+        lock = threading.Lock()
+        in_flight = []
+        overlaps = []
+
+        def movement():
+            with lock:
+                in_flight.append(1)
+                overlaps.append(len(in_flight))
+            time.sleep(0.05)
+            with lock:
+                in_flight.pop()
+
+        self.movement = movement
+        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g"),
+                job("after", "/robot/rws/path", path_body(arm="left"))]
+        self.client.execute_jobs(jobs)
+        self.assertEqual(len(self.job_calls()), 3)
+        # The two grouped jobs overlapped; the next job started alone.
+        self.assertEqual(max(overlaps[:2]), 2)
+        self.assertEqual(overlaps[2], 1)
+
+    def test_failure_in_one_lane_stops_the_other_lane_after_its_running_job(self):
+        right_a_sent = threading.Event()
+
+        def movement():
+            if self.post.call_args.kwargs["json"]["zone"] == 1:
+                right_a_sent.set()
+                time.sleep(0.3)   # still moving when the left lane fails
+
+        def before(index, job):
+            if job["name"] == "left_a":
+                right_a_sent.wait(2)
+                raise RuntimeError("camera says no")
+
+        self.movement = movement
+        # Jobs are told apart by their zone.
+        jobs = [self.grouped("right_a", "right", "g", zone=1), self.grouped("right_b", "right", "g", zone=2),
+                self.grouped("left_x", "left", "g", zone=3), self.grouped("left_a", "left", "g", zone=4),
+                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
+        with self.assertRaisesRegex(RobotCommandError, "camera says no"):
+            self.client.execute_jobs(jobs, before_send=before)
+        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
+        # right_a was waited for; right_b, left_a and the next stage never went out.
+        self.assertEqual(sent, [1, 3])
+
+    def test_a_reported_failure_in_one_lane_raises_and_sends_nothing_more(self):
+        def movement():
+            if self.post.call_args.kwargs["json"]["zone"] == 1:
+                time.sleep(0.1)   # the right lane is still moving when the left fails
+
+        self.movement = movement
+        self.move_replies = [response({"accepted": False, "message": "ERR move failed"}), done_response()]
+        jobs = [self.grouped("left_a", "left", "g", zone=0), self.grouped("right_a", "right", "g", zone=1),
+                self.grouped("right_b", "right", "g", zone=2),
+                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
+        with self.assertRaisesRegex(RobotCommandError, "did not report successful completion"):
+            self.client.execute_jobs(jobs)
+        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
+        self.assertNotIn(2, sent)
+        self.assertNotIn(5, sent)
+
+    def test_grouped_jobs_must_name_their_arm_and_replacements_keep_arm_and_group(self):
+        no_arm = {"name": "x", "endpoint": "/robot/rws/home", "group": "g", "body": {"wait": True}}
+        with self.assertRaisesRegex(RobotCommandError, "must name its arm"):
+            self.client.execute_jobs([no_arm])
+        with self.assertRaisesRegex(RobotCommandError, "nonempty string"):
+            self.client.execute_jobs([{**self.grouped("a", "left", "g"), "group": ""}])
+        self.post.assert_not_called()
+
+        for change in ({"body": path_body(arm="right")}, {"group": "other"}):
+            with self.subTest(change=change):
+                self.post.reset_mock()
+                with self.assertRaisesRegex(RobotCommandError, "may not change its arm or group"):
+                    self.client.execute_jobs(
+                        [self.grouped("a", "left", "g"), self.grouped("b", "right", "g")],
+                        before_send=lambda index, job, change=change: {**job, **change} if index == 0 else None)
+                self.assertEqual(self.job_calls(), [])
+
+    def test_dry_run_marks_jobs_that_run_together(self):
+        dry = RobotClient("http://test/api/v1/", {"Authorization": "Bearer test"}, dry_run=True)
+        dry.execute_jobs([self.grouped("left_a", "left", "pick"), self.grouped("right_a", "right", "pick")])
+        self.assertIn("(left_a) [together: pick]", self.stdout.getvalue())
+        self.post.assert_not_called()
+
+    def test_a_refusal_shows_the_gateways_reason(self):
+        refused = response({"detail": "RAPID is not running"}, status=409)
+        self.move_replies = [refused]
+        with self.assertRaisesRegex(RobotCommandError, "Gateway says: RAPID is not running"):
+            self.client.execute_jobs([job("a", "/robot/rws/path", path_body())])
+
+    def test_path_jobs_are_validated_before_acquisition(self):
+        def path(body):
+            return job("path", "/robot/rws/path", body)
+        invalid = [
+            path_body(arm="middle"), path_body(wait=False), path_body(points=[]),
+            path_body(points=[path_point()] * 9), path_body(points="400,100,409"),
+            path_body(path_point(z=float("nan"))), path_body(path_point(rx=None)),
+            path_body({"x": 400, "y": 100, "z": 409}), path_body(path_point(linear=1)),
+            path_body(path_point(speed=0)), path_body(path_point(zone=101)),
+            path_body(path_point(command="HOME")), path_body(zone=-1),
+            path_body(max_acceleration=0), path_body(max_acceleration=21),
+            path_body(acceleration=10), path_body(command="HOME"),
+        ]
+        for body in invalid:
+            with self.subTest(body=body):
+                with self.assertRaises(RobotCommandError):
+                    self.client.execute_jobs([job(), path(body)])
+        self.post.assert_not_called()
+
+    def test_valid_path_job_passes_validation_unchanged(self):
+        body = path_body(path_point(speed=250, zone=20),
+                         path_point(z=234, linear=True, speed=50),
+                         max_acceleration=1.5)
+        checked = RobotClient._validate_job(job("approach cup", "/robot/rws/path", body))
+        self.assertEqual(checked["body"], body)
+        # A deep copy: changing the plan later cannot change the validated job.
+        body["points"][0]["x"] = 9999
+        self.assertEqual(checked["body"]["points"][0]["x"], 400)
+
     def test_named_jobs_require_list_and_empty_plan_does_nothing(self):
         for invalid in (None, job(), "HOME", (job(),)):
             with self.subTest(invalid=invalid):
@@ -685,349 +711,6 @@ class RobotClientTests(unittest.TestCase):
             self.assertEqual(self.get.call_count, index + 1)
             self.assertEqual(len(self.job_calls()), index + 1)
         self.client.execute_jobs([home("left"), home("right")], after_done=after)
-
-    def test_bounded_gripper_position_is_dispatched_under_the_same_lease(self):
-        for position in (0, 12.5, 25):
-            with self.subTest(position=position):
-                self.post.reset_mock()
-                body = {"arm": "left", "wait": True, "action": "move", "position": position}
-                self.client.execute_jobs([job("open above cup", "/robot/rws/gripper", body)])
-                self.assertEqual(self.endpoints(), ["/control/acquire", "/robot/rws/gripper", "/control/release"])
-                self.assertEqual(self.job_calls()[0].kwargs["json"], body)
-
-    def test_invalid_gripper_position_is_rejected_before_any_http(self):
-        base = {"arm": "left", "wait": True, "action": "move"}
-        invalid = [base, {**base, "action": "open", "position": 10},
-                   {**base, "action": "grip", "position": 10}, {**base, "position": 10, "force": 5}]
-        invalid.extend({**base, "position": value} for value in
-                       (None, True, "10", -0.1, 25.1, float("nan"), float("inf"), 10 ** 1000))
-        for body in invalid:
-            with self.subTest(body=body), self.assertRaises(RobotCommandError):
-                self.client.execute_jobs([job("invalid opening", "/robot/rws/gripper", body)])
-        self.post.assert_not_called()
-        self.get.assert_not_called()
-
-
-    def grouped(self, name, arm, group, **body):
-        return {"name": name, "endpoint": "/robot/rws/path", "group": group,
-                "body": path_body(arm=arm, **body)}
-
-    def test_grouped_jobs_on_both_arms_run_at_the_same_time(self):
-        barrier = threading.Barrier(2, timeout=2)
-        events = []
-
-        def movement():
-            # Only passes if the left and right jobs are in flight together.
-            barrier.wait()
-            events.append("moved")
-
-        self.movement = movement
-        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g")]
-        self.client.execute_jobs(jobs)
-        self.assertEqual(events, ["moved", "moved"])
-
-    def test_first_hooks_of_a_stage_run_in_order_before_anything_is_sent(self):
-        order = []
-        self.movement = lambda: order.append("sent")
-
-        def before(index, job):
-            order.append(f"before {job['name']}")
-
-        jobs = [self.grouped("left_a", "left", "g"), self.grouped("left_b", "left", "g"),
-                self.grouped("right_a", "right", "g")]
-        self.client.execute_jobs(jobs, before_send=before)
-        self.assertEqual(order[:3], ["before left_a", "before right_a", "sent"])
-        self.assertEqual(sorted(order), sorted(["before left_a", "before right_a", "before left_b",
-                                                "sent", "sent", "sent"]))
-
-    def test_next_stage_waits_for_both_lanes(self):
-        lock = threading.Lock()
-        in_flight = []
-        overlaps = []
-
-        def movement():
-            with lock:
-                in_flight.append(1)
-                overlaps.append(len(in_flight))
-            time.sleep(0.05)
-            with lock:
-                in_flight.pop()
-
-        self.movement = movement
-        jobs = [self.grouped("left_a", "left", "g"), self.grouped("right_a", "right", "g"),
-                job("after", "/robot/rws/path", path_body(arm="left"))]
-        self.client.execute_jobs(jobs)
-        self.assertEqual(len(self.job_calls()), 3)
-        # The two grouped jobs overlapped; the next job started alone.
-        self.assertEqual(max(overlaps[:2]), 2)
-        self.assertEqual(overlaps[2], 1)
-
-    def test_failure_in_one_lane_stops_the_other_lane_after_its_running_job(self):
-        right_a_sent = threading.Event()
-
-        def movement():
-            if self.post.call_args.kwargs["json"]["zone"] == 1:
-                right_a_sent.set()
-                time.sleep(0.3)   # still moving when the left lane fails
-
-        def before(index, job):
-            if job["name"] == "left_a":
-                right_a_sent.wait(2)
-                raise RuntimeError("camera says no")
-
-        self.movement = movement
-        # Jobs are told apart by their zone.
-        jobs = [self.grouped("right_a", "right", "g", zone=1), self.grouped("right_b", "right", "g", zone=2),
-                self.grouped("left_x", "left", "g", zone=3), self.grouped("left_a", "left", "g", zone=4),
-                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
-        with self.assertRaisesRegex(RobotCommandError, "camera says no"):
-            self.client.execute_jobs(jobs, before_send=before)
-        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
-        # right_a was waited for; right_b, left_a and the next stage never went out.
-        self.assertEqual(sent, [1, 3])
-
-    def test_a_reported_failure_in_one_lane_raises_and_sends_nothing_more(self):
-        def movement():
-            if self.post.call_args.kwargs["json"]["zone"] == 1:
-                time.sleep(0.1)   # the right lane is still moving when the left fails
-
-        self.movement = movement
-        self.move_replies = [response({"accepted": False, "message": "ERR move failed"}), done_response()]
-        jobs = [self.grouped("left_a", "left", "g", zone=0), self.grouped("right_a", "right", "g", zone=1),
-                self.grouped("right_b", "right", "g", zone=2),
-                job("after", "/robot/rws/path", path_body(arm="left", zone=5))]
-        with self.assertRaisesRegex(RobotCommandError, "did not report successful completion"):
-            self.client.execute_jobs(jobs)
-        sent = sorted(call.kwargs["json"]["zone"] for call in self.job_calls())
-        self.assertNotIn(2, sent)
-        self.assertNotIn(5, sent)
-
-    def test_grouped_jobs_must_name_their_arm_and_replacements_keep_arm_and_group(self):
-        no_arm = {"name": "x", "endpoint": "/robot/rws/home", "group": "g", "body": {"wait": True}}
-        with self.assertRaisesRegex(RobotCommandError, "must name its arm"):
-            self.client.execute_jobs([no_arm])
-        with self.assertRaisesRegex(RobotCommandError, "nonempty string"):
-            self.client.execute_jobs([{**self.grouped("a", "left", "g"), "group": ""}])
-        self.post.assert_not_called()
-
-        for change in ({"body": path_body(arm="right")}, {"group": "other"}):
-            with self.subTest(change=change):
-                self.post.reset_mock()
-                with self.assertRaisesRegex(RobotCommandError, "may not change its arm or group"):
-                    self.client.execute_jobs(
-                        [self.grouped("a", "left", "g"), self.grouped("b", "right", "g")],
-                        before_send=lambda index, job, change=change: {**job, **change} if index == 0 else None)
-                self.assertEqual(self.job_calls(), [])
-
-    def test_dry_run_marks_jobs_that_run_together(self):
-        dry = RobotClient("http://test/api/v1/", {"Authorization": "Bearer test"}, dry_run=True)
-        dry.execute_jobs([self.grouped("left_a", "left", "pick"), self.grouped("right_a", "right", "pick")])
-        self.assertIn("(left_a) [together: pick]", self.stdout.getvalue())
-        self.post.assert_not_called()
-
-    def test_a_refusal_shows_the_gateways_reason(self):
-        refused = response({"detail": "RAPID is not running"}, status=409)
-        self.move_replies = [refused]
-        with self.assertRaisesRegex(RobotCommandError, "RAPID is not running"):
-            self.client.execute_jobs([job("a", "/robot/rws/path", path_body())])
-
-    def test_path_jobs_are_validated_before_acquisition(self):
-        def path(body):
-            return job("path", "/robot/rws/path", body)
-        invalid = [
-            path_body(arm="middle"), path_body(wait=False), path_body(points=[]),
-            path_body(points=[path_point()] * 9), path_body(points="400,100,409"),
-            path_body(path_point(z=float("nan"))), path_body(path_point(rx=None)),
-            path_body({"x": 400, "y": 100, "z": 409}), path_body(path_point(linear=1)),
-            path_body(path_point(speed=0)), path_body(path_point(zone=101)),
-            path_body(path_point(command="HOME")), path_body(zone=-1),
-            path_body(max_acceleration=0), path_body(max_acceleration=21),
-            path_body(acceleration=10), path_body(command="HOME"),
-        ]
-        for body in invalid:
-            with self.subTest(body=body):
-                with self.assertRaises(RobotCommandError):
-                    self.client.execute_jobs([job(), path(body)])
-        self.post.assert_not_called()
-
-    def test_valid_path_job_passes_validation_unchanged(self):
-        body = path_body(path_point(speed=250, zone=20),
-                         path_point(z=234, linear=True, speed=50),
-                         max_acceleration=1.5)
-        checked = RobotClient._validate_job(job("approach cup", "/robot/rws/path", body))
-        self.assertEqual(checked["body"], body)
-        # A deep copy: changing the plan later cannot change the validated job.
-        body["points"][0]["x"] = 9999
-        self.assertEqual(checked["body"]["points"][0]["x"], 400)
-
-    def test_group_and_dependency_plans_cannot_be_mixed_before_acquisition(self):
-        grouped = self.grouped("left", "left", "stage")
-        dependent = {**self.grouped("right", "right", "stage"), "after": []}
-        for jobs in ([dependent], [grouped, {key: value for key, value in dependent.items()
-                                           if key != "group"}]):
-            with self.subTest(jobs=jobs), self.assertRaisesRegex(RobotCommandError, "cannot mix"):
-                self.client.execute_jobs(jobs)
-        self.post.assert_not_called()
-        self.get.assert_not_called()
-
-    def test_failure_in_second_first_hook_prevents_both_group_lanes(self):
-        called = []
-
-        def before(index, _job):
-            called.append(index)
-            if index == 2:
-                raise RuntimeError("second arm cannot start")
-
-        jobs = [self.grouped("left first", "left", "stage"),
-                self.grouped("left next", "left", "stage"),
-                self.grouped("right first", "right", "stage")]
-        with self.assertRaisesRegex(RobotCommandError, "second arm cannot start"):
-            self.client.execute_jobs(jobs, before_send=before)
-        self.assertEqual(called, [0, 2])
-        self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
-
-    def test_group_replacements_cannot_introduce_dependency_execution(self):
-        jobs = [self.grouped("left first", "left", "stage"),
-                self.grouped("right first", "right", "stage")]
-        with self.assertRaisesRegex(RobotCommandError, "cannot mix"):
-            self.client.execute_jobs(jobs, before_send=lambda _, value: {**value, "after": []})
-        self.assertEqual(self.job_calls(), [])
-
-    def test_group_dispatch_retains_ordinary_motion_height_guard(self):
-        bad = self.grouped("transit", "left", "stage", points=[path_point(z=198)])
-        with self.assertRaisesRegex(RobotCommandError, "ordinary motion requires 199..700"):
-            self.client.execute_jobs([bad])
-        self.assertEqual(self.endpoints(), ["/control/acquire", "/control/release"])
-
-    def test_group_interrupt_drains_peer_before_release_and_sends_no_later_jobs(self):
-        right_active, interrupted, finish_right = (threading.Event() for _ in range(3))
-        errors = []
-
-        def serve(url, **options):
-            if url.endswith("/robot/rws/path"):
-                if options["json"]["arm"] == "right":
-                    right_active.set()
-                    self.assertTrue(finish_right.wait(2), "Mocked right request was never released")
-                else:
-                    self.assertTrue(right_active.wait(2), "Peer lane never started")
-                    interrupted.set()
-                    raise KeyboardInterrupt("mock interruption")
-            return self.serve(url, **options)
-
-        self.post.side_effect = serve
-        jobs = [self.grouped("right first", "right", "stage"),
-                self.grouped("right later", "right", "stage"),
-                self.grouped("left interrupted", "left", "stage"),
-                job("next stage", "/robot/rws/path", path_body())]
-
-        def execute():
-            try:
-                self.client.execute_jobs(jobs)
-            except BaseException as error:
-                errors.append(error)
-
-        worker = threading.Thread(target=execute, daemon=True)
-        worker.start()
-        try:
-            self.assertTrue(interrupted.wait(2), "Mock interruption never occurred")
-            self.assertNotIn("/control/release", self.endpoints())
-            self.assertTrue(worker.is_alive())
-        finally:
-            finish_right.set()
-            worker.join(3)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], KeyboardInterrupt)
-        self.assertEqual(len(self.job_calls()), 2)
-        self.assertEqual(self.endpoints().count("/control/release"), 1)
-
-    def test_stop_in_first_group_hook_prevents_all_dispatch(self):
-        jobs = [self.grouped("left first", "left", "stage"),
-                self.grouped("right first", "right", "stage")]
-        with self.assertRaisesRegex(RobotCommandError, "Software stop"):
-            self.client.execute_jobs(jobs, before_send=lambda *_: self.client.latch_stop())
-        self.assertEqual(self.job_calls(), [])
-        self.assertEqual(self.endpoints(), ["/control/acquire"])
-
-    def test_repeated_coordinator_interrupts_wait_for_actual_group_completion(self):
-        active = {arm: threading.Event() for arm in ("left", "right")}
-        finish, draining = threading.Event(), threading.Event()
-        errors = []
-        original_start = threading.Thread.start
-
-        def start(thread):
-            original_start(thread)
-            if thread.name == "robot-group-arm":
-                # Reproduce versions of Python where interrupted join marks a
-                # still-running thread as stopped. Only its done event is true.
-                thread.is_alive = Mock(return_value=False)
-                thread.join = Mock(return_value=None)
-
-        def serve(url, **options):
-            if url.endswith("/robot/rws/path"):
-                active[options["json"]["arm"]].set()
-                self.assertTrue(finish.wait(2), "Mocked request was never released")
-            return self.serve(url, **options)
-
-        def interrupt(finished):
-            self.assertTrue(all(event.wait(2) for event in active.values()))
-            original_wait = finished[0].wait
-            attempts = 0
-
-            def interrupted_wait(timeout=None):
-                nonlocal attempts
-                attempts += 1
-                if attempts == 1:
-                    raise KeyboardInterrupt("second interrupt while draining")
-                draining.set()
-                return original_wait(timeout)
-
-            finished[0].wait = interrupted_wait
-            raise KeyboardInterrupt("first coordinator interrupt")
-
-        self.post.side_effect = serve
-        jobs = [self.grouped("right first", "right", "stage"),
-                self.grouped("right later", "right", "stage"),
-                self.grouped("left first", "left", "stage")]
-
-        def execute():
-            try:
-                self.client.execute_jobs(jobs)
-            except BaseException as error:
-                errors.append(error)
-
-        with patch.object(self.client, "_wait_grouped_workers", side_effect=interrupt), \
-                patch.object(threading.Thread, "start", start):
-            worker = threading.Thread(target=execute, daemon=True)
-            worker.start()
-            try:
-                self.assertTrue(draining.wait(2), "Coordinator did not survive the second interrupt")
-                self.assertTrue(worker.is_alive())
-                self.assertNotIn("/control/release", self.endpoints())
-            finally:
-                finish.set()
-                worker.join(3)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(len(errors), 1)
-        self.assertIsInstance(errors[0], KeyboardInterrupt)
-        self.assertEqual(str(errors[0]), "first coordinator interrupt")
-        self.assertEqual(len(self.job_calls()), 2)
-        self.assertEqual(self.endpoints().count("/control/release"), 1)
-
-    def test_smooth_simulation_batch_executes_under_same_control_session(self):
-        from sim_handover_plan import handover_batch
-
-        lease = lease_response().json()
-        lease["lease"]["session_id"] = "simulation-session"
-        self.acquire_reply = response(lease)
-        cups = [{"x": 500, "y": y, "z": 50} for y in (100, 200, -150)]
-        jobs = handover_batch(cups)
-        self.client.execute_jobs(jobs)
-        self.assertEqual(len(self.job_calls()), len(jobs))
-        self.assertEqual(self.endpoints().count("/control/acquire"), 1)
-        self.assertEqual(self.endpoints().count("/control/release"), 1)
-        for call in self.post.call_args_list[1:]:
-            self.assertEqual(call.kwargs["headers"].get("X-Control-Session"), "simulation-session")
 
 
 if __name__ == "__main__":

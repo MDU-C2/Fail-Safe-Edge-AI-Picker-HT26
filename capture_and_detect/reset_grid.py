@@ -1,14 +1,14 @@
 """
-Show or reset placing_grid.json, the place locations used by capture_and_detect.py.
+Show or reset placing_grid.json, the place locations used by capture_and_detect.py
+and by the web app's cup command (smooth plan).
 
     python reset_grid.py              # every location free again (after clearing the table)
     python reset_grid.py --show       # only show which locations are occupied
     python reset_grid.py --id 3 7     # free only locations 3 and 7
 
-Only reset after clearing the table and while no controller is using this grid.
-During a hand-over capture_and_detect.py holds its own copy and writes it back
-after placing, which would undo the reset. The UI manages reservations in its
-configured placement grid; use its placement-release controls for that workflow.
+Only reset while capture_and_detect.py is not moving a cup: during a hand-over it holds
+its own copy of the grid and writes it back after placing, which would undo the reset.
+(The web app reads the file fresh when it marks a spot, so it does not undo a reset.)
 """
 
 import argparse

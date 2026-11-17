@@ -18,9 +18,3 @@ capture_and_detect/data
 
 # Westermo Lynx device config snapshot — kept local, not shared
 /lynx/running-config.sanitized.json
-
-# Local desktop metadata and generated validation/runtime artifacts.
-.DS_Store
-/output/
-/capture_and_detect/.placing_grid*.json.lock
-/capture_and_detect/.placing_grid*.json.controller.lock
