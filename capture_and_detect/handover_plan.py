@@ -253,10 +253,10 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     release the arms move straight apart together. Turnover waits for both to
     finish, then placement completes before another cup can start.
 
-    By default left stays open above the handover and right stays closed above
-    placement. No home command is issued, even for the last cup. Explicit
-    ``home_after_cup=True`` retains the initial right home and return-home
-    sequences. There is no retry or fallback after an unconfirmed movement.
+    By default left stays open above the handover and right stays open above
+    placement; the grippers close only on a cup. No home command is issued,
+    even for the last cup. Explicit ``home_after_cup=True`` retains the
+    initial right home and return-home sequences. There is no retry or fallback after an unconfirmed movement.
     """
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
@@ -277,13 +277,13 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     place_above = (spot[0], spot[1], spot[2] + PLACE_ABOVE)
     turn_half = tuple((a + b) / 2 for a, b in zip(below, place_above))
 
-    plan.grip("right_close_travel", "right", "grip")
+    # Grippers close only on a cup (grip_cup, right_grip); otherwise they stay
+    # open, ready for the next cup.
     if home_after_cup:
         plan.home("right_home_start", "right")
-    plan.grip("left_close_travel", "left", "grip",
-              after=("right_home_start",) if home_after_cup else ())
     plan.path("left_ready", "left", [(LEFT_READY, LEFT_DOWN, plan.speed, False)],
-              move_speed=plan.speed)
+              move_speed=plan.speed,
+              after=("right_home_start",) if home_after_cup else ())
     if aperture is None:
         plan.grip("left_open", "left", "open")
     else:
@@ -329,7 +329,6 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     plan.grip("right_release", "right", "open")
     plan.path("right_clear", "right", [(place_above, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed)
-    plan.grip("right_close", "right", "grip")
     if home_after_cup:
         plan.home("right_home", "right")
     return plan.jobs
