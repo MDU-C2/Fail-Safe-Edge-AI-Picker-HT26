@@ -21,13 +21,13 @@ class SignalledCameraService(CameraService):
         super().__init__()
         self.waiting = threading.Event()
         self.transform = lambda pair: pair
-        self.requested_sequence = None
+        self.reads = 0
 
-    async def wait_for_frame_set(self, after_sequence, timeout_seconds):
-        self.requested_sequence = after_sequence
+    def get_latest_frame_set(self):
+        self.reads += 1
         self.waiting.set()
-        pair = await super().wait_for_frame_set(after_sequence, timeout_seconds)
-        return self.transform(pair) if pair is not None else None
+        pair = super().get_latest_frame_set()
+        return self.transform(pair) if pair is not None and pair.sequence > 1 else pair
 
 
 def submit(loop, coroutine):
@@ -111,7 +111,7 @@ def test_capture_waits_for_new_pair_and_decodes_without_depth_copy(camera):
     baseline = service.get_status().sequence
     (rgb, depth, metadata), pair = capture_new(camera)
 
-    assert service.requested_sequence == baseline
+    assert service.reads >= 2
     assert metadata["sequence"] == pair.sequence > baseline
     assert metadata["timestamp"] == pair.timestamp.isoformat()
     assert metadata["received_monotonic"] >= metadata["observation_started_monotonic"]
@@ -169,7 +169,7 @@ def test_cancelled_loop_wait_is_reported_as_camera_error(camera):
 
 
 def test_outer_deadline_cancels_an_unresponsive_wait(camera, monkeypatch):
-    client, service, _ = camera
+    client, _, _ = camera
     cancelled = threading.Event()
 
     async def unresponsive_wait(*_):
@@ -178,7 +178,7 @@ def test_outer_deadline_cancels_an_unresponsive_wait(camera, monkeypatch):
         finally:
             cancelled.set()
 
-    monkeypatch.setattr(service, "wait_for_frame_set", unresponsive_wait)
+    monkeypatch.setattr(client, "_wait_for_frame_set", unresponsive_wait)
     with pytest.raises(CameraError, match="Timed out"):
         client.capture(timeout_s=0.01)
     assert cancelled.wait(timeout=1.0)
@@ -303,5 +303,30 @@ def test_latest_capture_uses_retained_pair_without_waiting_for_another_frame(cam
     client, service, _ = camera
     _, depth, metadata = client.capture_latest()
     assert metadata["sequence"] == service.get_status().sequence == 1
-    assert not service.waiting.is_set()
+    assert service.reads == 1
     np.testing.assert_array_equal(depth, [[0x1234, 0x5678]])
+
+
+def test_client_uses_original_gateway_camera_service_without_wait_extension(camera, monkeypatch):
+    client, _, loop = camera
+    original = CameraService()
+    assert not hasattr(original, "wait_for_frame_set")
+    original.set_intrinsics(intrinsics())
+    submit(loop, publish(original))
+    client.service = original
+    reading = threading.Event()
+    get_latest = original.get_latest_frame_set
+
+    def observed_read():
+        pair = get_latest()
+        reading.set()
+        return pair
+
+    monkeypatch.setattr(original, "get_latest_frame_set", observed_read)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(client.capture, 1.0)
+        assert reading.wait(timeout=1.0)
+        assert not future.done()
+        pair = submit(loop, publish(original))
+        _, _, metadata = future.result(timeout=2.0)
+    assert metadata["sequence"] == pair.sequence == 2

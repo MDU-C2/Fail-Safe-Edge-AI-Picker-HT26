@@ -159,7 +159,7 @@ class PlacementVerificationTests(unittest.TestCase):
         session.execute_selection(action="goto", capture_id="capture-10", cup_id=1, identity_check=identity)
         self.assertEqual(received, [("capture-10", 1)])
         self.capture.assert_called_once_with("scan")
-        self.assertEqual(self.robot.jobs[-1]["name"], "right_close")
+        self.assertEqual(self.robot.jobs[-1]["name"], "right_clear")
 
     def test_stop_during_identity_check_still_prevents_dispatch(self):
         session = self.session()

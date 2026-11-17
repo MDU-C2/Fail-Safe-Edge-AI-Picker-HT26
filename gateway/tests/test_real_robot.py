@@ -34,7 +34,7 @@ from gateway.tests.real_robot import (
     above,
     assert_at,
     move,
-    operator,
+    admin,
     pose,
     position,
     real_robot,
@@ -81,10 +81,10 @@ def test_gripper_positions_are_read(
 
 
 def test_legacy_command_status_still_answers(
-    operator: Client,
+    admin: Client,
 ) -> None:
     for command in ("STATUS", "R,STATUS"):
-        result = expect(operator.post("/robot/command", json={"command": command}), 200)
+        result = expect(admin.post("/robot/command", json={"command": command}), 200)
 
         assert result["message"] in ("BUSY", "DONE", "ERR move failed"), result
 
@@ -94,25 +94,25 @@ def test_legacy_command_status_still_answers(
 # ================================================================
 
 def test_refusals_do_not_move(
-    operator: Client,
+    admin: Client,
 ) -> None:
     #
     # The lease check is covered by test_rws.py: here every client
     # has the same token, i.e. the same identity, which holds the
     # lease, so a "second client" would be allowed to move.
     #
-    start = pose(operator, "left")
+    start = pose(admin, "left")
 
     #
     # Validation.
     #
-    expect(operator.post("/robot/rws/move", json={"x": 1, "y": 2}), 422)
+    expect(admin.post("/robot/rws/move", json={"x": 1, "y": 2}), 422)
 
     #
     # Outside the gateway's safe zone: refused before anything is
     # written.
     #
-    assert move(operator, "left", OUTSIDE_SAFE_ZONE) == {
+    assert move(admin, "left", OUTSIDE_SAFE_ZONE) == {
         "accepted": False,
         "message": "ERR outside safe zone",
     }
@@ -120,9 +120,9 @@ def test_refusals_do_not_move(
     #
     # Inside the safe zone but out of reach: the arm task refuses.
     #
-    assert move(operator, "left", OUT_OF_REACH) == MOVE_FAILED
+    assert move(admin, "left", OUT_OF_REACH) == MOVE_FAILED
 
-    assert_at(operator, "left", position(start), start)
+    assert_at(admin, "left", position(start), start)
 
 
 # ================================================================
@@ -131,55 +131,55 @@ def test_refusals_do_not_move(
 
 @pytest.mark.parametrize("arm", ARMS)
 def test_small_move_up_and_back(
-    operator: Client,
+    admin: Client,
     arm: str,
 ) -> None:
-    with returns_to_start(operator, arm) as start:
+    with returns_to_start(admin, arm) as start:
         target = above(position(start), SMALL_OFFSET_MM)
 
-        assert move(operator, arm, target) == DONE
+        assert move(admin, arm, target) == DONE
 
-        assert_at(operator, arm, target, start)
+        assert_at(admin, arm, target, start)
 
-        assert move(operator, arm, position(start)) == DONE
+        assert move(admin, arm, position(start)) == DONE
 
-        assert_at(operator, arm, position(start), start)
+        assert_at(admin, arm, position(start), start)
 
 
 def test_job_without_waiting_and_busy_arm(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as start:
+    with returns_to_start(admin, "left") as start:
         #
         # Far enough that the arm is still moving when the next
         # requests arrive.
         #
         target = above(position(start), MAX_OFFSET_MM)
 
-        assert move(operator, "left", target, wait=False) == STARTED
+        assert move(admin, "left", target, wait=False) == STARTED
 
-        assert expect(operator.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
+        assert expect(admin.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
 
         #
         # A second job for the same arm is refused (CommServer:
         # ERR busy).
         #
-        response = operator.post(
+        response = admin.post(
             "/robot/rws/move",
             json={"arm": "left", "wait": False, **dict(zip("xyz", target))},
         )
 
         assert expect(response, 409)["detail"] == "The left arm is busy with an earlier job"
 
-        assert wait_until_idle(operator, "left") == DONE
+        assert wait_until_idle(admin, "left") == DONE
 
-        assert_at(operator, "left", target, start)
+        assert_at(admin, "left", target, start)
 
 
 def test_both_arms_at_once(
-    operator: Client,
+    admin: Client,
 ) -> None:
-    with returns_to_start(operator, "left") as left, returns_to_start(operator, "right") as right:
+    with returns_to_start(admin, "left") as left, returns_to_start(admin, "right") as right:
         #
         # The long move, so the arms run together for a while.
         #
@@ -189,21 +189,21 @@ def test_both_arms_at_once(
         }
 
         for arm, target in targets.items():
-            assert move(operator, arm, target, wait=False) == STARTED
+            assert move(admin, arm, target, wait=False) == STARTED
 
         #
         # Both busy at the same moment: the moves overlap rather
         # than run one after the other.
         #
         for arm in ARMS:
-            status = expect(operator.get("/robot/rws/status", params={"arm": arm}), 200)
+            status = expect(admin.get("/robot/rws/status", params={"arm": arm}), 200)
 
             assert status["message"] == "BUSY", (arm, status)
 
         for arm, start in (("left", left), ("right", right)):
-            assert wait_until_idle(operator, arm) == DONE
+            assert wait_until_idle(admin, arm) == DONE
 
-            assert_at(operator, arm, targets[arm], start)
+            assert_at(admin, arm, targets[arm], start)
 
 
 # ================================================================
@@ -213,12 +213,12 @@ def test_both_arms_at_once(
 @pytest.mark.real_robot_gripper
 @pytest.mark.parametrize("arm", ARMS)
 def test_gripper_closes_and_opens(
-    operator: Client,
+    admin: Client,
     arm: str,
 ) -> None:
     for action in ("grip", "open"):
         result = expect(
-            operator.post("/robot/rws/gripper", json={"arm": arm, "action": action}),
+            admin.post("/robot/rws/gripper", json={"arm": arm, "action": action}),
             200,
         )
 

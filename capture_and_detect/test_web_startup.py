@@ -135,7 +135,7 @@ class WebStartupTests(unittest.TestCase):
             self.assertFalse(session.motion_settings()["home_after_cup"])
             scan = session.scan()
             session.execute_selection(action="goto", capture_id=scan["capture"], cup_id=1)
-        self.assertEqual(fixture.robot.jobs[-1]["name"], "right_close")
+        self.assertEqual(fixture.robot.jobs[-1]["name"], "right_clear")
         self.assertIn("left_clear", [job["name"] for job in fixture.robot.jobs])
         self.assertFalse(any("home" in job["name"] for job in fixture.robot.jobs))
         self.request.assert_not_called()

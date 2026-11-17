@@ -25,9 +25,9 @@ class NoHomePlanTests(unittest.TestCase):
                 job["after"] = [parent for parent in job["after"]
                                 if "home" not in parent and not parent.endswith("_close_return")]
                 if name == "right_via":
-                    # Its same-arm predecessor becomes the startup close when
+                    # Its same-arm predecessor becomes the startup open when
                     # the optional initial right-home job is removed.
-                    job["after"].insert(0, "right_close_travel")
+                    job["after"].insert(0, "right_open_start")
             expected.append(job)
         return expected
 
@@ -72,17 +72,21 @@ class NoHomePlanTests(unittest.TestCase):
                 self.assertFalse(any("home" in name for name in names))
                 self.assertFalse(any(job["endpoint"].endswith("/home") for job in jobs))
 
-    def test_normal_cycle_finishes_left_open_at_handover_and_right_closed_above_place(self):
+    def test_normal_cycle_starts_open_and_finishes_both_open_at_clearance(self):
         jobs = handover_jobs(self.cup, place=self.place)
         by_name = {job["name"]: job for job in jobs}
-        self.assertEqual(by_name["left_close_travel"]["after"], [])
-        self.assertEqual(by_name["right_close_travel"]["after"], [])
+        self.assertEqual(by_name["left_open_start"]["after"], [])
+        self.assertEqual(by_name["right_open_start"]["after"], [])
+        self.assertEqual(by_name["left_open_start"]["body"]["action"], "open")
+        self.assertEqual(by_name["right_open_start"]["body"]["action"], "open")
+        self.assertEqual([job["name"] for job in jobs if job["body"].get("action") == "grip"],
+                         ["grip_cup", "right_grip"])
         left = [job for job in jobs if job["body"]["arm"] == "left"]
         right = [job for job in jobs if job["body"]["arm"] == "right"]
         self.assertEqual(left[-1]["name"], "left_clear")
-        self.assertEqual(right[-1]["name"], "right_close")
+        self.assertEqual(right[-1]["name"], "right_clear")
         for lane, xyz, action in ((left, (350, -100, 690), "open"),
-                                  (right, (420, -200, 310), "grip")):
+                                  (right, (420, -200, 310), "open")):
             last_path = [job for job in lane if job["endpoint"].endswith("/path")][-1]
             point = last_path["body"]["points"][-1]
             self.assertEqual(tuple(point[axis] for axis in "xyz"), xyz)

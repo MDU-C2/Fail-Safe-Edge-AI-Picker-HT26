@@ -103,15 +103,10 @@ def create_detector(args, calibration, intrinsics, *, on_update=None, register_r
 
 
 def create_robot(args, api, headers):
-    """Read-only capability check before enabling the new live coordinator."""
-    from robot_client import RobotClient, RobotCommandError
+    """Use the original gateway lease for every local execution coordinator."""
+    from robot_client import RobotClient
     live = getattr(args, "live", not getattr(args, "dry_run", True))
-    require_session = bool(getattr(args, "mac_inference_url", None)) and live
-    robot = RobotClient(api, headers, dry_run=not live, require_session=require_session)
-    if require_session:
-        control = robot._get_object("/control")
-        if control.get("session_required") is not True or control.get("watchdog_enabled") is not True:
-            raise RobotCommandError("Live fallback requires the updated gateway with GATEWAY_CONTROL_REQUIRE_SESSION=true. Dry-run remains available.")
+    robot = RobotClient(api, headers, dry_run=not live)
     profile = getattr(args, "controller_profile", None)
     # Managed picker services publish controls immediately. Unflagged library
     # callers retain their existing explicit/discovery-on-demand behavior.

@@ -39,12 +39,10 @@ class RobotClient:
     HOME_ARM_ANGLES = {"left": 135, "right": -135}
     HOME_TOLERANCE_DEGREES = 1.0
 
-    def __init__(self, api: str, headers: Mapping[str, str], dry_run: bool = False, *, require_session: bool = False):
+    def __init__(self, api: str, headers: Mapping[str, str], dry_run: bool = False):
         self.api = api.rstrip("/")
         self.headers = dict(headers)
         self.dry_run = dry_run
-        self.require_session = require_session
-        self._control_session = None
         self._owned_lease = False
         self._release_needed = False
         self._lease_error: Optional[RobotCommandError] = None
@@ -59,14 +57,12 @@ class RobotClient:
         self._stop_finished = threading.Event()
         self._stop_finished.set()
         self._operator_gateway = None
-        self._controller_status = None
         self._capability_error = None
 
     def configure_operator_controls(self, controller_profile=None):
         """Discover read-only support once; no control lease or motion is sent."""
-        if not self.dry_run and controller_profile is not None:
-            from controller_status import load_controller_status_profile
-            self._controller_status = load_controller_status_profile(controller_profile, self.api)
+        # Retain the optional argument for saved launcher configurations. Robot
+        # controls use only the original gateway; no direct controller reads.
         return self.refresh_operator_capabilities()
 
     def refresh_operator_capabilities(self):
@@ -98,32 +94,26 @@ class RobotClient:
 
     @property
     def operator_capabilities(self):
-        actions = ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
-                   "rapid_start", "collision_ack", "collision_status")
+        from gateway_capabilities import ACTIONS
         if self.dry_run:
-            return {name: {"supported": True, "reason": None, "protocol": "preview"} for name in actions}
+            return {name: {"supported": True, "reason": None, "protocol": "preview"} for name in ACTIONS}
         if self._operator_gateway is None:
             return None  # Library clients retain their existing explicit API.
         result = copy.deepcopy(self._operator_gateway["actions"])
         if not self._operator_gateway.get("schema_valid"):
-            # Keep the read-only discovery button available after a disconnect.
-            # None records unknown discovery; runtime calls remain available.
+            # Status can rediscover capabilities after a disconnect.
             result["robot_status"].update(supported=None, reason=self._capability_error)
-        if (self._operator_gateway.get("schema_valid") and self._controller_status is not None
-                and self._operator_gateway["protocols"]["joint_readback"]
-                and not result["collision_status"]["advertised"]):
-            result["collision_status"].update(supported=True, reason=None, protocol="native_read_only")
-        # Discovery is informational. Missing/older OpenAPI descriptions do not
-        # prevent an explicit operator action; its runtime response is decisive.
-        for capability in result.values():
-            capability["advertised_supported"] = capability.get("supported")
-            capability["discovery_reason"] = capability.get("reason")
-            capability.update(supported=True, reason=None)
         return result
 
     def require_control_action(self, action):
-        """Compatibility hook: discovery no longer gates explicit UI controls."""
-        return None
+        """Reject actions outside the original gateway control contract."""
+        from gateway_capabilities import ACTIONS
+        if action not in ACTIONS:
+            raise RobotCommandError("This robot control is not supported by the original gateway.")
+        capabilities = self.operator_capabilities
+        if capabilities is not None and capabilities[action]["supported"] is not True:
+            raise RobotCommandError(capabilities[action].get("reason") or
+                                    "This gateway does not support the requested robot control.")
 
     @property
     def stop_requested(self):
@@ -214,106 +204,15 @@ class RobotClient:
         """Read current controller state; dry-run/demo never contacts hardware."""
         if self.dry_run:
             return {"execution_state": "simulated", "controller_state": "simulated",
-                    "operation_mode": "simulated", "collision_state": None,
+                    "operation_mode": "simulated",
                     "read_at": datetime.now(timezone.utc).isoformat(), "dry_run": True}
         result = self._control_status_fields(self._get_object("/robot/rapid"))
-        result["collision_state"] = None
-        try:
-            gateway_collision = (self._controller_status is None or self._operator_gateway is None
-                or self._operator_gateway["actions"]["collision_status"]["advertised"])
-            if gateway_collision:
-                state = self._get_object("/robot/rapid/collision").get("collision_state")
-                result["collision_source"] = "gateway"
-            elif self._controller_status is not None:
-                state = self._controller_status.read_collision(self._get_object)
-                result["collision_source"] = "controller"
-            else:
-                raise RobotCommandError("This gateway does not provide collision status and no matching controller connection is configured.")
-            if not isinstance(state, str) or state not in {"INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"}:
-                raise RobotCommandError("Controller returned an unknown collision state.")
-            result["collision_state"] = state
-        except (RobotCommandError, ValueError, requests.RequestException) as exc:
-            result["collision_error"] = str(exc)
         result["read_at"] = datetime.now(timezone.utc).isoformat()
         return result
-
-    def control_action(self, action):
-        """Explicit program/collision controls; never motor-on, resume or home.
-
-        rapid_start uses fresh initialization, never an interrupted program
-        pointer. Main may initialize/calibrate grippers. Collision acknowledgement
-        may be rejected by ABB's Local Client privilege requirement.
-        """
-        if not isinstance(action, str) or action not in {"rapid_reset", "rapid_start", "collision_ack"}:
-            raise RobotCommandError("Unknown robot control action.")
-        self.require_control_action(action)
-        self._check_stop()
-        if not self._execution_lock.acquire(blocking=False):
-            raise RobotCommandError("This client is already executing a command sequence.")
-        stop = threading.Event()
-        renewal = None
-        try:
-            if self.dry_run:
-                return {"dry_run": True, "message": f"Dry run: {action}; no robot command sent.",
-                        "status": self.read_control_status()}
-            with self._lease_lock:
-                self._check_stop()
-                self._lease_error = None
-                self._release_needed = False
-                self._take_control()
-            renewal = threading.Thread(target=self._renew_loop, args=(stop,), daemon=True)
-            renewal.start()
-            # A server-issued stop generation binds initialization to this
-            # observation. Stop can post immediately while this HTTP call is
-            # pending; a late-arriving reset cannot start after that Stop.
-            endpoint = "/robot/rapid/collision/ack" if action == "collision_ack" else "/robot/rapid/reset"
-            body = {}
-            if action != "collision_ack":
-                generation = self._get_object("/robot/rapid").get("stop_generation")
-                if type(generation) is not int or generation < 0:
-                    raise RobotCommandError("Gateway does not support cancellable initialization. Update the Pi gateway before using RAPID reset/start.")
-                body = {"start": action == "rapid_start", "stop_generation": generation}
-            self._check_stop()
-            self._check_lease()
-            reply, _ = self._post(endpoint, move=body)
-            self._check_stop()
-            self._check_lease()
-            if action == "collision_ack":
-                state = reply.get("collision_state")
-                if not isinstance(state, str) or state not in {"INIT", "CONFIRMED"}:
-                    raise RobotCommandError("Controller collision acknowledgement was not confirmed; no home was sent.")
-                status = self.read_control_status()
-                if status.get("collision_state") not in {"INIT", "CONFIRMED"}:
-                    raise RobotCommandError("Collision acknowledgement readback failed; no further command was sent.")
-                message = "Controller collision acknowledgement confirmed. No start or home command sent."
-            else:
-                status = self._control_status_fields(reply)
-                expected = "running" if action == "rapid_start" else "stopped"
-                if status["execution_state"] != expected:
-                    raise RobotCommandError(f"RAPID did not confirm {expected}; inspect the controller.")
-                status.update(read_at=datetime.now(timezone.utc).isoformat(), collision_state=None)
-                message = ("RAPID initialized from main and reported running; gripper initialization may occur."
-                           if action == "rapid_start" else "Pending jobs cleared; RAPID reset to main and left stopped.")
-            self._check_stop()
-            self._check_lease()
-            return {"dry_run": False, "message": message, "status": status}
-        finally:
-            stop.set()
-            try:
-                if renewal is not None:
-                    renewal.join()
-                if self._release_needed:
-                    self._release_control()
-            finally:
-                self._execution_lock.release()
 
     def _post(self, endpoint: str, *, move: Optional[dict] = None,
               allow_conflict: bool = False):
         headers = dict(self.headers)
-        # An acquisition creates a new session. All subsequent mutations carry
-        # that exact session, including renew/release and the separate Stop call.
-        if endpoint != "/control/acquire" and self._control_session is not None:
-            headers["X-Control-Session"] = self._control_session
         options = {"headers": headers, "timeout": self.CONTROL_TIMEOUT}
         if move is not None:
             options.update(json=move, timeout=self.COMMAND_TIMEOUT)
@@ -354,16 +253,6 @@ class RobotClient:
         if (reply.get("success") is not True or not isinstance(lease, dict)
                 or lease.get("active") is not True):
             raise RobotCommandError(f"Gateway did not confirm an active control lease: {reply}")
-
-        session_id = lease.get("session_id")
-        if session_id is not None and (not isinstance(session_id, str) or not 1 <= len(session_id) <= 128
-                                       or any(not (c.isascii() and (c.isalnum() or c in "-_")) for c in session_id)):
-            raise RobotCommandError("Gateway returned an invalid execution session.")
-        if self.require_session and not session_id:
-            raise RobotCommandError("Gateway does not support execution sessions. Update and configure the Pi gateway before live fallback operation.")
-        if self._owned_lease and self._control_session is not None and session_id != self._control_session:
-            raise RobotCommandError("The execution session changed during lease renewal; no further commands will be sent.")
-        self._control_session = session_id
 
         renew_after, deadline = 1.0, None
         anchor = self._lease_clock_anchor
@@ -430,7 +319,6 @@ class RobotClient:
                 self._record_lease(reply, response)
                 return
             self._owned_lease = False
-            self._control_session = None
             self._lease_clock_anchor = None
         reply, response = self._post("/control/acquire")
         # Even if expiry metadata is invalid, release a confirmed acquisition.
@@ -464,7 +352,6 @@ class RobotClient:
             self._lease_deadline = None
             self._lease_request_started = None
             self._lease_clock_anchor = None
-            self._control_session = None
 
     def _renew_loop(self, stop: threading.Event) -> None:
         while not stop.wait(self._renew_after):

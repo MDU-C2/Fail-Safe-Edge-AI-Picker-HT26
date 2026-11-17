@@ -31,7 +31,7 @@ def gateway(monkeypatch):
 
     def post(url, **options):
         if url.endswith(("/control/acquire", "/control/renew")):
-            payload = {"success": True, "lease": {"active": True, "session_id": "path-test",
+            payload = {"success": True, "lease": {"active": True,
                        "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()}}
         elif url.endswith("/control/release"):
             payload = {"success": True, "lease": {"active": False}}
@@ -59,7 +59,7 @@ def gateway(monkeypatch):
     state["get"] = Mock(side_effect=get)
     monkeypatch.setattr("robot_client.requests.get", state["get"])
     monkeypatch.setattr("socket.socket.connect", Mock(side_effect=AssertionError("Network forbidden")))
-    state["client"] = RobotClient("http://offline.invalid/api/v1", {}, require_session=True)
+    state["client"] = RobotClient("http://offline.invalid/api/v1", {})
     return state
 
 
@@ -119,7 +119,7 @@ def test_path_point_count_boundaries_and_omitted_options(gateway, count):
     gateway["client"].execute_jobs([job], after_done=completed)
     assert len(path_calls(gateway)) == 1
     assert path_calls(gateway)[0].kwargs["json"] == job["body"]
-    assert path_calls(gateway)[0].kwargs["headers"]["X-Control-Session"] == "path-test"
+    assert "X-Control-Session" not in path_calls(gateway)[0].kwargs["headers"]
     completed.assert_called_once_with(0, job)
 
 
@@ -214,11 +214,12 @@ def test_path_dispatch_never_requires_or_fetches_discovery(gateway, schema):
     assert len(path_calls(gateway)) == 1
 
 
-def test_failed_discovery_refresh_is_informational_for_paths_and_manual_controls(gateway):
+def test_failed_discovery_refresh_preserves_paths_but_disables_manual_controls(gateway):
     gateway["get"].side_effect = requests.Timeout("discovery unavailable")
     capabilities = gateway["client"].refresh_operator_capabilities()
-    assert all(capability["supported"] for capability in capabilities.values())
-    gateway["client"].require_control_action("home")
+    assert capabilities["home"]["supported"] is False
+    with pytest.raises(RobotCommandError):
+        gateway["client"].require_control_action("home")
     gateway["client"].execute_jobs([path_job()])
     assert len(path_calls(gateway)) == 1
     gateway["get"].assert_called_once()

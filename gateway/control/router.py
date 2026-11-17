@@ -1,10 +1,9 @@
+import math
 from typing import Annotated
-from dataclasses import replace
-from contextlib import contextmanager
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from gateway.control.manager import ControlConflict, ControlLease, ControlManager
+from gateway.control.manager import ControlLease, ControlManager
 from gateway.models.control import (
     ControlActionResponse,
     ControlLeaseResponse,
@@ -23,13 +22,15 @@ control_manager: ControlManager | None = None
 
 def configure_control_manager(
     lease_seconds: float,
-    require_session: bool = False,
+    contention_seconds: float = 0.0,
+    startup_grace_seconds: float = 0.0,
 ) -> None:
     global control_manager
 
     control_manager = ControlManager(
         lease_seconds=lease_seconds,
-        require_session=require_session,
+        contention_seconds=contention_seconds,
+        startup_grace_seconds=startup_grace_seconds,
     )
 
 
@@ -57,55 +58,16 @@ def require_control(
             Identity,
             Depends(require_permission(permission)),
         ],
-        x_control_session: Annotated[str | None, Header()] = None,
     ) -> Identity:
-        try:
-            authorization = get_control_manager().authorize(identity.client_id, x_control_session)
-        except ControlConflict as error:
+        if not get_control_manager().owns_control(identity.client_id):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=str(error),
-            ) from error
-        return replace(identity, control_session=authorization.session_id)
+                detail="Client does not own the active control lease",
+            )
+
+        return identity
 
     return dependency
-
-
-def robot_authorization(identity, require_clear=False, manager=None):
-    """Bind to the dependency's session before the worker thread can be delayed."""
-    from gateway.rws.client import RwsError
-    manager = get_control_manager() if manager is None else manager
-    try:
-        bound = manager.authorize(identity.client_id, getattr(identity, "control_session", None), require_clear)
-    except ControlConflict as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-
-    class Guard:
-        session_id = bound.session_id
-
-        def __call__(self):
-            try:
-                bound()
-            except ControlConflict as error:
-                raise RwsError(409, str(error)) from error
-
-        @contextmanager
-        def dispatch(self):
-            try:
-                with bound.dispatch():
-                    yield
-            except ControlConflict as error:
-                raise RwsError(409, str(error)) from error
-
-        @contextmanager
-        def operation(self):
-            try:
-                with bound.operation():
-                    yield
-            except ControlConflict as error:
-                raise RwsError(409, str(error)) from error
-
-    return Guard()
 
 
 def serialize_lease(
@@ -114,7 +76,6 @@ def serialize_lease(
     if lease is None:
         return ControlLeaseResponse(
             active=False,
-            **get_control_manager().capabilities(),
         )
 
     return ControlLeaseResponse(
@@ -123,8 +84,6 @@ def serialize_lease(
         priority=lease.priority,
         acquired_at=lease.acquired_at,
         expires_at=lease.expires_at,
-        session_id=lease.session_id,
-        **get_control_manager().capabilities(),
     )
 
 
@@ -165,9 +124,22 @@ async def acquire_control(
     )
 
     if not result.success:
+        headers = None
+
+        if result.retry_after is not None:
+            headers = {
+                "Retry-After": str(
+                    max(
+                        1,
+                        math.ceil(result.retry_after),
+                    )
+                ),
+            }
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=result.message,
+            headers=headers,
         )
 
     if result.previous_client_id is not None:
@@ -207,13 +179,12 @@ async def renew_control(
         Identity,
         Depends(require_permission("robot.control")),
     ],
-    x_control_session: Annotated[str | None, Header()] = None,
 ) -> ControlActionResponse:
     manager = get_control_manager()
 
     success, message, lease = manager.renew(
         client_id=identity.client_id,
-        session_id=x_control_session,
+        priority=identity.control_priority,
     )
 
     if not success:
@@ -245,13 +216,11 @@ async def release_control(
         Identity,
         Depends(require_permission("robot.control")),
     ],
-    x_control_session: Annotated[str | None, Header()] = None,
 ) -> ControlActionResponse:
     manager = get_control_manager()
 
     success, message = manager.release(
         client_id=identity.client_id,
-        session_id=x_control_session,
     )
 
     if not success:

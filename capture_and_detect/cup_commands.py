@@ -715,7 +715,7 @@ class CupSession:
 
         Home/gripper commands use the existing lease, sequential DONE checks and
         measured home verification. No camera selection, automatic home, or retry
-        is inferred from a controller reset or collision acknowledgement.
+        is inferred from an operator control action.
         """
         from robot_controls import control_plan
         plan = control_plan(action, arm, self.speed)
@@ -740,9 +740,6 @@ class CupSession:
                         or status.get("operation_mode") != "AUTO"):
                     raise SelectionError("Robot controls require RAPID running, motors on, and AUTO mode. "
                                          "Inspect the controller status; no automatic restart is performed.")
-                if status.get("collision_state") not in ("INIT", "CONFIRMED"):
-                    raise SelectionError("Controller collision clearance was not confirmed. Refresh robot status "
-                                         "and resolve the reported controller condition. No movement sent.")
                 self._check_stop()
 
             if not self.robot.dry_run:
@@ -755,12 +752,9 @@ class CupSession:
                     self.motion_uncertain = True
                     armed = True
             self._check_stop()
-            if plan["jobs"]:
-                self.robot.execute_jobs(plan["jobs"], before_send=before_job)
-                result = {"message": ("Preview only; no robot command sent." if self.robot.dry_run else
-                                      "Robot reported the control action complete. Scan again before picking.")}
-            else:
-                result = self.robot.control_action(action)
+            self.robot.execute_jobs(plan["jobs"], before_send=before_job)
+            result = {"message": ("Preview only; no robot command sent." if self.robot.dry_run else
+                                  "Robot reported the control action complete. Scan again before picking.")}
             self._check_stop()
             with self._state_lock:
                 self._check_stop()

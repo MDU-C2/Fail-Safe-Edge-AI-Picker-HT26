@@ -3,22 +3,18 @@
 This module performs no HTTP, reads no files, and authorizes no movement.
 An advertised route is not evidence that a controller is ready or permission
 has been granted. Runtime lease, status, inspection and completion checks remain
-mandatory. A legacy start route never substitutes for generation-fenced reset.
+mandatory. Only controls supported by the original main gateway are exposed.
 """
 
 import re
 
 
-ACTIONS = ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
-           "rapid_start", "collision_ack", "collision_status")
+ACTIONS = ("home", "open", "grip", "robot_status", "stop")
 _LEASE = (("POST", "/control/acquire"), ("POST", "/control/renew"),
           ("POST", "/control/release"))
 _STATUS = ("GET", "/robot/rapid")
 _STOP = ("POST", "/robot/rapid/stop")
-_COLLISION = ("GET", "/robot/rapid/collision")
 _JOINTS = ("GET", "/robot/arms/{arm}/joints")
-_GUARDED_REASON = ("This gateway cannot safely cancel a delayed restart; "
-                   "guarded reset support is required.")
 _UNSPECIFIED = object()
 
 
@@ -239,8 +235,7 @@ def parse_gateway_capabilities(schema, api_prefix="/api/v1"):
     """Return supported action booleans and dependency/protocol metadata.
 
     ``actions[*].endpoint`` is relative to RobotClient.api. Dependency ``path``
-    entries include api_prefix. Unsupported legacy start is advertised only in
-    protocol_details; it cannot produce an executable rapid_start action.
+    entries include api_prefix.
     Missing/malformed schema data disables capabilities. An invalid API prefix
     is a caller configuration error and raises ValueError.
     """
@@ -265,48 +260,10 @@ def parse_gateway_capabilities(schema, api_prefix="/api/v1"):
                           reader.fields(reader.response(*_JOINTS),
                                         [("arm", "string", ()), ("joints", "array", ()),
                                          ("arm_angle", "number", ())]))
-    generation = reader.has_type(reader.property(status_schema, "stop_generation"), "integer")
-    reset_body = reader.body("POST", "/robot/rapid/reset")
-    reset_contract = reader.fields(reset_body, [("start", "boolean", (False, True)),
-                                               ("stop_generation", "integer", ())])
-    native = bool(reader.operation("POST", "/robot/rapid/reset") is not None
-                  and generation and reset_contract and status_contract and
-                  reader.fields(reader.response("POST", "/robot/rapid/reset"), [
-                      (key, "string", ()) for key in ("execution_state", "controller_state", "operation_mode")]))
-    legacy = bool(reader.operation("POST", "/robot/rapid/start") is not None and
-                  reader.fields(reader.body("POST", "/robot/rapid/start"),
-                                [("reset_program_pointer", "boolean", (True,))]))
-    session_header = False
-    for path in reader.paths.values():
-        path = reader.resolve(path)
-        if path is None:
-            continue
-        for operation in [path, *(path.get(key) for key in ("get", "post", "put", "delete"))]:
-            operation = reader.resolve(operation)
-            parameters = operation.get("parameters", []) if operation is not None else []
-            if not isinstance(parameters, list):
-                continue
-            for parameter in parameters[:128]:
-                parameter = reader.resolve(parameter)
-                if (parameter is not None and parameter.get("in") == "header"
-                        and str(parameter.get("name", "")).lower() == "x-control-session"):
-                    session_header = True
-
     result = {"schema_valid": bool(valid), "gateway_version": version, "api_prefix": prefix,
               "supported": {}, "actions": {},
-              "protocols": {"native_reset_generation": native,
-                            "blended_path": bool(valid and _blended_path_contract(reader)),
-                            "joint_readback": joint_readback,
-                            "legacy_start_reset_pp": legacy,
-                            "control_session_header": session_header},
-              "protocol_details": {
-                  "legacy_start_reset_pp": {"advertised": legacy,
-                      "method": "POST", "path": prefix + "/robot/rapid/start",
-                      "request_body": {"reset_program_pointer": True},
-                      "usable_for_guarded_restart": False},
-                  "native_reset_generation": {"advertised": native,
-                      "method": "POST", "path": prefix + "/robot/rapid/reset",
-                      "generation_source": prefix + "/robot/rapid"}},
+              "protocols": {"blended_path": bool(valid and _blended_path_contract(reader)),
+                            "joint_readback": joint_readback},
               "error": None if valid else "Gateway did not provide a valid OpenAPI 3 schema."}
 
     def add(name, endpoint, method, requires, contract=True, protocol=None, reason=None):
@@ -342,14 +299,4 @@ def parse_gateway_capabilities(schema, api_prefix="/api/v1"):
     add("robot_status", "/robot/rapid", "GET", (), status_contract, "rapid_status")
     add("stop", "/robot/rapid/stop", "POST", _LEASE,
         reader.fields(reader.response(*_STOP), [("execution_state", "string", ())]), "rapid_stop")
-    for action in ("rapid_reset", "rapid_start"):
-        add(action, "/robot/rapid/reset", "POST", motion_dependencies, native,
-            "native_reset_generation", reason=_GUARDED_REASON if not native else None)
-    collision_contract = reader.fields(reader.response(*_COLLISION), [("collision_state", "string", ())])
-    add("collision_status", "/robot/rapid/collision", "GET", (), collision_contract, "collision_status")
-    ack_contract = (status_contract and collision_contract and
-                    reader.fields(reader.response("POST", "/robot/rapid/collision/ack"),
-                                  [("collision_state", "string", ())]))
-    add("collision_ack", "/robot/rapid/collision/ack", "POST", (*motion_dependencies, _COLLISION),
-        ack_contract, "collision_ack_with_readback")
     return result

@@ -18,6 +18,10 @@ records historical 0.2.5 camera and memory checks, not 0.2.9 validation.
 The old combined gateway/dashboard build is still selected by
 `--profile combined` (also the preparer's default). Its historical
 [2026-11-06 report](LIVE_CHECK_2026-11-06.md) does not validate the CLI profile.
+Both profiles use the original gateway control lease. The combined profile now
+packages the gateway from `main`; fresh camera reads wait in the picker client,
+without gateway session, watchdog or synchronized-frame extensions. Rebuilding
+this source does not change an already installed gateway or picker package.
 
 ## Select the model and stage an isolated context
 

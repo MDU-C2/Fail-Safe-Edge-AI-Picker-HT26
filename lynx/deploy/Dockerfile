@@ -81,7 +81,7 @@ ENV PATH=/opt/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/
     PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
     NUMEXPR_NUM_THREADS=1 MALLOC_ARENA_MAX=2 \
-    GATEWAY_SECURITY_MODE=strict GATEWAY_CONTROL_REQUIRE_SESSION=true \
+    GATEWAY_SECURITY_MODE=strict \
     GATEWAY_AUTH_CLIENTS_FILE=/state/auth_clients.json \
     GATEWAY_CALIBRATION_FILE=/state/gateway-calibration.json
 RUN apt-get update && apt-get install -y --no-install-recommends \

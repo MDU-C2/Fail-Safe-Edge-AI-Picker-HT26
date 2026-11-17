@@ -47,19 +47,23 @@ class NoHomeSessionTests(unittest.TestCase):
         jobs = self.execute(session)
         self.assertEqual(len(jobs), 2 * TRANSFER_JOB_COUNT)
         self.assertEqual(jobs, self.robot.jobs)
-        self.assertEqual(boundaries, [("completed", "right_close")])
+        self.assertEqual(boundaries, [("completed", "right_clear")])
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in jobs))
         self.assertEqual([job["name"] for job in jobs[TRANSFER_JOB_COUNT:TRANSFER_JOB_COUNT + 3]],
-                         ["right_close_travel", "left_close_travel", "left_ready"])
+                         ["right_open_start", "left_open_start", "left_ready"])
         for offset in (0, TRANSFER_JOB_COUNT):
             planned = {job["name"]: job for job in jobs[offset:offset + TRANSFER_JOB_COUNT]}
+            for opening in ("right_open_start", "left_open_start"):
+                self.assertEqual(planned[opening]["body"]["action"], "open")
+            self.assertEqual([name for name, job in planned.items()
+                              if job["body"].get("action") == "grip"], ["grip_cup", "right_grip"])
             for before, after in (("grip_cup", "right_beside"), ("left_handover", "right_open"),
                                   ("right_grip", "left_release"), ("left_release", "right_lower"),
                                   ("left_clear", "right_retreat")):
                 self.assertIn(before, planned[after]["after"])
         for cup in session.inventory["cups"]:
             self.assertFalse(cup["execution"]["home_after_cup"])
-            self.assertEqual(cup["execution"]["last_completed_step"], "right_close")
+            self.assertEqual(cup["execution"]["last_completed_step"], "right_clear")
             self.assertEqual(cup["last_verification"]["capture"], "capture-10")
             self.assertEqual(cup["last_verification"]["source"], "saved_scan")
         self.assertEqual(session.batch_progress["completed_cups"], [1, 2])
@@ -80,7 +84,7 @@ class NoHomeSessionTests(unittest.TestCase):
                 session = self.make_session(failed_clearance=True, left_only=left_only)
                 with self.assertRaisesRegex(RuntimeError, "clearance failed"):
                     self.execute(session)
-                self.assertEqual(len(self.robot.jobs), 10 if left_only else TRANSFER_JOB_COUNT - 1)
+                self.assertEqual(len(self.robot.jobs), 10 if left_only else TRANSFER_JOB_COUNT)
                 self.assertEqual(sum(job["name"] == "grip_cup" for job in self.robot.jobs), 1)
                 self.assertEqual(session.batch_progress["completed_cups"], [])
                 self.assertTrue(session.motion_uncertain)

@@ -109,7 +109,7 @@ class MultiFrameVerificationTests(unittest.TestCase):
         session.clock = lambda: now[0]
         self.robot.after_move = lambda _: now.__setitem__(0, now[0] + 10000)
         self.execute(session)
-        self.assertEqual(self.robot.jobs[-1]["name"], "right_close")
+        self.assertEqual(self.robot.jobs[-1]["name"], "right_clear")
         self.assertFalse(session.motion_uncertain)
         self.capture.assert_called_once_with("scan")
 

@@ -98,7 +98,7 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
     assert session.max_result_age == 60 and session.camera_z is False
     assert session.home_after_cup is False
     assert session.motion_settings()["home_after_cup"] is False
-    assert session.robot.dry_run and session.robot.require_session is False
+    assert session.robot.dry_run
     assert session.placing_grid.path == rig.grid.path
     assert session.tag_offset == rig.calibration.offset
     assert session.recovery.path == rig.store.folder / "robot_recovery.json"

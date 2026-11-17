@@ -175,7 +175,7 @@ class BatchSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(SelectionError, "changed"):
             self.execute(capture_id, preview)
         self.assertEqual([job["name"] for job in self.robot.jobs],
-                         ["right_close_travel", "left_close_travel", "left_ready"])
+                         ["right_open_start", "left_open_start", "left_ready"])
         self.assertTrue(self.session.motion_uncertain)
         self.assertFalse(self.session.scan_usable)
         self.assertEqual(self.capture_trace, [("scan", 0)])
@@ -304,7 +304,7 @@ class BatchSelectionTests(unittest.TestCase):
         self.session.execute_selection(action="goto", capture_id=capture_id, cup_id=1,
                                        placement=preview["placement"])
         self.assertEqual(len(seen), TRANSFER_JOB_COUNT)
-        self.assertEqual(seen[-1][0], "right_close")
+        self.assertEqual(seen[-1][0], "right_clear")
         self.assertTrue(all(places[0]["occupied"] and places[0]["reserved"] for _, places in seen))
         self.assertTrue(self.locations()[0]["occupied"])
         self.assertFalse(self.locations()[0].get("reserved", False))

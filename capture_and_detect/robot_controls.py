@@ -9,6 +9,8 @@ from cup_inventory import SelectionError
 from handover_plan import HOME_SPEED
 from robot_client import RobotClient
 
+CONTROL_ACTIONS = ("home", "open", "grip", "robot_status", "stop")
+
 
 def valid_speed(value):
     if (type(value) not in (int, float) or not math.isfinite(value)
@@ -43,19 +45,6 @@ def control_plan(action, arm, speed):
             description = (f"{'Open' if action == 'open' else 'Close'} the gripper on the {target}. "
                            + ("An object being held may fall; support it first." if action == "open" else
                               "Keep fingers and loose objects out of the gripper."))
-    elif action in ("rapid_reset", "rapid_start", "collision_ack"):
-        if arm is not None:
-            raise SelectionError("Controller actions apply to both arms; arm must be null.")
-        description = {
-            "rapid_reset": "Stop RAPID, discard pending arm commands and reset the program pointer to main. "
-                           "Leave execution stopped. This does not acknowledge a collision or move home.",
-            "rapid_start": "Discard pending arm commands, reset to main and initialize RAPID. "
-                           "The arm programs may calibrate the grippers. Motors must already be on in AUTO. "
-                           "This does not resume the interrupted pick or move home.",
-            "collision_ack": "Request controller collision acknowledgement after inspection. "
-                             "ABB may require acknowledgement on the FlexPendant because of client privileges. "
-                             "This does not enable motors, start RAPID, or move home.",
-        }[action]
     else:
         raise SelectionError("Unknown robot control action.")
     return {"action": action, "arm": arm, "speed": min(speed, 100) if action == "home" else None,
@@ -87,15 +76,21 @@ class RobotControls:
     def capabilities(self):
         capabilities = getattr(self.session.robot, "operator_capabilities", None)
         if isinstance(capabilities, dict):
-            return copy.deepcopy(capabilities)
+            return {action: copy.deepcopy(capabilities[action]) for action in CONTROL_ACTIONS
+                    if action in capabilities}
         # Custom library robots must explicitly advertise real operator actions.
         # Simulation has no external endpoint and may preview all controls.
         supported = self.session.robot.dry_run is True
         return {action: {"supported": supported if supported or action != "robot_status" else None,
                         "reason": None if supported else
                 "Robot control support has not been read. Refresh robot status."}
-                for action in ("home", "open", "grip", "robot_status", "stop", "rapid_reset",
-                               "rapid_start", "collision_ack", "collision_status")}
+                for action in CONTROL_ACTIONS}
+
+    def _require_supported(self, action):
+        capability = self.capabilities().get(action)
+        if not isinstance(capability, dict) or capability.get("supported") is not True:
+            reason = capability.get("reason") if isinstance(capability, dict) else None
+            raise SelectionError(reason or "This robot control is unavailable. Refresh robot status.")
 
     def _check_ready(self):
         self.session._check_stop()
@@ -126,6 +121,7 @@ class RobotControls:
         self.cancel()
         self._check_ready()
         plan = control_plan(action, arm, self.session.speed)
+        self._require_supported(action)
         self.pending = {**plan, "token": secrets.token_hex(8), "created": self.clock(),
                         "session_speed": self.session.speed}
         return {"message": "Review the robot control action and acknowledge inspection before confirming."}
@@ -139,6 +135,7 @@ class RobotControls:
         self._check_ready()
         if self.session.speed != pending["session_speed"]:
             raise SelectionError("Speed changed. Preview the action again.")
+        self._require_supported(pending["action"])
         self.status = None
         result = self.session.execute_control(pending["action"], pending["arm"])
         # Command-specific confirmation may include a newly observed snapshot.

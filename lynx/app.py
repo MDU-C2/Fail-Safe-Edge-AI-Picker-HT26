@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+import copy
 import hmac
 import math
 import os
@@ -72,7 +73,7 @@ def configure(args):
     for name in ("calibration.json", "placing-grid.json", "auth_clients.json", "gateway-token", "dashboard-token"):
         if not (state / name).is_file():
             raise ValueError(f"State file is missing: {name}")
-    values = {"API_PREFIX": "", "SECURITY_MODE": "strict", "CONTROL_REQUIRE_SESSION": "true",
+    values = {"API_PREFIX": "", "SECURITY_MODE": "strict",
         "AUTH_CLIENTS_FILE": str(state / "auth_clients.json"),
         "CALIBRATION_FILE": str(state / "gateway-calibration.json"),
         "CAMERA_PROVIDER": "mock" if args.mock else "oak", "ROBOT_PROVIDER": "mock" if args.mock else "tcp",
@@ -107,7 +108,7 @@ class AccessGate:
         from starlette.responses import JSONResponse
         if scope["type"] in ("http", "websocket"):
             path = scope["path"]
-            gateway = path == "/api/v1" or path.startswith("/api/v1/")
+            gateway = path == "/openapi.json" or path == "/api/v1" or path.startswith("/api/v1/")
             if gateway and not self.live and scope["type"] == "http" and scope["method"] not in ("GET", "HEAD", "OPTIONS"):
                 await JSONResponse({"detail": "Robot mutations are disabled in Lynx dry-run mode."}, status_code=403)(scope, receive, send)
                 return
@@ -125,14 +126,25 @@ class AccessGate:
 
 def compose(gateway, dashboard, *, live=False, dashboard_token=None):
     from starlette.applications import Starlette
-    from starlette.routing import Mount
+    from starlette.responses import JSONResponse
+    from starlette.routing import Mount, Route
+
+    async def gateway_schema(request):
+        # The gateway keeps its original routes and schema. Publish a copy at
+        # its usual discovery URL with the combined app's mount prefix applied.
+        schema = copy.deepcopy(gateway.openapi())
+        schema["paths"] = {"/api/v1" + path: value for path, value in schema["paths"].items()}
+        schema["servers"] = [{"url": "/"}]
+        return JSONResponse(schema)
+
     @asynccontextmanager
     async def lifespan(app):
         # Mounted ASGI applications do not automatically get lifespan events.
         async with gateway.router.lifespan_context(gateway):
             async with dashboard.router.lifespan_context(dashboard):
                 yield
-    app = Starlette(routes=[Mount("/api/v1", app=gateway), Mount("/", app=dashboard)], lifespan=lifespan)
+    app = Starlette(routes=[Route("/openapi.json", gateway_schema),
+                           Mount("/api/v1", app=gateway), Mount("/", app=dashboard)], lifespan=lifespan)
     return AccessGate(app, live=live, dashboard_token=dashboard_token)
 
 
@@ -182,8 +194,9 @@ def hardware_factory(args, state, token, model, service, loop_getter):
             def save(inventory):
                 store.save(inventory)
                 controller.publish_session()
-            session = CupSession(capture, save, RobotClient(api, {"Authorization": "Bearer " + token},
-                         dry_run=not args.live, require_session=True), calibration.digest,
+            robot = RobotClient(api, {"Authorization": "Bearer " + token}, dry_run=not args.live)
+            robot.configure_operator_controls()
+            session = CupSession(capture, save, robot, calibration.digest,
                          tag_offset=calibration.offset, recovery=recovery, placing_grid=grid)
             return session, LanguageController(session, NoLanguage(), audit_dir=store.folder / "language")
         except BaseException:

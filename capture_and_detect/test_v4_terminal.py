@@ -2,8 +2,9 @@
 
 The terminal now shares the UI's smooth motion plan. These hashes pin the
 unchanged capture/detection, storage and CLI from vision_detection4 commit
-52f54791e08709ce8e44d1f39b5687085ba8af21. Tests do not require git, Ultralytics,
-model weights, a gateway, or a robot.
+52f54791e08709ce8e44d1f39b5687085ba8af21. Picker separately pins the batch-end
+Home added by upstream 81c1c0a. Tests do not require git, Ultralytics, model
+weights, a gateway, or a robot.
 """
 
 import ast
@@ -35,11 +36,11 @@ V4_TERMINAL_COMPONENT_HASHES = {
     "find_cups": "15150648d2cc465ee5ed78e78ce1cadd500afdc0c9893e914f2aba441a9f912f",
     "print_objects": "974991684b686a9c21c0bd33c18c3f46b068888062326dfda98512ffacc4203d",
     "CaptureStore": "c0553c85514d0c2824d385c451c336ef6f93840bee1add6deb358a748a56a492",
-    "Picker": "d9d2ab4f2c8c891a1900cc28c748035cfa81436e744a092b52e05a1566155d59",
     "load_places": "c2fb431b72c2b259350ef66a765446a64b7cecf1b560a18a4cb225cfb01fec17",
     "save_places": "a54c57c29133a97acafa8db9e8fe93a64c683bd7e9f8c9daa2ed989cec7c8229",
     "main": "08c3763360f6493c522dbeb2f9238dd2a0faba27e721da0f21ea4cc3285fe91a",
 }
+BATCH_HOME_PICKER_HASH = "d51d340ff27e7ffc0af2ae465ebb9adbda849a4a2d737793a30d9ae6ab97ab04"
 
 
 def load_v4_terminal():
@@ -87,6 +88,13 @@ class V4SourceParityTests(unittest.TestCase):
             with self.subTest(component=name):
                 self.assertEqual(hashlib.sha256(components[name].encode()).hexdigest(), expected)
 
+    def test_picker_preserves_upstream_batch_end_home_change(self):
+        source = (HERE / "capture_and_detect.py").read_text()
+        picker = next(node for node in ast.parse(source).body
+                      if isinstance(node, ast.ClassDef) and node.name == "Picker")
+        self.assertEqual(hashlib.sha256(ast.get_source_segment(source, picker).encode()).hexdigest(),
+                         BATCH_HOME_PICKER_HASH)
+
 
 class V4TerminalTests(unittest.TestCase):
     def setUp(self):
@@ -127,6 +135,8 @@ class V4TerminalTests(unittest.TestCase):
             return True if results is None else next(results)
 
         handover.run.side_effect = move
+        handover.left.home.side_effect = lambda: events.append("home_left")
+        handover.right.home.side_effect = lambda: events.append("home_right")
         snapshots = []
         store = Mock(folder="in-memory")
         store.save_cups.side_effect = lambda cups, stamp: snapshots.append(copy.deepcopy(cups))
@@ -162,7 +172,10 @@ class V4TerminalTests(unittest.TestCase):
             "capture", "acquire", ("move", 600.0, False, 1), "release",
             "acquire", ("move", 550.0, False, 2), "release",
             "acquire", ("move", 500.0, False, 3), "release",
+            "acquire", "home_left", "home_right", "release",
         ])
+        run.handover.left.home.assert_called_once_with()
+        run.handover.right.home.assert_called_once_with()
         self.assertEqual(
             [(cup["x"], cup["status"]) for cup in run.snapshots[-1]],
             [(600.0, "placed"), (900.0, "out of reach"), (550.0, "placed"), (500.0, "placed")],
@@ -181,7 +194,9 @@ class V4TerminalTests(unittest.TestCase):
         self.assertEqual(run.capture.call_count, 2)
         self.assertEqual(run.handover.run.call_count, 6)
         self.assertEqual([index for index, event in enumerate(run.events) if event == "capture"],
-                         [0, 10])
+                         [0, 13])
+        self.assertEqual(run.handover.left.home.call_count, 2)
+        run.handover.right.home.assert_not_called()
 
     def test_failed_cup_stops_the_batch_without_recapture_or_occupying_its_destination(self):
         run = self.workflow(outcomes=[True, False])
@@ -194,6 +209,8 @@ class V4TerminalTests(unittest.TestCase):
         self.assertEqual([place["occupied"] for place in run.places["locations"]],
                          [True, False, False, False])
         self.assertEqual(run.save_places.call_count, 1)
+        run.handover.left.home.assert_not_called()
+        run.handover.right.home.assert_not_called()
 
     def test_left_only_uses_the_same_capture_without_loading_or_writing_a_placing_grid(self):
         run = self.workflow(left_only=True)
@@ -205,6 +222,56 @@ class V4TerminalTests(unittest.TestCase):
         ])
         run.load_places.assert_not_called()
         run.save_places.assert_not_called()
+        self.assertEqual(run.events[-3:], ["acquire", "home_left", "release"])
+        run.handover.left.home.assert_called_once_with()
+        run.handover.right.home.assert_not_called()
+
+    def test_grid_full_after_successful_pick_homes_once_without_moving_remaining_cups(self):
+        run = self.workflow()
+        run.places["locations"] = run.places["locations"][:1]
+        run.picker.capture_once()
+
+        self.assertEqual(run.events, ["capture", "acquire", ("move", 600.0, False, 1), "release",
+                                      "acquire", "home_left", "home_right", "release"])
+        self.assertEqual([cup["status"] for cup in run.snapshots[-1]],
+                         ["placed", "out of reach", "waiting", "waiting"])
+        run.handover.left.home.assert_called_once_with()
+        run.handover.right.home.assert_called_once_with()
+        run.capture.assert_called_once()
+
+    def test_no_successful_pick_never_starts_batch_end_home(self):
+        for unavailable in ("no_cups", "out_of_reach", "grid_full", "first_pick_failed"):
+            with self.subTest(unavailable=unavailable):
+                run = self.workflow(outcomes=[False] if unavailable == "first_pick_failed" else None)
+                if unavailable in ("no_cups", "out_of_reach"):
+                    objects = [] if unavailable == "no_cups" else [base(0.95, 900)]
+                    run.detector.analyse.return_value = (objects, "annotated")
+                elif unavailable == "grid_full":
+                    for place in run.places["locations"]:
+                        place["occupied"] = True
+                run.picker.capture_once()
+
+                run.handover.left.home.assert_not_called()
+                run.handover.right.home.assert_not_called()
+                self.assertEqual(run.handover.run.call_count, int(unavailable == "first_pick_failed"))
+                run.capture.assert_called_once()
+
+    def test_failed_left_home_does_not_start_right_home_and_releases_control(self):
+        run = self.workflow()
+
+        def fail_left_home():
+            run.events.append("home_left")
+            raise self.v4.RobotError("Home failed")
+
+        run.handover.left.home.side_effect = fail_left_home
+        run.picker.capture_once()
+
+        self.assertEqual(run.handover.run.call_count, 3)
+        self.assertEqual(run.events[-3:], ["acquire", "home_left", "release"])
+        run.handover.left.home.assert_called_once_with()
+        run.handover.right.home.assert_not_called()
+        self.assertTrue(all(cup["status"] in ("placed", "out of reach")
+                            for cup in run.snapshots[-1]))
 
     def test_main_constructs_the_original_gateway_arms_handover_and_picker(self):
         calibration = types.SimpleNamespace(offset=(11.0, 22.0, 0.0))

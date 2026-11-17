@@ -117,8 +117,7 @@ class _NativeWebFactory:
             captures = CaptureService(camera, worker, calibration, grid, store,
                                       depth_frames=depth_frames, scan_observations=1,
                                       confidence=confidence)
-            robot = RobotClient(api, headers, dry_run=not getattr(args, "live", False),
-                                require_session=False)
+            robot = RobotClient(api, headers, dry_run=not getattr(args, "live", False))
             robot.configure_operator_controls(getattr(args, "controller_profile", None))
             recovery = RecoveryJournal(store.folder / "robot_recovery.json",
                                        legacy_inventory_path=store.folder / "cups.json")

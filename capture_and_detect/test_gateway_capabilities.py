@@ -8,7 +8,7 @@ from gateway_capabilities import ACTIONS, parse_gateway_capabilities
 
 
 def schema_fixture(*, native=False, collisions=False, blended_path=False, prefix="/api/v1"):
-    """Minimal faithful shapes from Lynx 0.4.0 and the guarded reset extension."""
+    """Original gateway contracts, with optional unsupported routes for negative tests."""
     schemas = {
         "Status": {"type": "object", "properties": {
             key: {"type": "string"} for key in ("execution_state", "controller_state", "operation_mode")}},
@@ -80,6 +80,19 @@ def schema_fixture(*, native=False, collisions=False, blended_path=False, prefix
 
 
 class GatewayCapabilitiesTests(unittest.TestCase):
+    def test_exact_original_cpp_gateway_supports_retained_ui_and_smooth_paths(self):
+        from pathlib import Path
+        path = Path(__file__).resolve().parents[1] / "gateway/cpp/openapi/openapi.json"
+        result = parse_gateway_capabilities(json.loads(path.read_text()))
+        self.assertEqual(result["supported"], {name: True for name in ACTIONS})
+        self.assertTrue(result["protocols"]["blended_path"])
+        self.assertEqual(set(ACTIONS), {"home", "open", "grip", "robot_status", "stop"})
+
+    def test_removed_extensions_never_become_ui_actions(self):
+        result = parse_gateway_capabilities(schema_fixture(native=True, collisions=True))
+        self.assertEqual(set(result["actions"]), set(ACTIONS))
+        self.assertTrue(all(result["supported"].values()))
+
     def test_blended_path_requires_complete_schema_at_the_configured_prefix(self):
         self.assertFalse(parse_gateway_capabilities(schema_fixture())["protocols"]["blended_path"])
         for prefix in ("/api/v1", "", "/different/api"):
@@ -139,52 +152,10 @@ class GatewayCapabilitiesTests(unittest.TestCase):
             schema["components"]["schemas"][component] = {"anyOf": [value, {"type": "null"}]}
             self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["blended_path"])
 
-    def test_lynx_contract_advertises_legacy_start_without_enabling_it(self):
-        result = parse_gateway_capabilities(schema_fixture())
-        self.assertTrue(result["schema_valid"])
-        self.assertEqual(result["gateway_version"], "0.4.0")
-        self.assertEqual(result["supported"], {name: name in {"home", "open", "grip", "robot_status", "stop"}
-                                             for name in ACTIONS})
-        self.assertTrue(result["protocols"]["legacy_start_reset_pp"])
-        self.assertFalse(result["protocols"]["native_reset_generation"])
-        for name in ("rapid_reset", "rapid_start"):
-            self.assertIsNone(result["actions"][name]["endpoint"])
-            self.assertIsNone(result["actions"][name]["protocol"])
-            self.assertIn("cannot safely cancel a delayed restart", result["actions"][name]["reason"])
-        self.assertEqual(result["protocol_details"]["legacy_start_reset_pp"]["request_body"],
-                         {"reset_program_pointer": True})
-        self.assertFalse(result["protocol_details"]["legacy_start_reset_pp"]["usable_for_guarded_restart"])
 
-    def test_native_guarded_gateway_enables_all_nine_actions(self):
-        result = parse_gateway_capabilities(schema_fixture(native=True, collisions=True))
-        self.assertEqual(set(result["supported"]), set(ACTIONS))
-        self.assertTrue(all(result["supported"].values()))
-        self.assertEqual(result["actions"]["rapid_start"]["endpoint"], "/robot/rapid/reset")
-        self.assertEqual(result["actions"]["rapid_start"]["protocol"], "native_reset_generation")
-        self.assertEqual(result["actions"]["home"]["protocol"], "rws_wait_and_joint_readback")
 
-    def test_generation_must_be_advertised_by_status_and_reset_body(self):
-        for container, name in (("Status", "stop_generation"), ("Reset", "stop_generation"), ("Reset", "start")):
-            schema = schema_fixture(native=True)
-            del schema["components"]["schemas"][container]["properties"][name]
-            result = parse_gateway_capabilities(schema)
-            self.assertFalse(result["protocols"]["native_reset_generation"])
-            self.assertFalse(result["supported"]["rapid_start"])
-            self.assertFalse(result["supported"]["rapid_reset"])
 
-    def test_string_generation_and_false_only_start_are_not_native_protocol(self):
-        for value in ({"type": "string"}, {"type": "null"}):
-            schema = schema_fixture(native=True)
-            schema["components"]["schemas"]["Status"]["properties"]["stop_generation"] = value
-            self.assertFalse(parse_gateway_capabilities(schema)["supported"]["rapid_start"])
-        schema = schema_fixture(native=True)
-        schema["components"]["schemas"]["Reset"]["properties"]["start"] = {"type": "boolean", "enum": [False]}
-        self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["native_reset_generation"])
 
-    def test_reset_response_contract_is_required(self):
-        schema = schema_fixture(native=True)
-        schema["paths"]["/api/v1/robot/rapid/reset"]["post"]["responses"] = {}
-        self.assertFalse(parse_gateway_capabilities(schema)["supported"]["rapid_start"])
 
     def test_missing_joint_readback_disables_home_only(self):
         schema = schema_fixture()
@@ -201,16 +172,8 @@ class GatewayCapabilitiesTests(unittest.TestCase):
         del schema["paths"]["/api/v1/control/renew"]
         result = parse_gateway_capabilities(schema)
         self.assertEqual({name for name, supported in result["supported"].items() if supported},
-                         {"robot_status", "collision_status"})
-        self.assertTrue(result["protocols"]["native_reset_generation"])
+                         {"robot_status"})
 
-    def test_collision_readback_is_required_for_ack_but_optional_for_home(self):
-        schema = schema_fixture(collisions=True)
-        del schema["paths"]["/api/v1/robot/rapid/collision"]
-        result = parse_gateway_capabilities(schema)
-        self.assertFalse(result["supported"]["collision_ack"])
-        self.assertFalse(result["supported"]["collision_status"])
-        self.assertTrue(result["supported"]["home"])
 
     def test_gripper_action_enum_discriminates_open_from_grip(self):
         schema = schema_fixture()
@@ -255,41 +218,36 @@ class GatewayCapabilitiesTests(unittest.TestCase):
             self.assertFalse(any(result["supported"].values()))
             self.assertIsNotNone(result["error"])
 
-    def test_broken_external_and_cyclic_refs_never_enable_native_reset(self):
-        for reference in ("#/components/schemas/Absent", "https://remote.invalid/schema", "#/components/schemas/Reset"):
+    def test_broken_external_and_cyclic_refs_never_enable_gripper(self):
+        for reference in ("#/components/schemas/Absent", "https://remote.invalid/schema", "#/components/schemas/Gripper"):
             schema = schema_fixture(native=True)
-            schema["components"]["schemas"]["Reset"] = {"$ref": reference}
+            schema["components"]["schemas"]["Gripper"] = {"$ref": reference}
             result = parse_gateway_capabilities(schema)
-            self.assertFalse(result["supported"]["rapid_start"])
+            self.assertFalse(result["supported"]["grip"])
             self.assertTrue(result["supported"]["robot_status"])
 
     def test_inherited_and_inline_fields_are_supported(self):
         schema = schema_fixture(native=True)
-        reset = schema["components"]["schemas"]["Reset"]
-        schema["components"]["schemas"]["Reset"] = {"allOf": [reset]}
+        reset = schema["components"]["schemas"]["Gripper"]
+        schema["components"]["schemas"]["Gripper"] = {"allOf": [reset]}
         response = schema["paths"]["/api/v1/robot/rapid"]["get"]["responses"]["200"]
         response["content"]["application/json"]["schema"] = schema["components"]["schemas"]["Status"]
-        self.assertTrue(parse_gateway_capabilities(schema)["supported"]["rapid_start"])
+        self.assertTrue(parse_gateway_capabilities(schema)["supported"]["grip"])
 
     def test_conflicting_allof_and_boolean_numeric_enum_fail_closed(self):
         for value in ({"allOf": [{"type": "boolean"}, {"enum": [False]}]},
                       {"allOf": [{"type": "boolean"}, {"type": "string"}]},
                       {"type": "boolean", "enum": [0, 1]}):
             schema = schema_fixture(native=True)
-            schema["components"]["schemas"]["Reset"]["properties"]["start"] = value
-            self.assertFalse(parse_gateway_capabilities(schema)["protocols"]["native_reset_generation"])
+            schema["components"]["schemas"]["Gripper"]["properties"]["wait"] = value
+            self.assertFalse(parse_gateway_capabilities(schema)["supported"]["grip"])
 
     def test_boolean_oneof_can_advertise_both_concrete_values(self):
         schema = schema_fixture(native=True)
-        schema["components"]["schemas"]["Reset"]["properties"]["start"] = {
+        schema["components"]["schemas"]["Gripper"]["properties"]["wait"] = {
             "oneOf": [{"type": "boolean", "const": True}, {"type": "boolean", "const": False}]}
-        self.assertTrue(parse_gateway_capabilities(schema)["supported"]["rapid_start"])
+        self.assertTrue(parse_gateway_capabilities(schema)["supported"]["grip"])
 
-    def test_session_header_advertisement_accepts_referenced_parameters(self):
-        schema = schema_fixture()
-        schema["components"]["parameters"] = {"Session": {"name": "X-Control-Session", "in": "header", "schema": {"type": "string"}}}
-        schema["paths"]["/api/v1/control/renew"]["post"]["parameters"] = [{"$ref": "#/components/parameters/Session"}]
-        self.assertTrue(parse_gateway_capabilities(schema)["protocols"]["control_session_header"])
 
     def test_repeated_reference_fanout_is_bounded_and_fails_closed(self):
         schema = schema_fixture(native=True)
@@ -298,8 +256,8 @@ class GatewayCapabilitiesTests(unittest.TestCase):
         for number in range(1, 12):
             models["Layer" + str(number)] = {"allOf": [
                 {"$ref": "#/components/schemas/Layer" + str(number - 1)} for _ in range(8)]}
-        models["Reset"]["properties"]["start"] = {"$ref": "#/components/schemas/Layer11"}
-        self.assertFalse(parse_gateway_capabilities(schema)["supported"]["rapid_start"])
+        models["Gripper"]["properties"]["wait"] = {"$ref": "#/components/schemas/Layer11"}
+        self.assertFalse(parse_gateway_capabilities(schema)["supported"]["grip"])
 
     def test_input_is_unchanged_and_returned_structures_are_independent(self):
         schema = schema_fixture(native=True, collisions=True)

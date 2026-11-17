@@ -21,7 +21,7 @@ from web_controller import WebController, WebError
 
 
 RUNNING = {"execution_state": "running", "controller_state": "motoron",
-           "operation_mode": "AUTO", "collision_state": "INIT", "read_at": "offline"}
+           "operation_mode": "AUTO", "read_at": "offline"}
 
 
 class OfflineControlFixture(unittest.TestCase):
@@ -74,14 +74,11 @@ class RobotControlPlanTests(unittest.TestCase):
                         self.assertTrue(all("speed" not in job["body"] for job in plan["jobs"]))
         self.assertEqual(control_plan("home", "left", 25.5)["jobs"][0]["body"]["speed"], 25.5)
 
-    def test_controller_controls_never_include_home_or_gripper_jobs(self):
+    def test_unsupported_controller_actions_cannot_build_a_plan(self):
         for action in ("rapid_reset", "rapid_start", "collision_ack"):
-            with self.subTest(action=action):
-                plan = control_plan(action, None, 1200)
-                self.assertEqual(plan["jobs"], [])
-                self.assertIsNone(plan["speed"])
-                with self.assertRaises(SelectionError):
-                    control_plan(action, "both", 1200)
+            for arm in (None, "left", "both"):
+                with self.subTest(action=action, arm=arm), self.assertRaises(SelectionError):
+                    control_plan(action, arm, 1200)
 
     def test_unknown_actions_arms_and_invalid_speed_are_rejected(self):
         for action, arm in (("move", "left"), ("/robot/rws/home", "left"),
@@ -201,9 +198,7 @@ class RobotControlSessionTests(OfflineControlFixture):
 
     def test_unsafe_controller_states_block_home_without_dispatch(self):
         for update in ({"execution_state": "stopped"}, {"controller_state": "motoroff"},
-                       {"operation_mode": "MANR"}, {"collision_state": "TRIGGERED"},
-                       {"collision_state": "TRIGGERED_ACK"}, {"collision_state": None},
-                       {"collision_state": None, "collision_error": "gateway unreachable"}):
+                       {"operation_mode": "MANR"}):
             with self.subTest(update=update):
                 self.robot.read_control_status.return_value = {**RUNNING, **update}
                 with self.assertRaises(SelectionError):
@@ -212,32 +207,69 @@ class RobotControlSessionTests(OfflineControlFixture):
                 self.robot.control_action.assert_not_called()
                 self.session.acknowledge_recovery()
 
-    def test_controller_action_failure_preserves_recovery_and_never_adds_home(self):
-        self.robot.control_action.side_effect = RobotCommandError("controller reply lost")
+    def test_gripper_failure_preserves_recovery_and_never_adds_home(self):
+        self.robot.error = RobotCommandError("controller reply lost")
+        self.robot.error_at = "operator_left_grip"
         with self.assertRaisesRegex(RobotCommandError, "lost"):
-            self.session.execute_control("rapid_reset", None)
-        self.robot.control_action.assert_called_once_with("rapid_reset")
-        self.assertEqual(self.robot.jobs, [])
+            self.session.execute_control("grip", "left")
+        self.assertEqual([job["name"] for job in self.robot.jobs], ["operator_left_grip"])
+        self.robot.control_action.assert_not_called()
         self.assertTrue(self.recovery.required())
         self.assertTrue(self.session.motion_uncertain)
         self.session.acknowledge_recovery()
-        self.assertEqual(self.robot.jobs, [])
-        self.assertEqual(self.robot.control_action.call_count, 1)
+        self.assertEqual(len(self.robot.jobs), 1)
         self.assertFalse(self.session.scan_usable)
 
-    def test_controller_actions_dispatch_only_the_explicit_action_and_no_camera(self):
+    def test_unsupported_actions_are_rejected_before_preview_or_dispatch(self):
         for action in ("rapid_reset", "rapid_start", "collision_ack"):
             with self.subTest(action=action):
-                self.session.execute_control(action, None)
-                self.robot.control_action.assert_called_with(action)
+                with self.assertRaises(SelectionError):
+                    self.controls.propose(action, None)
+                with self.assertRaises(SelectionError):
+                    self.session.execute_control(action, None)
+                self.assertIsNone(self.controls.pending)
                 self.assertEqual(self.robot.jobs, [])
+                self.robot.control_action.assert_not_called()
                 self.assertEqual(self.fixture.captures, [])
                 self.assertFalse(self.recovery.required())
+                self.assertFalse(self.session.motion_uncertain)
+
+    def test_original_gateway_status_without_collision_fields_allows_controls(self):
+        self.assertNotIn("collision_state", RUNNING)
+        for action in ("home", "open", "grip"):
+            with self.subTest(action=action):
+                self.session.execute_control(action, "left")
+        self.assertEqual([job["name"] for job in self.robot.jobs],
+                         ["operator_left_home", "operator_left_open", "operator_left_grip"])
+        self.assertFalse(self.recovery.required())
+
+    def test_unsupported_capability_blocks_preview_and_late_confirmation(self):
+        for support in (False, None, "true", 1):
+            with self.subTest(support=support):
+                self.robot.operator_capabilities["home"] = {"supported": support, "reason": "Home unavailable"}
+                with self.assertRaisesRegex(SelectionError, "Home unavailable"):
+                    self.controls.propose("home", "left")
+                self.assertIsNone(self.controls.pending)
+        self.robot.operator_capabilities["home"] = {"supported": True}
+        self.controls.propose("home", "left")
+        token = self.controls.pending["token"]
+        self.robot.operator_capabilities["home"] = {"supported": False, "reason": "Home unavailable"}
+        with self.assertRaisesRegex(SelectionError, "Home unavailable"):
+            self.controls.confirm(token)
+        self.assertIsNone(self.controls.pending)
+        self.assertEqual(self.robot.jobs, [])
+        self.assertFalse(self.recovery.required())
+
+    def test_snapshot_omits_unsupported_legacy_actions_from_custom_clients(self):
+        self.robot.operator_capabilities["rapid_reset"] = {"supported": True}
+        self.robot.operator_capabilities["collision_ack"] = {"supported": True}
+        self.assertEqual(set(self.controls.snapshot()["capabilities"]),
+                         {"home", "open", "grip", "robot_status", "stop"})
 
     def test_recovery_save_failure_prevents_all_control_dispatch(self):
         with patch.object(self.recovery, "begin", side_effect=OSError("disk full")):
             with self.assertRaisesRegex(OSError, "disk full"):
-                self.session.execute_control("rapid_start", None)
+                self.session.execute_control("home", "left")
         self.robot.control_action.assert_not_called()
         self.assertEqual(self.robot.jobs, [])
 
@@ -259,10 +291,10 @@ class RobotControlSessionTests(OfflineControlFixture):
 
         with patch.object(self.recovery, "clear", side_effect=clear_and_stop):
             with self.assertRaisesRegex(SelectionError, "Software stop"):
-                self.session.execute_control("collision_ack", None)
+                self.session.execute_control("open", "left")
         self.assertTrue(self.session.motion_uncertain)
         self.assertTrue(self.recovery.required())
-        self.robot.control_action.assert_called_once_with("collision_ack")
+        self.assertEqual([job["name"] for job in self.robot.jobs], ["operator_left_open"])
 
     def test_speed_changes_future_cup_jobs_but_not_manual_home_cap(self):
         self.robot.dry_run = True
@@ -290,8 +322,7 @@ class RobotControlSessionTests(OfflineControlFixture):
 
     def test_dry_run_real_client_uses_no_http_or_recovery_writes(self):
         self.session.robot = RobotClient("http://offline.invalid/api/v1", {}, dry_run=True)
-        for action, arm in (("home", "both"), ("open", "right"), ("grip", "left"),
-                            ("rapid_reset", None), ("rapid_start", None), ("collision_ack", None)):
+        for action, arm in (("home", "both"), ("open", "right"), ("grip", "left")):
             with self.subTest(action=action):
                 self.session.execute_control(action, arm)
         self.assertFalse(self.recovery.path.exists())
@@ -494,11 +525,11 @@ class WebRobotControlTests(OfflineControlFixture):
         self.robot.control_action.assert_not_called()
 
     def test_admin_confirmation_expiration_and_cancellation_never_execute(self):
-        proposal = self.admin_proposal("rapid_start", None)
+        proposal = self.admin_proposal("open", "left")
         self.fixture.now += 60
         expired = self.submit("control_confirm", token=proposal["token"], acknowledged=True)
         self.assertIn("expired", expired["error"])
-        proposal = self.admin_proposal("rapid_reset", None)
+        proposal = self.admin_proposal("home", "both")
         self.submit("control_cancel")
         cancelled = self.submit("control_confirm", token=proposal["token"], acknowledged=True)
         self.assertIn("no longer matches", cancelled["error"])

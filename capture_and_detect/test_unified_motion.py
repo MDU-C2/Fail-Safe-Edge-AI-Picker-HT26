@@ -84,8 +84,7 @@ class UnifiedMotionTests(unittest.TestCase):
                          (420, -200, 310))
         for before, after in (("right_retreat", "left_close_return"),
                               ("left_close_return", "left_home_lateral"),
-                              ("right_clear", "right_close"),
-                              ("right_close", "right_home")):
+                              ("right_clear", "right_home")):
             self.assertIn(before, by_name[after]["after"])
         high = handover_jobs(self.cup, place=dict(self.place, z=620), home_after_cup=True)
         self.assertNotIn("right_home_raise", [job["name"] for job in high])

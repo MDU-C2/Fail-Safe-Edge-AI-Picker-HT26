@@ -1,15 +1,6 @@
-"""Single-owner control leases with optional session fencing and an active watchdog."""
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import math
-import secrets
-import threading
-import time
-
-
-class ControlConflict(RuntimeError):
-    pass
+from threading import Lock
 
 
 @dataclass(frozen=True)
@@ -18,8 +9,6 @@ class ControlLease:
     priority: int
     acquired_at: datetime
     expires_at: datetime
-    session_id: str
-    deadline: float
 
 
 @dataclass(frozen=True)
@@ -29,196 +18,302 @@ class ControlAcquireResult:
     lease: ControlLease | None
     previous_client_id: str | None = None
 
+    #
+    # Seconds after which trying again can succeed, when the
+    # refusal is only a matter of waiting (startup grace, or a
+    # higher-priority client contending for a free lease).
+    #
+    retry_after: float | None = None
 
-class ControlAuthorization:
-    """The exact acquisition, never another process sharing its client token."""
-    def __init__(self, manager, client_id, session_id, require_clear=False):
-        self.manager, self.client_id, self.session_id = manager, client_id, session_id
-        self.require_clear = require_clear
 
-    def __call__(self):
-        with self.manager._lock:
-            self.manager._check_locked(self.client_id, self.session_id, self.require_clear)
-
-    @contextmanager
-    def dispatch(self):
-        # Hold only around the final dispatch, not robot movement or completion polling.
-        with self.manager._lock:
-            self.manager._check_locked(self.client_id, self.session_id, self.require_clear)
-            yield
-
-    @contextmanager
-    def operation(self):
-        with self.manager._lock:
-            self.manager._check_locked(self.client_id, self.session_id, self.require_clear)
-            self.manager._operations[self.session_id] = self.manager._operations.get(self.session_id, 0) + 1
-        try:
-            yield
-        finally:
-            with self.manager._lock:
-                self.manager._operations[self.session_id] -= 1
-                if not self.manager._operations[self.session_id]:
-                    del self.manager._operations[self.session_id]
+@dataclass(frozen=True)
+class _Attempt:
+    priority: int
+    at: datetime
 
 
 class ControlManager:
-    def __init__(self, lease_seconds: float, require_session: bool = False) -> None:
-        if not math.isfinite(lease_seconds) or lease_seconds <= 0:
-            raise ValueError("Control lease duration must be finite and positive")
+    """
+    The single control lease.
+
+    A strictly higher priority preempts the holder. A free lease
+    (none yet, expired or released) goes to the highest-priority
+    client that is contending for it: a client is contending if it
+    tried to acquire or renew within the last contention_seconds,
+    and a lower-priority client is refused while a higher one is.
+    Without this, every waiting client races for a lapsed lease
+    and the first request wins, which can hand control to a lower
+    tier for a moment before the right one preempts it.
+
+    For the first startup_grace_seconds after the manager is
+    created nobody gets the lease; attempts are only recorded, so
+    that when the grace ends the highest client already trying
+    wins instead of whichever reconnected first.
+    """
+
+    def __init__(
+        self,
+        lease_seconds: float,
+        contention_seconds: float = 0.0,
+        startup_grace_seconds: float = 0.0,
+    ) -> None:
         self.lease_seconds = lease_seconds
-        self.require_session = require_session
-        self._lease = None
-        self._lock = threading.RLock()
-        self._operations = {}
-        self.recovery_required = require_session
-        self.recovery_reason = "Gateway restarted; inspect the robot and explicitly reset RAPID" if require_session else None
-        self._revision = 0
-        self._invalidate_callback = None
-        self._stop_callback = None
-        self._shutdown = threading.Event()
-        self._stop_signal = threading.Event()
-        self._stop_pending = False
-        self._stop_in_progress = False
-        self._threads = []
+        self.contention_seconds = contention_seconds
+        self._lease: ControlLease | None = None
+        self._attempts: dict[str, _Attempt] = {}
+        self._lock = Lock()
+
+        self._grace_until = self._now() + timedelta(
+            seconds=startup_grace_seconds
+        )
 
     @staticmethod
-    def _now():
+    def _now() -> datetime:
         return datetime.now(timezone.utc)
 
-    def _invalidate_locked(self, reason):
-        self._lease = None
-        if self.require_session:
-            self.recovery_required = True
-            self.recovery_reason = reason + "; software stop pending, explicit reset required"
-            self._revision += 1
-            if self._invalidate_callback:
-                self._invalidate_callback()
-            self._stop_pending = True
-            self._stop_signal.set()
+    def _remove_expired_locked(
+        self,
+        now: datetime,
+    ) -> None:
+        if (
+            self._lease is not None
+            and self._lease.expires_at <= now
+        ):
+            self._lease = None
 
-    def _remove_expired_locked(self, now=None):
-        # UTC is reported for audit only. NTP/wall-clock changes cannot extend a lease.
-        if self._lease is not None and self._lease.deadline <= time.monotonic():
-            self._invalidate_locked("Control lease expired")
+    def _note_attempt_locked(
+        self,
+        client_id: str,
+        priority: int,
+        now: datetime,
+    ) -> None:
+        self._attempts[client_id] = _Attempt(
+            priority=priority,
+            at=now,
+        )
 
-    def get(self):
+    def _higher_contender_locked(
+        self,
+        priority: int,
+        now: datetime,
+    ) -> tuple[str, float] | None:
+        """The highest-priority client above `priority` that tried
+        within the contention window, and the seconds until it
+        stops counting, or None."""
+
+        window = timedelta(seconds=self.contention_seconds)
+
+        contenders = [
+            (attempt.priority, client_id, attempt.at)
+            for client_id, attempt in self._attempts.items()
+            if attempt.priority > priority
+            and now - attempt.at < window
+        ]
+
+        if not contenders:
+            return None
+
+        _, client_id, at = max(contenders)
+
+        return (
+            client_id,
+            (at + window - now).total_seconds(),
+        )
+
+    def get(self) -> ControlLease | None:
         with self._lock:
-            self._remove_expired_locked()
+            now = self._now()
+
+            self._remove_expired_locked(now)
+
             return self._lease
 
-    def _matches_locked(self, client_id, session_id):
-        return (self._lease is not None and self._lease.client_id == client_id
-                and (session_id == self._lease.session_id if session_id is not None else not self.require_session))
-
-    def _check_locked(self, client_id, session_id, require_clear=False):
-        self._remove_expired_locked()
-        if not self._matches_locked(client_id, session_id):
-            raise ControlConflict("The control lease expired or changed, or X-Control-Session is missing or stale")
-        if require_clear and self.recovery_required:
-            raise ControlConflict(self.recovery_reason or "Gateway recovery requires explicit RAPID reset")
-        return self._lease
-
-    def authorize(self, client_id, session_id=None, require_clear=False):
+    async def acquire(
+        self,
+        client_id: str,
+        priority: int,
+    ) -> ControlAcquireResult:
         with self._lock:
-            lease = self._check_locked(client_id, session_id, require_clear)
-            return ControlAuthorization(self, client_id, lease.session_id, require_clear)
-
-    async def acquire(self, client_id, priority):
-        with self._lock:
-            self._remove_expired_locked()
-            previous_client_id = None
-            if self._lease is not None:
-                if self._lease.client_id == client_id:
-                    return ControlAcquireResult(False, "Client already owns control; renew the lease instead", self._lease)
-                if priority <= self._lease.priority:
-                    return ControlAcquireResult(False, "Control is owned by an equal or higher-priority client", self._lease)
-                previous_client_id = self._lease.client_id
-                self._invalidate_locked("Control lease revoked by higher-priority acquisition")
             now = self._now()
-            self._lease = ControlLease(client_id, priority, now, now + timedelta(seconds=self.lease_seconds),
-                                       secrets.token_hex(16), time.monotonic() + self.lease_seconds)
-            return ControlAcquireResult(True, "Control acquired", self._lease, previous_client_id)
 
-    def renew(self, client_id, session_id=None):
+            self._remove_expired_locked(now)
+
+            self._note_attempt_locked(
+                client_id,
+                priority,
+                now,
+            )
+
+            if now < self._grace_until:
+                return ControlAcquireResult(
+                    success=False,
+                    message=(
+                        "Gateway is starting; control is handed "
+                        "out once the startup grace period ends"
+                    ),
+                    lease=None,
+                    retry_after=(
+                        self._grace_until - now
+                    ).total_seconds(),
+                )
+
+            if self._lease is None:
+                contender = self._higher_contender_locked(
+                    priority,
+                    now,
+                )
+
+                if contender is not None:
+                    contender_id, retry_after = contender
+
+                    return ControlAcquireResult(
+                        success=False,
+                        message=(
+                            f"Higher-priority client "
+                            f"{contender_id} is contending "
+                            f"for control"
+                        ),
+                        lease=None,
+                        retry_after=retry_after,
+                    )
+
+                self._lease = ControlLease(
+                    client_id=client_id,
+                    priority=priority,
+                    acquired_at=now,
+                    expires_at=now
+                    + timedelta(seconds=self.lease_seconds),
+                )
+
+                return ControlAcquireResult(
+                    success=True,
+                    message="Control acquired",
+                    lease=self._lease,
+                )
+
+            if self._lease.client_id == client_id:
+                return ControlAcquireResult(
+                    success=False,
+                    message="Client already owns control; renew the lease instead",
+                    lease=self._lease,
+                )
+
+            if priority > self._lease.priority:
+                previous_client_id = self._lease.client_id
+
+                self._lease = ControlLease(
+                    client_id=client_id,
+                    priority=priority,
+                    acquired_at=now,
+                    expires_at=now
+                    + timedelta(seconds=self.lease_seconds),
+                )
+
+                return ControlAcquireResult(
+                    success=True,
+                    message="Control acquired",
+                    lease=self._lease,
+                    previous_client_id=previous_client_id,
+                )
+
+            return ControlAcquireResult(
+                success=False,
+                message=(
+                    "Control is owned by an equal "
+                    "or higher-priority client"
+                ),
+                lease=self._lease,
+            )
+
+    def renew(
+        self,
+        client_id: str,
+        priority: int,
+    ) -> tuple[bool, str, ControlLease | None]:
         with self._lock:
-            self._remove_expired_locked()
-            if not self._matches_locked(client_id, session_id):
-                return False, "Client does not own control or X-Control-Session is missing or stale", self._lease
-            self._lease = replace(self._lease, expires_at=self._now() + timedelta(seconds=self.lease_seconds),
-                                  deadline=time.monotonic() + self.lease_seconds)
-            return True, "Control lease renewed", self._lease
+            now = self._now()
 
-    def release(self, client_id, session_id=None):
+            self._remove_expired_locked(now)
+
+            #
+            # A client renewing a lease it lost is still alive and
+            # wants control, so it counts as contending.
+            #
+            self._note_attempt_locked(
+                client_id,
+                priority,
+                now,
+            )
+
+            if self._lease is None:
+                return (
+                    False,
+                    "No active control lease",
+                    None,
+                )
+
+            if self._lease.client_id != client_id:
+                return (
+                    False,
+                    "Client does not own control",
+                    self._lease,
+                )
+
+            self._lease = ControlLease(
+                client_id=self._lease.client_id,
+                priority=self._lease.priority,
+                acquired_at=self._lease.acquired_at,
+                expires_at=now
+                + timedelta(seconds=self.lease_seconds),
+            )
+
+            return (
+                True,
+                "Control lease renewed",
+                self._lease,
+            )
+
+    def release(
+        self,
+        client_id: str,
+    ) -> tuple[bool, str]:
         with self._lock:
-            self._remove_expired_locked()
-            if not self._matches_locked(client_id, session_id):
-                return False, "Client does not own control or X-Control-Session is missing or stale"
-            if self._operations.get(self._lease.session_id, 0):
-                self._invalidate_locked("Control released during an outstanding robot action")
-            else:
-                self._lease = None
-            return True, "Control released"
+            now = self._now()
 
-    def owns_control(self, client_id, session_id=None):
-        with self._lock:
-            self._remove_expired_locked()
-            return self._matches_locked(client_id, session_id)
+            self._remove_expired_locked(now)
 
-    def capabilities(self):
-        with self._lock:
-            return dict(session_required=self.require_session,
-                        watchdog_enabled=self.require_session and bool(self._threads) and all(t.is_alive() for t in self._threads),
-                        recovery_required=self.recovery_required, recovery_reason=self.recovery_reason)
+            #
+            # Releasing (even without holding the lease) withdraws
+            # the client, so the next one need not wait for it.
+            #
+            self._attempts.pop(client_id, None)
 
-    def ensure_reset_allowed(self):
-        with self._lock:
-            if self._stop_pending or self._stop_in_progress:
-                raise ControlConflict("Wait for the gateway watchdog stop attempt to finish before resetting RAPID")
+            if self._lease is None:
+                return (
+                    False,
+                    "No active control lease",
+                )
 
-    def clear_recovery(self, authorization):
-        with authorization.dispatch():
-            self.ensure_reset_allowed()
-            self.recovery_required = False
-            self.recovery_reason = None
+            if self._lease.client_id != client_id:
+                return (
+                    False,
+                    "Client does not own control",
+                )
 
-    def start_watchdog(self, invalidate_callback, stop_callback):
-        if not self.require_session or self._threads:
-            return
-        self._invalidate_callback, self._stop_callback = invalidate_callback, stop_callback
-        self._shutdown.clear()
-        self._threads = [threading.Thread(target=self._watch_expiry, daemon=True, name="control-lease-watchdog"),
-                         threading.Thread(target=self._perform_stops, daemon=True, name="control-watchdog-stop")]
-        for thread in self._threads:
-            thread.start()
+            self._lease = None
 
-    def _watch_expiry(self):
-        while not self._shutdown.wait(min(0.1, self.lease_seconds / 4)):
-            self.get()
+            return (
+                True,
+                "Control released",
+            )
 
-    def _perform_stops(self):
-        while not self._shutdown.is_set():
-            if not self._stop_signal.wait(0.1):
-                continue
-            with self._lock:
-                self._stop_signal.clear()
-                if not self._stop_pending:
-                    continue
-                revision = self._revision
-                self._stop_pending = False
-                self._stop_in_progress = True
-            try:
-                self._stop_callback()
-                outcome = "Software stop confirmed; inspect the robot and explicitly reset RAPID"
-            except Exception as error:
-                outcome = "Software stop UNCONFIRMED (" + type(error).__name__ + "); inspect controller and explicitly reset RAPID"
-            finally:
-                with self._lock:
-                    self._stop_in_progress = False
-                    if revision == self._revision:
-                        self.recovery_reason = outcome
+    def owns_control(
+        self,
+        client_id: str,
+    ) -> bool:
+        lease = self.get()
 
-    def close(self):
-        self._shutdown.set()
-        self._stop_signal.set()
-        for thread in self._threads:
-            thread.join(timeout=0.5)
+        return (
+            lease is not None
+            and lease.client_id == client_id
+        )

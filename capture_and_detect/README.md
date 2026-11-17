@@ -30,9 +30,12 @@ Its capture behavior and command-line options remain:
   or when there is no free location. There are no UI camera-clearance checks,
   reservations, confirmation previews or persistent recovery journal.
 - Normal dual-arm picks use buffered smooth paths, with no automatic Home
-  before, between or after cups. The terminal uses the shared plan's default
+  before or between cups. After at least one successful placement, the terminal
+  homes once when the batch finishes or the grid is full: left first, then right.
+  A failed pick skips this final Home. The terminal uses the shared plan's default
   motion settings; saved dashboard speed settings do not affect it. `--left-only`
-  retains its original pick, lift and replace movements.
+  retains its original pick, lift and replace movements and only homes the left
+  arm at the end of the batch.
 - `q` followed by Enter exits at the prompt. During motion, Ctrl-C inhibits
   subsequent jobs; a submitted movement can finish. The terminal has no
   dashboard Stop/status command interface.
@@ -40,7 +43,7 @@ Its capture behavior and command-line options remain:
   `--camera-z` and `--depth-frames`. There is **no dry-run option** in this
   terminal program. Pressing Enter runs the physical workflow.
 
-The gateway must support `POST /api/v1/robot/rws/path`, and the controller must
+The original `main` gateway supports `POST /api/v1/robot/rws/path`; the controller must
 have the same `RunPath` routine used by the UI loaded. There is no fallback to
 the previous individual-move handover if a path fails.
 
@@ -305,8 +308,9 @@ The shared plan in `handover_plan.py` adapts the normal smooth handover from
 `smooth-dual-arm-handover` at `46fd6f2`, with **no automatic home before,
 between or after cups**. It is used by the UI, Assistant actions, shared device
 services, `picker_workflow.py` and normal dual-arm picks in `capture_and_detect.py`.
-The latter retains its V4 capture/detection workflow and original `--left-only`
-movements. The branch's simulation-only overlapping multi-cup plan is not used.
+The terminal retains its V4 capture/detection workflow and adds its separate
+Home once the batch finishes; that final Home is not part of the UI plan.
+The branch's simulation-only overlapping multi-cup plan is not used.
 
 Normal paths use **60% acceleration and 40% ramp**. Loaded paths also request
 **1.5 m/s²** maximum TCP acceleration/deceleration; turnover keeps **30%
@@ -321,10 +325,10 @@ The UI preserves detected grip yaw/opening, optional camera-Z picking, placement
 reservations, Stop/recovery and the V4 saved scan. There are no captures or
 rematches between cups. Each cup finishes completely before the next starts.
 
-1. Close the empty grippers and move the left arm to ready. Open it to the
+1. Open the empty grippers and move the left arm to ready. Set it to the
    detected cup opening there.
 2. Follow one path above the cup and straight down to grasp it, using the
-   detected yaw. At the same time, move the closed right hand to its via pose.
+   detected yaw. At the same time, move the right hand to its via pose.
 3. After both picking and the right via move finish, lift the cup straight up
    and continue to the handover in one path, while the right moves beside it.
 4. Wait for both arms, open the right hand, then slide below and straight up to
@@ -335,10 +339,11 @@ rematches between cups. Each cup finishes completely before the next starts.
 7. Turn the cup through the sideways midpoint to the downward pose above its
    destination, blending through the midpoint by 10 mm. The left stays clear.
 8. Lower the right hand straight to the selected grid location, release, lift
-   straight to 80 mm above it, close the empty gripper and remain there.
+   straight to 80 mm above it and remain there with the gripper open.
 9. Complete the UI placement reservation only after every job finishes;
    `capture_and_detect.py` instead marks its chosen grid entry occupied. The next
-   cup starts through left ready; neither arm automatically goes home.
+   cup starts through left ready; neither arm goes home between cups. The terminal
+   has a separate final Home after the batch; the UI does not.
 
 All normal dual-arm movements use the controller's loaded `RunPath` routine via
 `POST /api/v1/robot/rws/path`. Intermediate approach/lift/turn points blend by
@@ -353,8 +358,8 @@ With advanced-shell `--home-after-cup` (or explicit `CupSession(..., home_after_
 step 1 also homes the right arm and checks its joints before picking. After the
 right arm clears the handover in step 7, the empty left gripper closes, the left
 arm moves laterally to Y=400 mm at Z=690 mm, and homes with a joint check while
-the right arm places. After `right_clear`, the empty right gripper closes and
-the right arm homes with a joint check. All jobs and checks finish before the next cup.
+the right arm places. After `right_clear`, the right arm homes with a joint check.
+All jobs and checks finish before the next cup.
 
 This optional right return does not require a move to Z=600 mm at the placement XY.
 That target can be outside the arm's reach despite being inside the configured
@@ -368,10 +373,12 @@ When automatic Home is enabled, its initial right-arm home verification remains
 an additional guard. A failure stops new
 dispatch on both branches; already submitted requests are drained, confirmed
 peer completions are recorded, and recovery and reservations remain blocked.
-No automatic movement retry or resume is performed. The Python gateway supports
-independent arm requests. Lynx's deployed C++ gateway concurrency and late-request
-cancellation behavior have not been validated; its missing session fencing means
-the newer Python gateway's cancellation guarantees cannot be assumed.
+No automatic movement retry or resume is performed. Both workflows use the
+original gateway API and its ordinary control lease. Lease expiry prevents new
+authorized requests but does not stop an already active RAPID movement. The
+gateway has no execution-session fencing, lease watchdog or delayed-request
+cancellation guarantee. The application's Stop latch prevents further local
+dispatch and separately requests the gateway's software Stop.
 
 The detected CUP BASE mask and reliable interior depth provide an estimated
 diameter. The requested opening is diameter + 70 mm, converted to a bounded
@@ -951,22 +958,18 @@ Runtime dependencies are separate from the Pi gateway requirements.
 ### Robot controls panel
 
 Expand **Robot controls** in the same dashboard. These explicit controls do not
-use the language model or a cup detection. In live mode the app reads the
-gateway's `/openapi.json` at startup and when **Refresh robot status** is used.
-Discovery is informational. The implemented Home, gripper and controller actions
-remain visible if discovery is missing or fails. Each action still requires a
-reviewed confirmation and the existing ownership, Stop and recovery conditions.
-Actual controller status or command errors are reported by the operation.
-Demo/dry-run controls remain previews without hardware requests.
+use the language model or a cup detection. They use the original gateway API
+from `main`: Home, gripper commands, RAPID/controller status and software Stop.
+No modified gateway, execution-session header or direct ABB connection is
+required. Home and gripper actions keep their reviewed confirmation and the
+existing ownership, Stop and recovery conditions. Actual controller status or
+command errors are reported by the operation. Demo/dry-run controls remain
+previews without hardware requests.
 
-The current Lynx C++ gateway (API version 0.4.0) supports Home, grippers,
-status and software Stop. Its missing collision-status route is supplied by
-the read-only controller connection described below. Collision acknowledgement,
-guarded reset and guarded initialization may be rejected by that gateway. Its legacy
-`POST /robot/rapid/start` with `reset_program_pointer=true` starts execution from
-main; it does not provide the reset-and-leave-stopped contract or the generation
-check that prevents a delayed initialization from restarting after Stop.
-The dashboard does not use it as a substitute for those actions.
+Program Reset, Initialize and collision acknowledgement are not UI controls.
+The UI does not call the removed reset or collision endpoints, read native
+collision state, start RAPID or enable motors. Existing `--controller-profile`
+settings do not enable direct controller access for these controls.
 
 Implemented operator controls:
 
@@ -974,8 +977,8 @@ Implemented operator controls:
   right-handover travel, cup-turning and placement speeds. Defaults remain overall
   250, pick/lift 100, flip 100, with handover and placement following the overall
   limit. Pick/lift includes the loaded left-arm transfer. Blank handover/placement
-  inputs follow the overall limit. Sequence Home remains capped at 200 mm/s,
-  adjusted receiving poses at 25 mm/s, and turning acceleration at 30%. The panel
+  inputs follow the overall limit. Sequence Home remains capped at 200 mm/s
+  when explicitly enabled, and turning acceleration remains at 30%. The panel
   shows effective applied speeds. Changes cancel pending previews, apply only to
   future plans and do not change the FlexPendant override. Older remote services
   show only their supported overall-speed control. Managed handoffs transfer custom
@@ -988,8 +991,8 @@ Implemented operator controls:
   `min(selected speed, 100)` mm/s, separate from homes within the cup sequence.
 - **Open / close grippers** operates the selected arm or both, sequentially.
   Opening a gripper can release a held cup. These controls do not reposition it.
-- **Refresh robot status** refreshes available controls and reads RAPID execution, motor state, operation mode,
-  and collision acknowledgement state. It is a timestamped snapshot. Demo and
+- **Refresh robot status** reads RAPID execution, motor state and operation mode
+  through `GET /robot/rapid`. It is a timestamped snapshot. Demo and
   dry-run modes show simulated status and send no robot requests.
 - **Make all locations available** opens a review for every placement location.
   Remove the cups and confirm that both arms are stopped, then tick the inspection
@@ -1004,58 +1007,36 @@ Implemented operator controls:
   control, not a language-model command.
 - **Acknowledge app recovery** leads to the existing inspection acknowledgement. It
   clears only this app's local recovery block and sends no robot command.
-- **Acknowledge collision** requests the controller's acknowledgement after
-  inspection. It does not start RAPID, turn motors on, or move home.
-- **Reset robot program (leave stopped)** stops execution, clears and verifies pending arm request
-  flags, and resets the program pointer to main. It leaves RAPID stopped.
-- **Initialize robot program** explicitly clears pending requests and starts at main,
-  rather than resuming an interrupted instruction. The arm programs may
-  initialize/calibrate the grippers. AUTO, motors already on, and a cleared
-  collision state are required; the app does not switch modes or enable motors.
+- **Software stop** immediately blocks further app commands and requests
+  `POST /robot/rapid/stop` using the ordinary gateway lease. The display reports
+  whether RAPID confirmed stopping; this network request is not an emergency stop.
 
-Each robot action has a separate, one-use 60-second preview and inspection
-checkbox. No additional action is queued while one is running. Stop invalidates
+Each Home or gripper action has a separate, one-use 60-second preview and inspection
+checkbox. Status reads and Stop do not wait for that confirmation. No additional
+movement is queued while one is running. Stop invalidates
 both cup and robot-control previews; a failed/unconfirmed command requires
 inspection again. Manual robot actions invalidate the scan. They never free
 reserved placement locations or automatically continue an interrupted pick.
 
 After a collision, inspect both arms, the cup and the return path in person.
 If they are trapped or in contact, use the robot's recovery procedure; Home is
-not an escape planner. Acknowledge the app block, refresh status, and request
-collision acknowledgement if needed. Reset and initialize are separate reviewed
-actions. Once the controller is ready and the path is clear, review a Home
-request for the appropriate arm. Nothing automatically resets and homes.
+not an escape planner. Resolve controller recovery, collision acknowledgement
+and motor readiness on the FlexPendant or through the established operator
+procedure. Then acknowledge the app block and refresh status. Home and gripper
+commands require RAPID running, motors on and AUTO. Once the controller is ready
+and the path is clear, review a Home request for the appropriate arm.
 
-ABB's [collision acknowledgement API](https://developercenter.robotstudio.com/api/rwsApi/panel_ack_set_page.html)
-requires **Local Client privileges** and disabled automatic acknowledgement.
-The Pi gateway may be refused. In that case use the FlexPendant; this app does
-not change privileges or bypass collision supervision. Motor enable, emergency
-stop recovery and other controller faults can also require physical controls.
-
-**Controller status on Lynx:** `--controller-profile` defaults to the adjacent
-`robot_controller.json`. This explicit profile binds gateway
-`http://192.168.125.20:8000/api/v1` to controller `http://192.168.125.1`.
-It contains URLs only. An absent profile or a different gateway URL does not
-enable the native connection. Use a separate verified profile when changing
-the installation; the app does not guess a controller from the gateway address.
-Native reads use ABB Digest authentication and the gateway's existing credential
-defaults, with `GATEWAY_RWS_USER` and `GATEWAY_RWS_PASSWORD` overrides.
-
-Before each manual home/gripper command, the app reads both arms' six joints and
-arm angle from the gateway and native controller, requiring agreement within
-0.1 degree. It then reads `/rw/panel/coldetstate`. These are GET requests only;
-this helper cannot reset/start/stop the robot, acknowledge faults, or enable motors.
-The joint comparison checks consistency, not unique controller identity.
-Collision must be `INIT` or `CONFIRMED`, with RAPID running, motors on and AUTO.
-Missing data, a mismatched joint reading, a failed request or another collision
-state blocks the command. When the gateway advertises its own collision-status
-route, that route is used; failure does not trigger a native fallback.
+`rapid/rapidctl.py` remains a separate terminal administration tool for status,
+start, stop, restart and reset. The UI does not launch it or upload RAPID modules.
+Its `reset` command clears persistent program values and starts by default;
+`reset --no-start` leaves RAPID stopped. These are different from the UI's local
+recovery acknowledgement. Run controller administration only after picker work
+has finished and the robot's condition has been inspected.
 
 **Deployment:** restart the Mac dashboard after the robot is idle to load these
 UI/backend changes. A browser refresh alone does not reload Python code.
-Guarded reset/initialization and collision acknowledgement need those routes
-implemented in the installed gateway package. The Python gateway in this
-checkout provides them; updating its source does not update the Lynx C++ package.
+The gateway source matches the original `main` implementation. Updating this
+checkout does not replace a gateway package already installed on Pi or Lynx.
 For a Pi Docker deployment see
 [`gateway/README_START.md`](../gateway/README_START.md#deploy-to-the-raspberry-pi).
 Do not update/restart either gateway or dashboard during robot movement.
@@ -1289,8 +1270,8 @@ move the physical robot or establish collision clearance for the real setup.
 
 See [DEGRADATION.md](DEGRADATION.md) for the optional stateless Mac worker,
 preloaded Pi fallback, accepted-provider dashboard and durable event history,
-matching-model setup, dry-run disconnection experiment, and gateway/session
-requirements before live use. The coordinator and authoritative robot state
+matching-model setup, dry-run disconnection experiment, and original gateway
+lease behavior. The coordinator and authoritative robot state
 stay on the Pi throughout switching and recovery; Lynx is not needed.
 
 ## Windows checkout: table-reference checksum mismatch

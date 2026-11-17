@@ -39,7 +39,9 @@ class HandoverDependencyTests(unittest.TestCase):
                 if arm in previous:
                     self.assertIn(previous[arm], job["after"])
                 previous[arm] = name
-        self.assertEqual(self.ready(set()), {"right_close_travel", "left_close_travel"})
+        self.assertEqual(self.ready(set()), {"right_open_start", "left_open_start"})
+        for name in self.ready(set()):
+            self.assertEqual(self.by_name[name]["body"]["action"], "open")
 
     def test_right_prepares_while_left_picks_and_both_wait_before_entering_handover(self):
         prepared = self.ancestors("approach_cup") | self.ancestors("right_via")
@@ -76,16 +78,22 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertEqual(self.ready(retreated), {"right_place"})
         self.assertIn("right_place", self.ancestors("right_release"))
         self.assertIn("right_release", self.ancestors("right_clear"))
-        self.assertEqual(self.by_name["right_close"]["after"], ["right_clear"])
+        self.assertEqual(self.by_name["right_clear"]["after"], ["right_release"])
+        self.assertEqual(self.ready(set(self.by_name)), set())
+        self.assertEqual(self.jobs[-1]["name"], "right_clear")
+        self.assertNotIn("right_close", self.by_name)
 
     def test_optional_homes_start_and_finish_with_confirmed_clearances(self):
         self.jobs = handover_jobs(self.cup, place=self.place, home_after_cup=True)
         self.by_name = {job["name"]: job for job in self.jobs}
-        self.assertEqual(self.ready(set()), {"right_close_travel"})
-        self.assertIn("right_home_start", self.ancestors("left_close_travel"))
+        self.assertEqual(self.ready(set()), {"right_open_start", "left_open_start"})
+        self.assertEqual(self.by_name["right_home_start"]["after"], ["right_open_start"])
+        self.assertEqual(self.ready({"right_open_start", "left_open_start"}), {"right_home_start"})
+        self.assertIn("right_home_start", self.ancestors("left_ready"))
+        self.assertIn("left_open_start", self.by_name["left_ready"]["after"])
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
         self.assertEqual(self.ready(retreated), {"left_close_return", "right_place"})
-        self.assertEqual(self.by_name["right_home"]["after"], ["right_close"])
+        self.assertEqual(self.by_name["right_home"]["after"], ["right_clear"])
         self.assertNotIn("right_home_raise", self.by_name)
         self.assertNotIn("left_home", self.ancestors("right_home"))
         self.assertNotIn("right_home", self.ancestors("left_home"))

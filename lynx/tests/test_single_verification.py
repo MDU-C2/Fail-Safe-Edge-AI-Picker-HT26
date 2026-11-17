@@ -64,7 +64,7 @@ class SingleVerificationTests(unittest.TestCase):
         self.save.side_effect = lambda _: now.__setitem__(0, now[0] + 1000)
         self.robot.after_move = lambda _: now.__setitem__(0, now[0] + 1000)
         self.execute(session)
-        self.assertEqual(self.robot.jobs[-1]["name"], "right_close")
+        self.assertEqual(self.robot.jobs[-1]["name"], "right_clear")
         self.assertFalse(any("home" in job["name"] for job in self.robot.jobs))
         self.capture.assert_called_once_with("scan")
         self.assertFalse(session.motion_uncertain)

@@ -23,7 +23,9 @@ class HandoverPlanTests(unittest.TestCase):
         jobs = self.plan()
         by_name = {job["name"]: job for job in jobs}
         self.assertEqual(len(jobs), len(by_name))
-        for first, second in (("left_ready", "left_open"), ("left_open", "approach_cup"),
+        for first, second in (("left_open_start", "left_ready"),
+                              ("right_open_start", "right_via"),
+                              ("left_ready", "left_open"), ("left_open", "approach_cup"),
                               ("approach_cup", "grip_cup"),
                               ("grip_cup", "left_handover"), ("right_via", "left_handover"),
                               ("grip_cup", "right_beside"), ("right_via", "right_beside"),
@@ -33,16 +35,20 @@ class HandoverPlanTests(unittest.TestCase):
                               ("left_release", "left_clear"), ("left_release", "right_lower"),
                               ("left_clear", "right_retreat"), ("right_lower", "right_retreat"),
                               ("right_retreat", "right_place"), ("right_place", "right_release"),
-                              ("right_release", "right_clear"), ("right_clear", "right_close")):
+                              ("right_release", "right_clear")):
             with self.subTest(first=first, second=second):
                 self.assertIn(first, by_name[second]["after"])
         self.assertTrue(all(job["body"]["wait"] is True for job in jobs))
-        for name, arm, action in (("left_open", "left", "open"), ("grip_cup", "left", "grip"),
+        for name, arm, action in (("left_open_start", "left", "open"),
+                                  ("right_open_start", "right", "open"),
+                                  ("left_open", "left", "open"), ("grip_cup", "left", "grip"),
                                   ("right_open", "right", "open"), ("right_grip", "right", "grip"),
-                                  ("left_release", "left", "open"), ("right_release", "right", "open"),
-                                  ("right_close", "right", "grip")):
+                                  ("left_release", "left", "open"), ("right_release", "right", "open")):
             self.assertEqual(by_name[name]["endpoint"], "/robot/rws/gripper")
             self.assertEqual(by_name[name]["body"], {"arm": arm, "action": action, "wait": True})
+        self.assertEqual([job["name"] for job in jobs if job["body"].get("action") == "grip"],
+                         ["grip_cup", "right_grip"])
+        self.assertEqual(jobs[-1]["name"], "right_clear")
 
     def test_smooth_branch_geometry_and_local_linear_segments(self):
         # Literal flange targets from smooth-dual-arm-handover, rather than

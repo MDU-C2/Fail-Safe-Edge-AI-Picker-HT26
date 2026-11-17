@@ -1,7 +1,7 @@
 """Fallback uses retained depth and never weakens cup/robot checks; offline only."""
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr
 import copy
 import io
 import json
@@ -19,7 +19,7 @@ from inference_integration import (ProviderDetector, add_inference_arguments,
                                     validate_inference_arguments, create_robot)
 from inference_protocol import make_response, make_settings, validate_response
 from inference_supervisor import InferenceSupervisor
-from robot_client import RobotClient, RobotCommandError
+from robot_client import RobotClient
 from test_capture_placement import CapturePlacementTests
 from web_controller import WebController
 
@@ -109,43 +109,14 @@ class GroupIntegrationTests(CapturePlacementTests):
         self.store.save_capture.assert_called_once()
 
 
-class SessionClientTests(unittest.TestCase):
-    @staticmethod
-    def reply(session_id="abc123"):
-        return {"success": True, "lease": {"active": True, "session_id": session_id}}
-
-    def test_new_client_requires_session_and_legacy_still_works(self):
-        client = RobotClient("http://offline.invalid/api/v1", {}, require_session=True)
-        with self.assertRaisesRegex(RobotCommandError, "execution sessions"):
-            client._record_lease({"success": True, "lease": {"active": True}}, {})
-        legacy = RobotClient("http://offline.invalid/api/v1", {})
-        legacy._record_lease({"success": True, "lease": {"active": True}}, {})
-
-    def test_session_header_sent_on_mutations_but_not_acquire(self):
-        client = RobotClient("http://offline.invalid/api/v1", {"Authorization": "Bearer fake"})
-        client._record_lease(self.reply(), {})
-        response = Mock(headers={}, status_code=200)
-        response.json.return_value = {"success": True}
-        with patch("robot_client.requests.post", return_value=response) as post:
-            for endpoint in ("/control/renew", "/control/release", "/robot/rapid/stop", "/robot/rws/gripper"):
-                client._post(endpoint)
-                self.assertEqual(post.call_args.kwargs["headers"]["X-Control-Session"], "abc123")
-            client._post("/control/acquire")
-            self.assertNotIn("X-Control-Session", post.call_args.kwargs["headers"])
-        self.assertNotIn("X-Control-Session", client.headers)
-
-    def test_renewal_cannot_change_session(self):
-        client = RobotClient("http://offline.invalid/api/v1", {})
-        client._record_lease(self.reply(), {})
-        with self.assertRaisesRegex(RobotCommandError, "session changed"):
-            client._record_lease(self.reply("new-session"), {})
-
-    def test_live_failover_requires_gateway_capability_without_moving(self):
+class CoordinatorClientTests(unittest.TestCase):
+    def test_live_failover_uses_original_lease_without_probing_or_moving(self):
         args = SimpleNamespace(live=True, mac_inference_url="http://mac.invalid:8090")
-        with patch.object(RobotClient, "_get_object", return_value={}) as read:
-            with self.assertRaisesRegex(RobotCommandError, "updated gateway"):
-                create_robot(args, "http://pi.invalid/api/v1", {})
-            read.assert_called_once_with("/control")
+        with patch.object(RobotClient, "_get_object") as read, patch.object(RobotClient, "_post") as post:
+            robot = create_robot(args, "http://pi.invalid/api/v1", {})
+            self.assertFalse(robot.dry_run)
+            read.assert_not_called()
+            post.assert_not_called()
 
     def test_dry_run_does_not_probe_robot_control(self):
         args = SimpleNamespace(live=False, mac_inference_url="http://mac.invalid:8090")
@@ -197,9 +168,9 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
         self.post.assert_not_called()
         self.assertIsNotNone(robot.operator_capabilities)
         self.assertTrue(robot.operator_capabilities["robot_status"]["supported"])
-        for name in ("home", "open", "grip", "collision_status", "rapid_reset", "rapid_start"):
+        self.assertEqual(set(robot.operator_capabilities), {"home", "open", "grip", "robot_status", "stop"})
+        for name in ("home", "open", "grip", "stop"):
             self.assertTrue(robot.operator_capabilities[name]["supported"])
-        self.assertIsNone(robot._controller_status)
 
     def test_missing_or_mismatched_profile_remains_information_only(self):
         for mismatch in (False, True):
@@ -209,41 +180,39 @@ class ManagedOperatorDiscoveryTests(unittest.TestCase):
                         "gateway_api": "http://another.invalid:8000/api/v1",
                         "controller_url": "http://controller.invalid"}))
                 robot = self.create(self.profile)
-                self.assertIsNone(robot._controller_status)
-                self.assertFalse(robot.operator_capabilities["collision_status"]["advertised_supported"])
+                self.assertNotIn("collision_status", robot.operator_capabilities)
                 robot.require_control_action("home")
         self.assertEqual(self.configure.call_count, 2)
         self.assertEqual(self.get.call_count, 2)
         self.post.assert_not_called()
 
-    def test_matching_profile_propagates_without_reading_or_mutating_controller(self):
+    def test_matching_profile_is_ignored_without_reading_or_mutating_controller(self):
         self.profile.write_text(json.dumps({"schema_version": 1, "gateway_api": self.API,
                                            "controller_url": "http://controller.invalid"}))
         robot = self.create(self.profile)
         self.configure.assert_called_once_with(robot, self.profile)
-        self.get.assert_called_once()  # OpenAPI only; joint/collision reads remain pre-command checks.
-        self.assertEqual(robot._controller_status.controller_url, "http://controller.invalid")
-        self.assertEqual(robot.operator_capabilities["collision_status"]["protocol"], "native_read_only")
+        self.get.assert_called_once()  # Only the original gateway's OpenAPI document.
+        self.assertNotIn("collision_status", robot.operator_capabilities)
         self.assertTrue(robot.operator_capabilities["home"]["supported"])
-        self.assertFalse(robot.operator_capabilities["rapid_reset"]["advertised_supported"])
-        self.assertFalse(robot.operator_capabilities["rapid_start"]["advertised_supported"])
+        self.assertNotIn("rapid_reset", robot.operator_capabilities)
+        self.assertNotIn("rapid_start", robot.operator_capabilities)
         self.post.assert_not_called()
 
-    def test_matching_malformed_profile_rejects_startup_before_any_http(self):
+    def test_obsolete_malformed_profile_does_not_change_gateway_discovery(self):
         self.profile.write_text(json.dumps({"schema_version": 1, "gateway_api": self.API,
                                            "controller_url": "not-an-origin"}))
-        with self.assertRaises(ValueError):
-            self.create(self.profile)
+        robot = self.create(self.profile)
         self.configure.assert_called_once()
-        self.get.assert_not_called()
+        self.get.assert_called_once()
+        self.assertTrue(robot.operator_capabilities["home"]["supported"])
         self.post.assert_not_called()
 
-    def test_failed_discovery_is_reported_without_disabling_controls(self):
+    def test_failed_discovery_does_not_claim_unsupported_controls(self):
         self.response.json.return_value = {}
         robot = self.create()
-        self.assertIsNone(robot.operator_capabilities["robot_status"]["advertised_supported"])
-        for name in ("home", "open", "grip", "rapid_reset", "rapid_start"):
-            self.assertTrue(robot.operator_capabilities[name]["supported"])
+        self.assertIsNone(robot.operator_capabilities["robot_status"]["supported"])
+        for name in ("home", "open", "grip", "stop"):
+            self.assertIsNot(robot.operator_capabilities[name]["supported"], True)
         self.get.assert_called_once()
         self.post.assert_not_called()
 

@@ -92,9 +92,9 @@ class LanguageCommandTests(unittest.TestCase):
         names = [job["name"] for job in robot.jobs]
         self.assertEqual(len(names), TRANSFER_JOB_COUNT)
         self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
-        self.assertEqual(names[:2], ["right_close_travel", "left_close_travel"])
+        self.assertEqual(names[:2], ["right_open_start", "left_open_start"])
         self.assertLess(names.index("right_grip"), names.index("left_release"))
-        self.assertEqual(names[-1], "right_close")
+        self.assertEqual(names[-1], "right_clear")
         self.assertFalse(any("home" in name for name in names))
         self.assertIn("clearance poses", proposal["message"])
         self.assertIn("Automatic home disabled", proposal["message"])

@@ -4,8 +4,6 @@ from pydantic import (
     BaseModel,
     Field,
     FiniteFloat,
-    StrictBool,
-    StrictInt,
     model_validator,
 )
 
@@ -92,7 +90,6 @@ class RapidStatus(BaseModel):
     operation_mode: str
 
     tasks: list[RapidTask]
-    stop_generation: int | None = None
 
 
 class RapidModuleUpload(BaseModel):
@@ -104,21 +101,6 @@ class RapidModuleUpload(BaseModel):
 
 class RapidStartRequest(BaseModel):
     reset_program_pointer: bool = False
-
-
-class RapidResetRequest(BaseModel):
-    start: StrictBool = False
-    stop_generation: StrictInt | None = Field(default=None, ge=0)
-
-    @model_validator(mode="after")
-    def start_requires_generation(self) -> Self:
-        if self.start and self.stop_generation is None:
-            raise ValueError("Fresh start requires stop_generation from GET /robot/rapid")
-        return self
-
-
-class CollisionStatus(BaseModel):
-    collision_state: Literal["INIT", "TRIGGERED", "CONFIRMED", "TRIGGERED_ACK"]
 
 
 class RwsArmRequest(BaseModel):
@@ -201,6 +183,74 @@ class RwsMotionRequest(RwsArmRequest):
     )
 
 
+class RwsPathPoint(BaseModel):
+    """One point of a path job: tool0 in wobj0, mm and degrees
+    (rotation as RAPID's OrientZYX(rz, ry, rx), required here).
+
+    linear: a straight line to the point (MoveL) instead of a joint
+    move. speed: TCP speed to the point in mm/s, left out the
+    request's speed. zone: blend radius in mm at the point, left out
+    the request's zone; 0 stops there. The last point always stops
+    (fine).
+    """
+
+    x: FiniteFloat
+    y: FiniteFloat
+    z: FiniteFloat
+
+    rx: FiniteFloat
+    ry: FiniteFloat
+    rz: FiniteFloat
+
+    linear: bool = False
+
+    speed: FiniteFloat | None = Field(
+        default=None,
+        ge=1,
+        le=1500,
+    )
+
+    zone: FiniteFloat | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+    )
+
+
+#
+# Points in one path job; the size of the path arrays in
+# rapid/SharedVars.mod.
+#
+MAX_PATH_POINTS = 8
+
+
+class RwsPathRequest(RwsMotionRequest):
+    """Several points for one arm, run without stopping in between.
+
+    speed, acceleration and ramp as for a move (speed is the default
+    of the points). max_acceleration limits the TCP acceleration and
+    deceleration on the path in m/s2 (RAPID PathAccLim), e.g. while
+    carrying something; left out, no limit.
+    """
+
+    points: list[RwsPathPoint] = Field(
+        min_length=1,
+        max_length=MAX_PATH_POINTS,
+    )
+
+    zone: FiniteFloat = Field(
+        default=10,
+        ge=0,
+        le=100,
+    )
+
+    max_acceleration: FiniteFloat | None = Field(
+        default=None,
+        ge=0.1,
+        le=20,
+    )
+
+
 class RwsMoveRequest(RwsMotionRequest):
     """Target of one arm's tool0 in wobj0 (default the left arm).
 
@@ -228,35 +278,3 @@ class RwsMoveRequest(RwsMotionRequest):
             raise ValueError("Give all of rx, ry and rz, or none of them")
 
         return self
-
-
-class RwsPathPoint(BaseModel):
-    """One path point: tool0 in wobj0, mm and OrientZYX degrees.
-
-    linear selects MoveL instead of a joint move. speed and zone
-    default to the request's values. A zone of 0 stops at the point;
-    the last point always stops (fine), regardless of its zone.
-    """
-
-    x: FiniteFloat
-    y: FiniteFloat
-    z: FiniteFloat
-    rx: FiniteFloat
-    ry: FiniteFloat
-    rz: FiniteFloat
-    linear: bool = False
-    speed: FiniteFloat | None = Field(default=None, ge=1, le=1500)
-    zone: FiniteFloat | None = Field(default=None, ge=0, le=100)
-
-
-class RwsPathRequest(RwsMotionRequest):
-    """Up to eight points run as one job with blended intermediate points.
-
-    speed, acceleration and ramp are as for a move. max_acceleration
-    limits TCP acceleration and deceleration in m/s2 (PathAccLim);
-    leaving it out disables that additional limit.
-    """
-
-    points: list[RwsPathPoint] = Field(min_length=1, max_length=8)
-    zone: FiniteFloat = Field(default=10, ge=0, le=100)
-    max_acceleration: FiniteFloat | None = Field(default=None, ge=0.1, le=20)

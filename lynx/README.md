@@ -162,13 +162,15 @@ controller from connecting, so close that controller before live use.
 | `reset` | Acknowledge recovery after inspection; sends no movement |
 | `quit` | Exit; active work receives a software-stop request, with no automatic home/resume |
 
-Gateway discovery is informational. Implemented Home controls are offered with
-their existing confirmation and execution checks; unsupported operations can
-still fail when requested. `home both` returns the right arm first, then the left. A
-legacy gateway may need the existing read-only `--controller-profile` for the
-required status checks; adding that profile does not create missing gateway
-endpoints or weaken the guarded-restart fence. Software stop still depends on
-the gateway/controller; use the physical stop when immediate stopping is needed.
+Home, gripper controls, status and software Stop use the original `main` gateway
+API and its ordinary control lease. `home both` returns the right arm first,
+then the left, with the existing confirmation and completion checks. Home and
+gripper commands require RAPID running, motors on and AUTO; no native controller
+profile or collision-status endpoint is required. The dashboard does not offer
+program reset, initialization or collision acknowledgement. Those remain
+separate operator tasks. Software Stop still depends on the gateway/controller;
+use the physical stop when immediate stopping is needed. Lease expiry does not
+stop an already active RAPID movement.
 
 ## Preserved motion and camera checks
 
@@ -204,7 +206,7 @@ must still be valid before motion.
 There is no automatic recapture, cup rematching or observation-age deadline
 before or between picks. Completed cups become unavailable; untouched cups stay
 selectable from the same scan. Scan again when the physical scene changes.
-Confirmation expiry, Stop, lease/session checks, placement reservations and the
+Confirmation expiry, Stop, control-lease checks, placement reservations and the
 recovery journal remain. These settings are verified in the running 0.2.9
 service. The 0.2.5 report records earlier deployed behavior.
 

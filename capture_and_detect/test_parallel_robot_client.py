@@ -93,11 +93,11 @@ class ParallelRobotClientTests(unittest.TestCase):
             if endpoint == "/control/renew":
                 self.renewed.set()
             return self.response({"success": True, "lease": {"active": True,
-                "session_id": "offline-parallel-session", "client_id": "test",
+                "client_id": "test",
                 "expires_at": (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()}})
         self.assertIn(endpoint, {RobotClient.MOVE_ENDPOINT, RobotClient.PATH_ENDPOINT,
                                  RobotClient.HOME_ENDPOINT, RobotClient.GRIPPER_ENDPOINT})
-        self.assertEqual(options["headers"]["X-Control-Session"], "offline-parallel-session")
+        self.assertNotIn("X-Control-Session", options["headers"])
         arm = options["json"]["arm"]
         with self.lock:
             name = self.prepared[arm]
@@ -152,7 +152,7 @@ class ParallelRobotClientTests(unittest.TestCase):
             self.started[name], self.gates[name], self.returned[name] = (threading.Event() for _ in range(3))
             if name not in blocked:
                 self.gates[name].set()
-        self.client = client_type("http://offline.invalid/api/v1", {}, require_session=True)
+        self.client = client_type("http://offline.invalid/api/v1", {})
 
         def execute():
             try:

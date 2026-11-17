@@ -75,37 +75,28 @@ also has Wi-Fi, a second Ethernet adapter or another route to the Pi, pulling
 one cable may leave inference reachable. Disable the alternate experiment
 route when the intended fault is total Mac network loss.
 
-## Update the Pi gateway
+## Use the existing Pi gateway
 
-Live fallback requires the updated gateway's active lease watchdog and execution
-session checks. Set `GATEWAY_CONTROL_REQUIRE_SESSION=true` in the gateway's
-persistent deployment configuration. With the robot inspected and stationary,
-restart the existing single gateway through its normal deployment procedure;
-do not launch a second gateway on the same controller.
+Inference fallback uses the original `main` gateway and its ordinary
+acquire/renew/release control lease. Keep the gateway's existing environment,
+authentication, camera/controller addresses and deployment. It does not need
+execution-session headers, `GATEWAY_CONTROL_REQUIRE_SESSION`, a gateway watchdog
+or additional reset/collision endpoints. Do not start a second gateway on the
+same controller.
 
-For an existing Python deployment, the equivalent launch command from the
-repository root is:
+The coordinator holds and renews the lease while executing a sequence. A failed
+renewal prevents it from dispatching further jobs. **Lease expiry does not stop
+an active RAPID movement.** The original gateway has no lease-expiry watchdog or
+execution-session fencing; delayed requests do not gain those guarantees from
+inference fallback. The app's software Stop latches its local block and sends
+the existing gateway Stop request. It is not a safety-rated emergency stop.
 
-```sh
-GATEWAY_CONTROL_REQUIRE_SESSION=true python3 -m uvicorn gateway.main:app \
-  --host 127.0.0.1 --port 8000
-```
-
-Use the gateway's own environment, dependencies, authentication and configured
-camera/controller settings. For an existing container deployment, set that
-environment variable in the gateway container configuration instead. This guide
-does not rebuild, replace or start that container automatically.
-
-The updated gateway starts with recovery required. After inspecting both arms,
-grippers, work area and pending work, use the existing dashboard **Robot
-controls** to perform the explicit inspected RAPID reset/start procedure.
-The application recovery acknowledgement (`reset`) and clearing a placement
-reservation are separate actions. Neither is an automatic consequence of
-reconnection. Do not use a new empty state directory to bypass recovery.
-
-The watchdog inhibits new commands when the coordinator lease expires and
-requests a software stop. If completion cannot be confirmed, it stays blocked.
-A software stop is not a safety-rated emergency stop.
+Inspect both arms, grippers, work area and pending work before live use. Perform
+any required controller recovery through the FlexPendant or the established
+operator procedure; the UI has no RAPID reset/initialization or collision
+acknowledgement action. App recovery (`reset`) and clearing a placement
+reservation remain separate actions that send no robot movement. Neither occurs
+automatically on reconnection. Preserve the existing recovery and placement state.
 
 ## Start with camera-connected dry-run on the Pi
 
@@ -147,7 +138,7 @@ key for the tunnel. The Pi process loads and warms the local model before it is 
 The dashboard initially has no accepted inference source; use **Scan
 workspace** to produce one. A local development run on a Mac is labelled
 `local`, not `Pi`. Live Mac/Pi fallback is permitted only on a Linux ARM64
-coordinator and requires the updated gateway capability check.
+coordinator and uses the original gateway lease.
 
 The same inference flags are available on `picker_workflow.py` for the
 advanced terminal workflow. Use `--dry-run` there too during development.
@@ -185,8 +176,8 @@ web server and never acquires robot control or sends robot commands.
 2. **Disconnect:** pull the Mac network cable while the Pi, camera and gateway
    remain powered and connected. Request another scan from a device still
    connected to the Pi, or run an already planned dry-run operation from a Pi
-   terminal. A preapproved live batch can request its next observation without
-   a browser connection, once separate live validation is complete.
+   terminal. Confirmed batches reuse their saved scan without new perception
+   between cups, so a new scan is needed to observe an inference-provider change.
 3. **Confirm fallback:** the next Mac request fails or reaches its total
    deadline. The state changes to switching, then **Pi active** only after a
    local result is validated and accepted. The Pi accepted-result counter
@@ -203,10 +194,10 @@ web server and never acquires robot control or sends robot commands.
    The supervisor must report unavailable and reject perception-dependent work.
    Do not kill or overload the production Pi as a substitute for this test.
 
-A grid scan uses three observations. If fallback changes provider mid-scan,
-the scan discards its partial observations and restarts with the selected
-provider. Return to the Mac waits for a clean observation-group boundary. This
-avoids combining grid observations from different providers.
+A normal scan uses one saved-scene observation. Provider changes take effect
+at a clean observation-group boundary. If a caller explicitly groups multiple
+observations, a provider change discards that partial group before it restarts
+with the selected provider. Confirmed picks continue using their saved scan.
 
 The counters count validated normal inference results, including a frame later
 discarded when a grid scan restarts. They exclude recovery probes. They do not
@@ -241,8 +232,8 @@ Stop the dry-run coordinator, inspect and reconcile the real robot and its
 authoritative state, then run the same Pi web command with `--live` instead of
 `--dry-run`. Set `--output`, `--placing-grid` and `--calibration` to the inspected
 authoritative Pi paths, not the dry-run copies. Keep the current state files
-and reservations intact. Complete the explicit gateway/application recovery
-procedure and take a fresh scan before confirming a task.
+and reservations intact. Complete any required controller recovery separately,
+acknowledge app recovery and take a fresh scan before confirming a task.
 
 The new inference mode requires the existing explicit task confirmation. It
 does not retry robot commands, replay an interrupted job, clear recovery, or
@@ -278,9 +269,10 @@ next request's budget. Persistent timeout is reported as unavailable, rather
 than retried indefinitely inside a single perception operation.
 
 Switching covers Mac inference failure. Losing Pi power also loses the
-coordinator and gateway; controller-side behavior for that case must be
-established separately. Camera/depth failure, stale observations and uncertain
-robot command completion are not repaired by changing the inference provider.
+coordinator and gateway. The original gateway's lease expiry does not stop the
+robot, so an already dispatched movement may continue. Camera/depth failure,
+stale observations and uncertain robot command completion are not repaired by
+changing the inference provider.
 
 From `capture_and_detect`, run the worker's hardware-free regression checks:
 

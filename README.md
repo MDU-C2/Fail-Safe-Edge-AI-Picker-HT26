@@ -20,12 +20,18 @@ python capture_and_detect/web_app.py --demo
 ```
 
 `capture_and_detect.py` keeps the V4 capture/detection and terminal workflow,
-with the same smooth dual-arm handover plan as the UI and no automatic Home.
+with the same smooth dual-arm handover plan as the UI. It does not home between
+cups; after a successful batch or a full grid, it homes once, left then right.
+The UI keeps both arms clear of the completed placement without automatic Home.
 `depth_average.py` remains unchanged from V4. UI services use
 `picker_workflow.py` and `picker_depth.py`. The terminal has no dry-run mode or UI
 reservations/recovery checks; it uses its original calibration and placement grid.
-Both dual-arm workflows require the gateway's `/api/v1/robot/rws/path` endpoint
-and the controller's loaded `RunPath` routine. Run only one controller at a time.
+Both dual-arm workflows use the original `main` gateway's
+`/api/v1/robot/rws/path` endpoint and the controller's loaded `RunPath` routine.
+The UI offers Home, open/close grippers, status and software Stop through that
+gateway. Program reset/start and collision recovery remain separate operator
+tasks; the UI does not require additional gateway endpoints or native controller
+credentials. Run only one controller at a time.
 Use a separate
 `--output capture_and_detect/Data/TerminalDetections` for terminal captures when
 switching between workflows. Full commands and state differences are in the

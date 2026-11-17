@@ -1,0 +1,221 @@
+depthai-core v3.10.0: keep the device firmware out of RAM once booted.
+
+Applied by the depthai stage of Dockerfile. Upstream:
+- dai::initialize() unpacks the whole firmware archives on a background
+  thread and keeps them for the life of the process (main firmware,
+  4 OpenVINO patches, 2 bootloaders: ~88 MB);
+- ArchiveUtil::readEntry() grows each file's buffer to twice its size
+  (zero-filled, so touched) for its final, empty read;
+- every boot copies the 38 MB firmware into the XLinkConnection, which
+  keeps it as long as the device stays connected.
+With this patch the firmware is unpacked only while a device boots,
+into one exactly sized buffer, moved into the connection and dropped
+after the boot (a reconnect builds a new connection and unpacks it
+again). Measured with gateway/cpp/tools/depthai_probe.cpp.
+
+diff --git a/src/device/DeviceBase.cpp b/src/device/DeviceBase.cpp
+index ac70ff4..ad9b70d 100644
+--- a/src/device/DeviceBase.cpp
++++ b/src/device/DeviceBase.cpp
+@@ -1135,7 +1135,7 @@ void DeviceBase::init2(Config cfg, const std::filesystem::path& pathToMvcmd, boo
+     if(deviceInfo.state == X_LINK_UNBOOTED) {
+         // Unbooted device found, boot and connect with XLinkConnection constructor
+         std::vector<std::uint8_t> fwWithConfig = Resources::getInstance().getDeviceFirmware(config, pathToMvcmd);
+-        connection = std::make_shared<XLinkConnection>(deviceInfo, fwWithConfig);
++        connection = std::make_shared<XLinkConnection>(deviceInfo, std::move(fwWithConfig));
+     } else if(deviceInfo.state == X_LINK_BOOTLOADER || deviceInfo.state == X_LINK_FLASH_BOOTED) {
+         std::vector<std::uint8_t> fwWithConfig = Resources::getInstance().getDeviceFirmware(config, pathToMvcmd);
+         // Scope so DeviceBootloader is disconnected
+@@ -1168,12 +1168,12 @@ void DeviceBase::init2(Config cfg, const std::filesystem::path& pathToMvcmd, boo
+         }
+ 
+         // Boot and connect with XLinkConnection constructor
+-        connection = std::make_shared<XLinkConnection>(deviceInfo, fwWithConfig, expectedBootState);
++        connection = std::make_shared<XLinkConnection>(deviceInfo, std::move(fwWithConfig), expectedBootState);
+ 
+     } else if(deviceInfo.state == X_LINK_BOOTED) {
+         // Connect without booting
+         std::vector<std::uint8_t> fwWithConfig = Resources::getInstance().getDeviceFirmware(config, pathToMvcmd);
+-        connection = std::make_shared<XLinkConnection>(deviceInfo, fwWithConfig);
++        connection = std::make_shared<XLinkConnection>(deviceInfo, std::move(fwWithConfig));
+     } else if(deviceInfo.state == X_LINK_GATE || deviceInfo.state == X_LINK_GATE_BOOTED || deviceInfo.state == X_LINK_GATE_SETUP) {
+         // Boot FW using DeviceGate then connect directly
+         gate = std::make_unique<DeviceGate>(deviceInfo);
+diff --git a/src/utility/Resources.cpp b/src/utility/Resources.cpp
+index 45cebd2..bcdf23e 100644
+--- a/src/utility/Resources.cpp
++++ b/src/utility/Resources.cpp
+@@ -112,6 +112,50 @@ TarXzAccessor Resources::getEmbeddedVisualizer() const {
+ #endif
+ }
+ 
++#ifdef DEPTHAI_RESOURCE_COMPILED_BINARIES
++// Unpack one file of an embedded tar.xz on demand into an exactly sized
++// buffer with `reserveExtra` bytes spare (so a header can be prepended
++// in place). Nothing is cached: the firmware is only needed while a
++// device boots, and keeping every file of the archive costs ~90 MB.
++static std::vector<std::uint8_t> unpackResource(const char* cmrcPath, const char* resourcePath, std::size_t reserveExtra = 0) {
++    auto fs = cmrc::depthai::get_filesystem();
++    auto tarXz = fs.open(cmrcPath);
++
++    struct archive* aPtr = archive_read_new();
++    DAI_CHECK_IN(aPtr);
++    dai::utility::ArchiveUtil archive(aPtr);
++    archive_read_support_filter_xz(archive.getA());
++    archive_read_support_format_tar(archive.getA());
++    if(archive_read_open_memory(archive.getA(), tarXz.begin(), tarXz.size()) != ARCHIVE_OK) {
++        throw std::runtime_error(fmt::format("Could not open embedded {}", cmrcPath));
++    }
++
++    struct archive_entry* entry;
++    while(archive_read_next_header(archive.getA(), &entry) == ARCHIVE_OK) {
++        if(std::string(resourcePath) != archive_entry_pathname(entry)) {
++            continue;
++        }
++        DAI_CHECK(archive_entry_size_is_set(entry) != 0, fmt::format("{} in {} has no size", resourcePath, cmrcPath));
++
++        std::vector<std::uint8_t> data;
++        data.reserve(static_cast<std::size_t>(archive_entry_size(entry)) + reserveExtra);
++        data.resize(static_cast<std::size_t>(archive_entry_size(entry)));
++
++        std::size_t offset = 0;
++        while(offset < data.size()) {
++            auto size = archive_read_data(archive.getA(), data.data() + offset, data.size() - offset);
++            DAI_CHECK(size > 0, fmt::format("Error reading {} from {}: {}", resourcePath, cmrcPath, size));
++            offset += static_cast<std::size_t>(size);
++        }
++        return data;
++    }
++    throw std::runtime_error(fmt::format("{} not found in embedded {}", resourcePath, cmrcPath));
++}
++#endif
++
++// Room for the preboot header in front of the firmware
++constexpr static std::size_t PREBOOT_HEADER_ROOM = 64 * 1024;
++
+ static std::vector<std::uint8_t> createPrebootHeader(const std::vector<uint8_t>& payload, uint32_t magic1, uint32_t magic2);
+ 
+ constexpr static auto CMRC_DEPTHAI_DEVICE_TAR_XZ = "depthai-device-fwp-" DEPTHAI_DEVICE_VERSION ".tar.xz";
+@@ -145,11 +189,6 @@ std::vector<std::uint8_t> Resources::getDeviceFirmware(Device::Config config, fs
+     throw std::invalid_argument("DepthAI compiled without support for MyriadX Device FW");
+ #endif
+ 
+-    // Wait until lazy load is complete
+-    {
+-        std::unique_lock<std::mutex> lock(mtxDevice);
+-        cvDevice.wait(lock, [this]() { return readyDevice; });
+-    }
+ 
+     std::vector<std::uint8_t> finalFwBinary;
+ 
+@@ -199,25 +238,25 @@ std::vector<std::uint8_t> Resources::getDeviceFirmware(Device::Config config, fs
+                 break;
+ 
+             case OpenVINO::VERSION_2020_4:
+-                depthaiPatch = resourceMapDevice.at(DEPTHAI_CMD_OPENVINO_2020_4_PATCH_PATH);
++                depthaiPatch = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, DEPTHAI_CMD_OPENVINO_2020_4_PATCH_PATH);
+                 break;
+ 
+             case OpenVINO::VERSION_2021_1:
+-                depthaiPatch = resourceMapDevice.at(DEPTHAI_CMD_OPENVINO_2021_1_PATCH_PATH);
++                depthaiPatch = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, DEPTHAI_CMD_OPENVINO_2021_1_PATCH_PATH);
+                 break;
+ 
+             case OpenVINO::VERSION_2021_2:
+-                depthaiPatch = resourceMapDevice.at(DEPTHAI_CMD_OPENVINO_2021_2_PATCH_PATH);
++                depthaiPatch = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, DEPTHAI_CMD_OPENVINO_2021_2_PATCH_PATH);
+                 break;
+ 
+             case OpenVINO::VERSION_2021_3:
+-                depthaiPatch = resourceMapDevice.at(DEPTHAI_CMD_OPENVINO_2021_3_PATCH_PATH);
++                depthaiPatch = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, DEPTHAI_CMD_OPENVINO_2021_3_PATCH_PATH);
+                 break;
+ 
+             case OpenVINO::VERSION_2021_4:
+             case OpenVINO::VERSION_2022_1:
+             case MAIN_FW_VERSION:
+-                depthaiBinary = resourceMapDevice.at(MAIN_FW_PATH);
++                depthaiBinary = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, MAIN_FW_PATH, PREBOOT_HEADER_ROOM);
+                 break;
+         }
+ 
+@@ -226,7 +265,7 @@ std::vector<std::uint8_t> Resources::getDeviceFirmware(Device::Config config, fs
+             logger::debug("Patching OpenVINO FW version from {} to {}", OpenVINO::getVersionName(MAIN_FW_VERSION), OpenVINO::getVersionName(version));
+ 
+             // Load full binary for patch
+-            depthaiBinary = resourceMapDevice.at(MAIN_FW_PATH);
++            depthaiBinary = unpackResource(CMRC_DEPTHAI_DEVICE_TAR_XZ, MAIN_FW_PATH, PREBOOT_HEADER_ROOM);
+ 
+             // Get new size
+             int64_t patchedSize = bspatch_mem_get_newsize(depthaiPatch.data(), depthaiPatch.size());
+@@ -280,11 +319,6 @@ std::vector<std::uint8_t> Resources::getBootloaderFirmware(dai::bootloader::Type
+     throw std::invalid_argument("DepthAI compiled without support for MyriadX Device Bootloader FW");
+ #endif
+ 
+-    // Wait until lazy load is complete
+-    {
+-        std::unique_lock<std::mutex> lock(mtxBootloader);
+-        cvDevice.wait(lock, [this]() { return readyBootloader; });
+-    }
+ 
+     // Check if env variable DEPTHAI_BOOTLOADER_BINARY_USB/_ETH is set
+     std::string blEnvVar;
+@@ -314,7 +348,7 @@ std::vector<std::uint8_t> Resources::getBootloaderFirmware(dai::bootloader::Type
+ 
+         case dai::bootloader::Type::USB:
+ #ifdef DEPTHAI_RESOURCE_COMPILED_BINARIES
+-            return resourceMapBootloader.at(DEVICE_BOOTLOADER_USB_PATH);
++            return unpackResource(CMRC_DEPTHAI_BOOTLOADER_TAR_XZ, DEVICE_BOOTLOADER_USB_PATH);
+ #else
+             throw std::runtime_error(
+                 "DepthAI compiled without embedded MyriadX Device Bootloader FW resources. Provide firmware with DEPTHAI_BOOTLOADER_BINARY_USB.");
+@@ -323,7 +357,7 @@ std::vector<std::uint8_t> Resources::getBootloaderFirmware(dai::bootloader::Type
+ 
+         case dai::bootloader::Type::NETWORK:
+ #ifdef DEPTHAI_RESOURCE_COMPILED_BINARIES
+-            return resourceMapBootloader.at(DEVICE_BOOTLOADER_ETH_PATH);
++            return unpackResource(CMRC_DEPTHAI_BOOTLOADER_TAR_XZ, DEVICE_BOOTLOADER_ETH_PATH);
+ #else
+             throw std::runtime_error(
+                 "DepthAI compiled without embedded MyriadX Device Bootloader FW resources. Provide firmware with DEPTHAI_BOOTLOADER_BINARY_ETH.");
+@@ -479,15 +513,16 @@ Resources::Resources() {
+ #if defined(DEPTHAI_ENABLE_DEVICE_FW) && defined(DEPTHAI_RESOURCE_COMPILED_BINARIES)
+     // Device resources
+     // Create a thread which lazy-loads firmware resources package
+-    lazyThreadDevice = std::thread(getLazyTarXzFunction(mtxDevice, cvDevice, readyDevice, CMRC_DEPTHAI_DEVICE_TAR_XZ, RESOURCE_LIST_DEVICE, resourceMapDevice));
++    // Not preloaded: getDeviceFirmware() unpacks the firmware when a device boots
++    (void)RESOURCE_LIST_DEVICE;
+ #endif
+ 
+ // First check if device bootloader fw is enabled
+ #if defined(DEPTHAI_ENABLE_DEVICE_BOOTLOADER_FW) && defined(DEPTHAI_RESOURCE_COMPILED_BINARIES)
+     // Bootloader resources
+     // Create a thread which lazy-loads firmware resources package
+-    lazyThreadBootloader = std::thread(
+-        getLazyTarXzFunction(mtxBootloader, cvBootloader, readyBootloader, CMRC_DEPTHAI_BOOTLOADER_TAR_XZ, RESOURCE_LIST_BOOTLOADER, resourceMapBootloader));
++    // Not preloaded: getBootloaderFirmware() unpacks it when asked
++    (void)RESOURCE_LIST_BOOTLOADER;
+ #endif
+ }
+ 
+diff --git a/src/xlink/XLinkConnection.cpp b/src/xlink/XLinkConnection.cpp
+index 2e17d82..d291dd8 100644
+--- a/src/xlink/XLinkConnection.cpp
++++ b/src/xlink/XLinkConnection.cpp
+@@ -391,6 +391,7 @@ XLinkConnection::XLinkConnection(const DeviceInfo& deviceDesc, std::vector<std::
+     : bootWithPath(false), mvcmd(std::move(mvcmdBinary)) {
+     initialize();
+     initDevice(deviceDesc, expectedState);
++    std::vector<std::uint8_t>().swap(mvcmd);
+ }
+ 
+ XLinkConnection::XLinkConnection(const DeviceInfo& deviceDesc, std::filesystem::path mvcmdPath, XLinkDeviceState_t expectedState)
+@@ -549,6 +550,8 @@ void XLinkConnection::initDevice(const DeviceInfo& deviceToInit, XLinkDeviceStat
+         if(!bootStatus) {
+             throw std::runtime_error("Failed to boot device!");
+         }
++        // The boot image (~38 MB) is not needed again: a reconnect builds a new connection
++        std::vector<std::uint8_t>().swap(mvcmd);
+     }
+ 
+     // Search for booted device (if expected state is specified)

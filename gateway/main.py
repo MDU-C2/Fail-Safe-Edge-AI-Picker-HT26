@@ -8,7 +8,6 @@ from gateway.camera.router import router as camera_router
 from gateway.config import get_settings
 from gateway.control.router import (
     configure_control_manager,
-    get_control_manager,
     router as control_router,
 )
 from gateway.events.router import router as events_router
@@ -20,7 +19,6 @@ from gateway.robot.router import router as robot_router
 from gateway.rws.arms_router import router as arms_router
 from gateway.rws.motion_router import router as motion_router
 from gateway.rws.rapid_router import router as rapid_router
-from gateway.rws.client import rws_client
 from gateway.security.authentication import get_client_registry
 
 
@@ -38,10 +36,10 @@ settings = get_settings()
 #
 # Load the registered clients now so that a missing or invalid
 # auth clients file stops the gateway at startup instead of
-# failing on the first request.
+# failing on the first request. Both modes use it: strict mode
+# for the tokens, development mode for the client ids.
 #
-if settings.security_mode == "strict":
-    get_client_registry()
+get_client_registry()
 
 
 # ================================================================
@@ -66,8 +64,6 @@ async def lifespan(
     # the gateway starts.
     #
     await camera_producer.start()
-    manager = get_control_manager()
-    manager.start_watchdog(rws_client.invalidate_pending_dispatch, rws_client.stop_and_verify)
 
     try:
         yield
@@ -78,7 +74,6 @@ async def lifespan(
         # when the gateway shuts down.
         #
         await camera_producer.stop()
-        manager.close()
 
 
 # ================================================================
@@ -98,7 +93,8 @@ app = FastAPI(
 
 configure_control_manager(
     lease_seconds=settings.control_lease_seconds,
-    require_session=settings.control_require_session,
+    contention_seconds=settings.control_contention_seconds,
+    startup_grace_seconds=settings.control_startup_grace_seconds,
 )
 
 

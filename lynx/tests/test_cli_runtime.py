@@ -145,8 +145,7 @@ def offline_launcher(tmp_path, monkeypatch):
                           session=None, terminal=None)
 
     class FakeRobot:
-        def __init__(self, _api, _headers, *, dry_run, require_session):
-            assert not require_session
+        def __init__(self, _api, _headers, *, dry_run):
             self.dry_run, self.stop_requested = dry_run, False
 
         def configure_operator_controls(self, _profile):

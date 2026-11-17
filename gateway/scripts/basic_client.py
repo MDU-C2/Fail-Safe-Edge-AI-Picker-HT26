@@ -33,7 +33,7 @@ T_ROB_R without a backup; on the real YuMi use
 rapid/rapidctl.py upload (it saves the old modules) and --no-load.
 
 Usage (from the repository root):
-    python gateway/scripts/basic_client.py --client operator        # development mode
+    python gateway/scripts/basic_client.py --client admin           # development mode
     python gateway/scripts/basic_client.py --token <token>          # strict mode
     python gateway/scripts/basic_client.py --no-load --frames 0     # program already running, run until Ctrl+C
     python gateway/scripts/basic_client.py --gripper-stub           # virtual controller without SmartGripper
@@ -42,6 +42,7 @@ Needs: requests, numpy
 """
 
 import argparse
+import os
 import re
 import threading
 import time
@@ -52,7 +53,7 @@ import requests
 
 
 DEFAULT_URL = "http://127.0.0.1:8000/api/v1"
-DEFAULT_TOKEN = "BAD_TOKEN_OPERATOR"
+DEFAULT_TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # see client_tokens.json (local only)
 
 RENEW_INTERVAL_SECONDS = 2.0
 LOOP_INTERVAL_SECONDS = 1.0
@@ -162,8 +163,25 @@ def run_model(
 
 def acquire_control(
     gateway: Gateway,
+    wait_seconds: float = 15.0,
 ) -> None:
-    gateway.request("POST", "/control/acquire")
+    #
+    # Right after the gateway starts, or while a higher-priority
+    # client is also trying, acquire answers 409 with Retry-After.
+    #
+    deadline = time.monotonic() + wait_seconds
+
+    while True:
+        try:
+            gateway.request("POST", "/control/acquire")
+            break
+
+        except RuntimeError as error:
+            if "-> 409" not in str(error) or time.monotonic() > deadline:
+                raise
+
+            print(f"Waiting for control: {error}")
+            time.sleep(1.0)
 
     print("Control acquired")
 
@@ -352,7 +370,7 @@ def main() -> None:
 
     parser.add_argument("--url", default=DEFAULT_URL, help="Gateway API base URL")
     parser.add_argument("--token", default=DEFAULT_TOKEN, help="Bearer token (strict mode)")
-    parser.add_argument("--client", default="operator", help="Client id (development mode)")
+    parser.add_argument("--client", default="admin", help="Client id (development mode)")
     parser.add_argument("--no-load", action="store_true", help="Use the RAPID program already running")
     parser.add_argument("--gripper-stub", action="store_true", help="Also load rapid/sim/GripperStub.mod (virtual controller without SmartGripper only)")
     parser.add_argument("--frames", type=int, default=1, help="Stop after N frames (0 = until Ctrl+C)")

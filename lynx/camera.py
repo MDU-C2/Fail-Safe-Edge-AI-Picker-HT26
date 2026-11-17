@@ -18,6 +18,19 @@ class LocalCameraClient:
         self.service, self.loop, self.api = service, loop, api
         self.max_age = max_age
 
+    async def _wait_for_frame_set(self, after_sequence, deadline):
+        """Poll the original gateway buffer without changing its camera service."""
+        while True:
+            if not self.service.is_connected():
+                raise CameraError("No fresh camera frame; camera disconnected.")
+            pair = self.service.get_latest_frame_set()
+            if pair is not None and (type(pair.sequence) is not int or pair.sequence > after_sequence):
+                return pair
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(0.01, remaining))
+
     def intrinsics(self):
         value = self.service.get_intrinsics()
         if value is None or not self.service.is_connected():
@@ -50,7 +63,7 @@ class LocalCameraClient:
             raise CameraError("The Lynx camera has not published a frame.")
         intrinsics = self.intrinsics()
         if fresh:
-            wait = self.service.wait_for_frame_set(status.sequence, timeout_s)
+            wait = self._wait_for_frame_set(status.sequence, started + timeout_s)
             try:
                 pending = asyncio.run_coroutine_threadsafe(wait, self.loop)
             except RuntimeError as error:

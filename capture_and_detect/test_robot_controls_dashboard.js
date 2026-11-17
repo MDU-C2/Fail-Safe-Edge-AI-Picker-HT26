@@ -24,7 +24,7 @@ function element() {
   };
 }
 function capabilities(overrides = {}) {
-  return Object.fromEntries(["home", "open", "grip", "collision_ack", "rapid_reset", "rapid_start", "robot_status", "stop"]
+  return Object.fromEntries(["home", "open", "grip", "robot_status", "stop"]
     .map((action) => [action, { supported: true, reason: "Available", ...overrides[action] }]));
 }
 function snapshot(overrides = {}) {
@@ -40,7 +40,7 @@ function dashboard() {
     .map((m) => { const el = element(); el.dataset.robotAction = m[2];
       el.dataset.arm = /data-arm="([^"]+)"/.exec(m[1])?.[1]; el.textContent = m[3];
       el.hidden = /\bhidden\b/.test(m[1]); el.disabled = /\bdisabled\b/.test(m[1]); return el; });
-  assert.equal(buttons.length, 12);
+  assert.equal(buttons.length, 9);
   const requests = [];
   const context = vm.createContext({
     dom, state: snapshot(), connected: true, posting: false, stopPosting: false, localStopInhibit: false,
@@ -71,15 +71,25 @@ function dashboard() {
   };
 }
 
-test("discovery is informational and never hides implemented controls", () => {
+test("missing capabilities hide unsupported motion controls", async () => {
   const page = dashboard();
-  for (const map of [undefined, null, [], {}, capabilities({ home: { supported: false }, grip: { supported: false } })]) {
+  for (const map of [undefined, null, [], {}]) {
     page.render(snapshot({ robot_controls: { capabilities: map } }));
-    assert.ok(page.buttons.every((el) => !el.hidden && !el.disabled));
+    assert.ok(page.buttons.every((el) => el.hidden && el.disabled));
     assert.equal(page.dom["robot-status-button"].hidden, false);
-    assert.match(page.dom["robot-capability-notice"].textContent, /informational/);
+    assert.match(page.dom["robot-capability-notice"].textContent, /Only supported/);
+    await page.context.send("/api/control_preview", { action: "home", arm: "left" });
   }
   assert.equal(page.requests.length, 0);
+});
+
+test("only explicitly supported original gateway controls appear", () => {
+  const page = dashboard();
+  for (const support of [false, undefined, null, "true", 1]) {
+    page.render(snapshot({ robot_controls: { capabilities: capabilities({ home: { supported: support }, grip: { supported: support } }) } }));
+    assert.ok(page.buttons.filter((el) => ["home", "grip"].includes(el.dataset.robotAction)).every((el) => el.hidden && el.disabled));
+    assert.ok(page.buttons.filter((el) => el.dataset.robotAction === "open").every((el) => !el.hidden && !el.disabled));
+  }
 });
 
 test("failed discovery remains visible while reviewed Home is available", async () => {
@@ -94,20 +104,28 @@ test("failed discovery remains visible while reviewed Home is available", async 
   assert.equal(page.requests[0].body.arm, "right");
 });
 
-test("only the built-in action allowlist can request previews", async () => {
-  const page = dashboard(); page.render();
-  await page.context.send("/api/control_preview", { action: "raw_move", arm: "left" });
+test("removed and raw actions cannot request previews even if advertised", async () => {
+  const page = dashboard(); const state = snapshot();
+  for (const action of ["raw_move", "rapid_reset", "rapid_start", "collision_ack"]) {
+    state.robot_controls.capabilities[action] = { supported: true };
+    page.render(state);
+    await page.context.send("/api/control_preview", { action, arm: "left" });
+  }
   assert.equal(page.requests.length, 0);
+  assert.doesNotMatch(html, /data-robot-action="(?:rapid_reset|rapid_start|collision_ack)"/);
+  assert.doesNotMatch(html, /id="robot-collision-state"/);
 });
 
-test("discovery changes do not invalidate an otherwise current confirmation", async () => {
+test("support withdrawn after preview blocks confirmation", async () => {
   const page = dashboard(); const state = snapshot();
-  state.robot_controls.proposal = { action: "rapid_reset", token: "reviewed", description: "Leave stopped." };
-  state.robot_controls.capabilities.rapid_reset.supported = false;
+  state.robot_controls.proposal = { action: "home", arm: "left", token: "reviewed", description: "Home left." };
+  state.robot_controls.capabilities.home.supported = false;
   page.dom["robot-control-ack"].checked = true; page.render(state);
-  assert.equal(page.dom["robot-control-confirm"].disabled, false);
+  assert.equal(page.dom["robot-control-confirm"].disabled, true);
+  assert.equal(page.dom["robot-control-confirm"].hidden, true);
+  assert.equal(page.dom["robot-control-ack"].checked, false);
   page.dom["robot-control-confirm"].click(); await page.settle();
-  assert.equal(page.requests[0].url, "/api/control_confirm");
+  assert.equal(page.requests.length, 0);
 });
 
 test("disconnect, busy, recovery and Stop retain action interlocks", () => {
@@ -140,9 +158,9 @@ test("read-only status and best-effort Stop remain available without discovery",
 
 test("backend descriptions remain plain text", () => {
   const page = dashboard(); const state = snapshot();
-  state.robot_controls.proposal = { action: "rapid_start", token: "reviewed", description: "<b>Initialize RAPID.</b>" };
+  state.robot_controls.proposal = { action: "open", arm: "left", token: "reviewed", description: "<b>Open left gripper.</b>" };
   page.render(state);
-  assert.equal(page.dom["robot-control-description"].textContent, "<b>Initialize RAPID.</b>");
+  assert.equal(page.dom["robot-control-description"].textContent, "<b>Open left gripper.</b>");
 });
 
 test("receiving-alignment adjustment controls are removed", () => {

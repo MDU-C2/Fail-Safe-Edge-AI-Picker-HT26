@@ -73,7 +73,7 @@ def arguments(argv=None):
     parser.add_argument("--conf", type=positive, default=0.5)
     parser.add_argument("--inference-timeout", type=positive, default=30.0)
     parser.add_argument("--controller-profile", type=Path,
-                        help="Optional existing read-only controller status profile for legacy gateway controls")
+                        help="Legacy compatibility option; status is read through the gateway")
     args = parser.parse_args(argv)
     if args.conf >= 1 or (args.speed is not None and not 1 <= args.speed <= 1500):
         parser.error("confidence must be below 1; speed must be 1..1500 mm/s")
@@ -175,7 +175,7 @@ def main(argv=None):
         worker = NativePerception(args.worker, model, confidence=args.conf, timeout=args.inference_timeout)
         captures = CaptureService(camera, worker, calibration, grid, store,
                                   depth_frames=args.depth_frames, confidence=args.conf)
-        robot = RobotClient(api, headers, dry_run=not args.live, require_session=False)
+        robot = RobotClient(api, headers, dry_run=not args.live)
         robot.configure_operator_controls(args.controller_profile)
         recovery = RecoveryJournal(store.folder / "robot_recovery.json",
                                    legacy_inventory_path=store.folder / "cups.json")

@@ -417,7 +417,7 @@ def main(argv=None):
     parser.add_argument("--device-config", type=Path,
                         help="Local computer/Pi/Lynx picker configuration; the local computer supports Astra Assistant")
     parser.add_argument("--controller-profile", default=str(HERE / "robot_controller.json"),
-                        help="Optional gateway-bound, read-only controller status connection profile")
+                        help="Legacy compatibility option; status is read through the gateway")
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--live", action="store_true", help="Enable physical robot execution after explicit confirmation")
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")

@@ -775,7 +775,7 @@
     text("save-cup-hint", !enabled ? "Saving references is unavailable in this session." : !safeScan() ? "Scan again and select a cup before saving its reference." : cup?.can_save !== true ? "This detection cannot be saved. Choose a cup with a usable reference image." : "Save a name and reference image locally. Saving sends no movement command.");
   }
 
-  // Discovery describes the gateway; reviewed allowlisted actions remain available.
+  // Discovery describes the gateway's supported robot controls.
   // Ownership, Stop, recovery and confirmation still control dispatch.
   function robotCapability(action) {
     const capabilities = state?.robot_controls?.capabilities;
@@ -784,7 +784,8 @@
     return capability && !Array.isArray(capability) && typeof capability === "object" ? capability : null;
   }
 
-  const robotActionSupported = (action) => ["home", "open", "grip", "rapid_reset", "rapid_start", "collision_ack"].includes(action);
+  const robotActionSupported = (action) => ["home", "open", "grip"].includes(action)
+    && robotCapability(action)?.supported === true;
   const robotActionVisible = (action) => robotActionSupported(action);
   const robotStatusAvailable = () => true;
   const capabilityText = (action, field, fallback = "") => {
@@ -887,18 +888,14 @@
       hide(id, !reason);
     }
     const discoveryReason = capabilityText("robot_status", "reason");
-    text("robot-capability-notice", `Gateway discovery is informational. Review and confirm each robot action.${discoveryReason && robotCapability("robot_status")?.supported !== true ? ` ${discoveryReason}` : ""}`);
+    text("robot-capability-notice", `Only supported gateway controls are shown. Review and confirm each robot action.${discoveryReason && robotCapability("robot_status")?.supported !== true ? ` ${discoveryReason}` : ""}`);
     dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
     text("robot-controls-badge", !connected ? "Disconnected" : state?.recovery_required ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
     dom["robot-controls-panel"].classList.toggle("live", state?.mode === "live");
     text("robot-rapid-state", snapshot?.execution_state ? humanize(snapshot.execution_state) : "Not read");
     text("robot-controller-state", snapshot?.controller_state ? humanize(snapshot.controller_state) : "Not read");
     text("robot-operation-mode", snapshot?.operation_mode ? humanize(snapshot.operation_mode) : "Not read");
-    text("robot-collision-state", snapshot?.collision_state != null ? humanize(snapshot.collision_state) : "Unknown");
     text("robot-status-time", snapshot ? `${state?.mode === "demo" ? "Demo snapshot" : state?.mode === "dry_run" ? "Dry-run snapshot" : "Read from controller"}${snapshot.read_at ? ` · ${clockText(snapshot.read_at)}` : ""}. Refresh before recovery; this is not a continuous safety monitor.` : "Refresh to read the robot controller.");
-    const statusError = asMessage(snapshot?.collision_error);
-    text("robot-status-error", statusError);
-    hide("robot-status-error", !statusError);
     const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : state?.recovery_required ? "Inspect both arms and the cup, then use Acknowledge app recovery to clear the local block. This does not clear the robot’s collision fault." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
     text("robot-control-inhibit", inhibit);
     hide("robot-control-inhibit", !inhibit);
@@ -910,7 +907,7 @@
     hide("robot-control-confirm", !proposalSupported);
     if (!proposalSupported) dom["robot-control-ack"].checked = false;
     if (proposal) {
-      const titles = {home: "Move to home", open: "Open gripper", grip: "Close gripper", collision_ack: "Acknowledge controller collision", rapid_reset: "Reset robot program (leave stopped)", rapid_start: "Initialize robot program"};
+      const titles = {home: "Move to home", open: "Open gripper", grip: "Close gripper"};
       text("robot-control-proposal-heading", `${capabilityText(proposal.action, "label", titles[proposal.action] || humanize(proposal.action))}${proposal.arm ? ` · ${proposal.arm === "both" ? "both arms" : `${proposal.arm} arm`}` : ""}`);
       text("robot-control-description", proposalSupported ? proposal.description
         : capabilityText(proposal.action, "reason", "This action is no longer available from the gateway. Cancel this preview and refresh robot status."));

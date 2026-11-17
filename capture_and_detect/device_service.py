@@ -262,7 +262,7 @@ def arguments(argv=None):
     parser.add_argument("--speed", type=float)
     parser.add_argument("--camera-z", action="store_true")
     parser.add_argument("--controller-profile", type=Path,
-                        help="Optional read-only controller profile (default: STATE_DIR/controller-status.json)")
+                        help="Legacy compatibility option; status is read through the gateway")
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", args.robot_id):
         parser.error("robot-id must be 8–80 letters, digits, underscores or hyphens")

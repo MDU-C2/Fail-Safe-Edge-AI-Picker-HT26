@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+import copy
 import hashlib
 import json
 import os
@@ -128,6 +129,45 @@ def test_live_gateway_preserves_its_authentication_and_mutation_dispatch():
         response = client.post("/api/v1/resource", headers={"Authorization": "Bearer " + GATEWAY_TOKEN})
     assert response.status_code == 200
     assert gateway.state.calls == [("POST", "Bearer " + GATEWAY_TOKEN)]
+
+
+def test_live_combined_controls_discover_original_gateway_without_dashboard_login(monkeypatch):
+    from gateway.control.router import router as control
+    from gateway.rws.arms_router import router as arms
+    from gateway.rws.motion_router import router as motion
+    from gateway.rws.rapid_router import router as rapid
+    from robot_client import RobotClient
+
+    # Use the original routers' real schemas; no lifespan or robot route runs.
+    gateway = FastAPI()
+    for router in (control, arms, motion, rapid):
+        gateway.include_router(router)
+    original_schema = copy.deepcopy(gateway.openapi())
+    app = lynx_app.compose(gateway, fake_dashboard(), live=True, dashboard_token=DASHBOARD_TOKEN)
+    client = TestClient(app, base_url=REMOTE_ORIGIN)
+    requests = []
+
+    def get(url, **options):
+        requests.append(url)
+        assert url == REMOTE_ORIGIN + "/openapi.json"
+        assert options["allow_redirects"] is False
+        return client.get("/openapi.json", headers=options["headers"])
+
+    monkeypatch.setattr("robot_client.requests.get", get)
+    monkeypatch.setattr("robot_client.requests.post", lambda *args, **kwargs: pytest.fail("Discovery sent a mutation"))
+    robot = RobotClient(REMOTE_ORIGIN + "/api/v1", {"Authorization": "Bearer " + GATEWAY_TOKEN})
+    capabilities = robot.configure_operator_controls()
+    assert requests == [REMOTE_ORIGIN + "/openapi.json"]
+    assert set(capabilities) == {"home", "open", "grip", "robot_status", "stop"}
+    assert all(item["supported"] for item in capabilities.values())
+    assert robot._operator_gateway["protocols"]["blended_path"] is True
+    assert gateway.openapi() == original_schema
+    schema = client.get("/openapi.json").json()
+    assert schema["servers"] == [{"url": "/"}]
+    assert "/api/v1/robot/rws/path" in schema["paths"]
+    assert "/robot/rws/path" not in schema["paths"]
+    assert client.get("/api/state").status_code == 401
+    client.close()
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer " + GATEWAY_TOKEN, basic(GATEWAY_TOKEN), "Basic malformed"])
@@ -289,6 +329,7 @@ def test_invalid_arguments_fail_before_hardware_initialization(extra):
 def configured_state(tmp_path, monkeypatch):
     # configure intentionally sets process-level defaults; isolate those mutations.
     monkeypatch.setattr(os, "environ", os.environ.copy())
+    monkeypatch.delenv("GATEWAY_CONTROL_REQUIRE_SESSION", raising=False)
     monkeypatch.delitem(sys.modules, "gateway.main", raising=False)
     from gateway.config import Settings, get_settings
     monkeypatch.setattr(Settings, "model_config", dict(Settings.model_config))
@@ -319,7 +360,7 @@ def test_configuration_uses_separate_tokens_and_mock_loopback_only(configured_st
     assert token == GATEWAY_TOKEN and dashboard == DASHBOARD_TOKEN
     assert token != dashboard
     assert os.environ["GATEWAY_SECURITY_MODE"] == "strict"
-    assert os.environ["GATEWAY_CONTROL_REQUIRE_SESSION"] == "true"
+    assert "GATEWAY_CONTROL_REQUIRE_SESSION" not in os.environ
     assert os.environ["GATEWAY_API_PREFIX"] == ""
     assert os.environ["GATEWAY_ROBOT_HOST"] == "127.0.0.1"
     assert os.environ["GATEWAY_CAMERA_PROVIDER"] == "mock"

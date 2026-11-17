@@ -129,7 +129,7 @@ class CameraZPlanTests(unittest.TestCase):
                     self.assertEqual(names[-1], "left_clear")
                     self.assertTrue(all(job["body"]["arm"] == "left" for job in changed))
                 else:
-                    self.assertEqual(names[-2:], ["right_clear", "right_close"])
+                    self.assertEqual(names[-2:], ["right_release", "right_clear"])
 
     def test_camera_height_does_not_apply_tag_offset_z_twice_or_mutate_cup(self):
         original = copy.deepcopy(self.cup)

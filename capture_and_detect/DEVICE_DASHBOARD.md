@@ -87,8 +87,11 @@ python capture_and_detect.py --gateway http://192.168.125.20:8000
 
 This keeps the V4 terminal capture workflow: Enter captures and processes cups;
 `q` quits. Normal dual-arm picks use the same smooth handover plan as the UI,
-without automatic Home. The gateway must support `/api/v1/robot/rws/path` and
-the controller must have `RunPath` loaded. `--left-only` motion is unchanged.
+without Home between cups. After a successful batch or a full grid, the terminal
+homes once, left then right; a failed pick skips that return. The UI does not
+home automatically. The original `main` gateway supports `/api/v1/robot/rws/path`,
+and the controller must have `RunPath` loaded. `--left-only` keeps its original
+pick/lift/replace motion and only homes the left arm at batch end.
 It has no `--dry-run`, `--commands`, Assistant, managed-device ownership or UI
 recovery/reservation workflow. It uses `Calibration/calibration.json` and
 `placing_grid.json`, not the managed dashboard's state. Add
@@ -117,17 +120,12 @@ Each service needs its own persistent state directory containing:
 - `gateway-token`: the existing gateway credential; this is separate from the
   device-service access token below.
 - `captures/`, including any existing `robot_recovery.json` and capture history.
-- `controller-status.json`, when the gateway needs the existing read-only ABB
-  status connection for Home and gripper controls. Its `gateway_api` must exactly
-  match this service's gateway API URL; its `controller_url` must identify the
-  same robot controller. The status reader checks both arms' joint positions
-  against the gateway before accepting collision status.
 
-Services load `STATE_DIR/controller-status.json` by default; use
-`--controller-profile /path/to/profile.json` to choose another file. A missing
-or unrelated profile never enables protected actions. Startup discovers gateway
-support without sending a robot command. If the gateway provides all required
-status routes itself, the extra profile is unnecessary.
+Home, grippers, status and software Stop use the original gateway API. No
+`controller-status.json` or direct ABB credentials are needed. Existing profile
+files may remain in persistent state, but they do not enable reset, start or
+collision controls. App recovery continues to be a local acknowledgement that
+sends no robot command.
 
 All devices must use the same physical robot and camera, the same `--robot-id`,
 matching calibration/reference bytes, and identical grid IDs, coordinates and
@@ -211,7 +209,6 @@ run the Mac picker inside the dashboard. Replace only the `mac` entry above:
   "model": "/path/to/cup-model.pt",
   "gateway": "http://192.0.2.20:8000",
   "robot_id": "picker-lab-robot",
-  "controller_profile": "/path/to/robot_controller.json",
   "max_result_age": 30,
   "runtime_paths": {
     "placing_grid": "/existing/capture_and_detect/placing_grid_outside_tray.json",
@@ -370,9 +367,12 @@ above these tabs; **Stop robot** and current-task progress stay in the header
 while scrolling. The activity log is under Settings. Changing a
 tab only changes the browser view and sends no controller request.
 
-Home and gripper actions appear in the **Robot controls** tab. Gateway discovery is informational and does not hide these controls.
-**Refresh robot status** is read-only. Each action retains confirmation, ownership,
-Stop and recovery checks; actual controller failures are reported. To pick just one cup, use **Scan workspace**, select it in
+Home and gripper actions appear in the **Robot controls** tab and use the original
+gateway's existing commands. **Refresh robot status** reads RAPID execution,
+motor state and operation mode. Each movement retains confirmation, ownership,
+Stop and recovery checks; actual controller failures are reported. Program
+reset/initialization and collision acknowledgement are handled outside this UI.
+To pick just one cup, use **Scan workspace**, select it in
 the image or cup list, then **Pick selected cup** and review its preview. The
 button remains visible with guidance when a fresh scan or selection is needed.
 New pick or manual-action previews open their corresponding tab; repeated status
