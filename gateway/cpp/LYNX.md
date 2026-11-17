@@ -10,7 +10,7 @@ gateway.
 **Short version**, from the repository root:
 
 ```powershell
-wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh wmopkg      # build  -> gateway/cpp/dist/gateway-cpp-0.4.0.wmopkg
+wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh wmopkg      # build  -> gateway/cpp/dist/gateway-cpp-0.5.0.wmopkg
 $env:LYNX_PASSWORD = "<Lynx admin password>"
 powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1   # import, configure, start, wait for /health
 python gateway/scripts/smoke_test.py --url http://169.254.219.127:8000/api/v1 --token <robot.control token> --read-token <camera.read token>
@@ -72,7 +72,7 @@ The laptop is arm64, so no emulation is involved.
 
 ```powershell
 $env:LYNX_PASSWORD = "<Lynx admin password>"
-powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1 [-Version 0.4.0] [-Autostart] [-Save]
+powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1 [-Version 0.5.0] [-Autostart] [-Save]
 ```
 
 | Option | Default | |
@@ -108,8 +108,8 @@ address on the lab network (`169.254.125.10`):
 **Import the image and label it** (EXEC mode):
 
 ```
-file app import proto http 169.254.125.10:8099 /gateway-cpp-0.4.0.wmopkg
-app-hosting label gateway-cpp-0.4.0 gatewaycpp
+file app import proto http 169.254.125.10:8099 /gateway-cpp-0.5.0.wmopkg
+app-hosting label gateway-cpp-0.5.0 gatewaycpp
 show app-hosting
 ```
 
@@ -124,7 +124,7 @@ afterwards.
 configure
 app-hosting
 app gateway
-description "Robot gateway (C++) 0.4.0"
+description "Robot gateway (C++) 0.5.0"
 image gatewaycpp
 cmd "/sbin/init --host 0.0.0.0 --port 8000"
 netns host-os

@@ -7,6 +7,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "config/settings.hpp"
 #include "rws/controller.hpp"
@@ -19,9 +20,10 @@ namespace gw::rws {
 //
 // gateway/rws/motion.py: commands the arm tasks of the RAPID program
 // (rapid/) through the PERS variables of rapid/SharedVars.mod. The
-// job is written first (target, go_home or grip_cmd; for moves and
-// home the speed: move_speed, move_acc, move_ramp; for the gripper
-// grip_force or grip_pos), then move_request_<arm> is set to TRUE.
+// job is written first (target, path_* for a path, go_home or
+// grip_cmd; for moves, paths and home the speed: move_speed,
+// move_acc, move_ramp; for the gripper grip_force or grip_pos), then
+// move_request_<arm> is set to TRUE.
 // The arm task does the job, writes move_ok_<arm> and clears
 // move_request_<arm>, which is polled here.
 //
@@ -72,6 +74,22 @@ public:
 using Vector3 = std::array<double, 3>;
 using Quaternion = std::array<double, 4>;
 
+//
+// One point of a path job: tool0 in wobj0 (mm) and its rotation
+// (rx, ry, rz) in degrees. linear: a straight line to the point
+// (MoveL) instead of a joint move. speed (mm/s) and zone (blend
+// radius, mm; 0 stops there) left out take the path's own.
+//
+struct PathPoint {
+    Vector3 position{};
+    Vector3 rotation{};
+
+    bool linear = false;
+
+    std::optional<double> speed;
+    std::optional<double> zone;
+};
+
 enum class Arm {
     left,
     right,
@@ -116,6 +134,12 @@ class RwsMotion {
 public:
     static constexpr double DEFAULT_GRIP_FORCE = 20.0;
 
+    //
+    // Points in one path job: the size of the path arrays in
+    // rapid/SharedVars.mod.
+    //
+    static constexpr std::size_t MAX_PATH_POINTS = 8;
+
     RwsMotion(
         Controller& controller,
         double timeout_seconds,
@@ -133,6 +157,24 @@ public:
         Arm arm,
         const Vector3& position,
         const std::optional<Vector3>& rotation,
+        bool wait = true,
+        const std::optional<MotionSpeed>& speed = std::nullopt
+    );
+
+    //
+    // 1 to MAX_PATH_POINTS points in one job (else
+    // std::invalid_argument), blended through the middle ones, so
+    // the arm stops only at the last. zone is the default blend
+    // radius in mm, speed.speed the default TCP speed of the points;
+    // max_acceleration is RAPID PathAccLim in m/s2 (nothing: no
+    // limit). Every point must be in the safe zone; the arm task
+    // checks every point is reachable before it moves at all.
+    //
+    CommandResult path(
+        Arm arm,
+        const std::vector<PathPoint>& points,
+        double zone = 10.0,
+        const std::optional<double>& max_acceleration = std::nullopt,
         bool wait = true,
         const std::optional<MotionSpeed>& speed = std::nullopt
     );

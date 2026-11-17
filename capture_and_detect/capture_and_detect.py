@@ -72,7 +72,7 @@ from ultralytics import YOLO
 HERE = Path(__file__).resolve().parent
 CALIBRATION_FILE = HERE.parent / "Calibration/calibration.json"
 KEEP_CLASSES = ["CUP", "CUP BASE", "CUP HANDLE"]
-CUP_Z_MIN, CUP_Z_MAX = 10, 150   # robot Z (mm) of a CUP BASE on a cup standing on the table
+CUP_Z_MIN, CUP_Z_MAX = -30, 150  # robot Z (mm) of a CUP BASE on a cup standing on the table (was 10; a mug read -15)
 
 CSV_FIELDS = ["capture", "class", "confidence", "x_mm", "y_mm", "x_px", "y_px",
               "z_mm", "robot_x_mm", "robot_y_mm", "robot_z_mm", "mask_area_px"]
@@ -88,6 +88,7 @@ HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster th
 HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
 LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
+PICK_SPEED = 100           # mm/s: left arm down to the cup, up with it, and to the hand-over
 FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
@@ -98,9 +99,10 @@ RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
 GRIPPER_TCP_Z = 159        # tGrip: the TCP is 159 mm past the flange
-PICK_Z = 120             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
-TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
-GRIP_MARGIN = 20           # left jaws open to the cup base diameter + this (mm)
+PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripped too high on the base)
+TRAVEL_Z = 175             # TCP height above the cups, on the way to and from them
+HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
+GRIP_MARGIN = 40           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
 Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_MAX (tray top 170),
                            # except going down to grip (pick) or to put the cup down (place)
@@ -274,11 +276,13 @@ class Arm:
                           "speed": speed, "acceleration": acceleration, "ramp": RAMP})
         self.last = (flange, rotation)
 
-    def goto(self, x, y, z):
+    def goto(self, x, y, z, rz=LEFT_DOWN[2], speed=SPEED):
         """Gripper TCP to x, y seen by the camera (plus the calibration's tag_offset in x, y)
-        at height z (robot mm), gripper down: the flange is GRIPPER_TCP_Z above the TCP."""
+        at height z (robot mm), gripper down and turned to rz degrees about the vertical:
+        the flange is GRIPPER_TCP_Z above the TCP."""
         ox, oy, _ = self.offset
-        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), LEFT_DOWN, pick=(z == PICK_Z))
+        rotation = (LEFT_DOWN[0], LEFT_DOWN[1], rz)
+        self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), rotation, speed, pick=(z == PICK_Z))
 
     def gripper(self, action):
         """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
@@ -370,22 +374,23 @@ class Handover:
 
     def _pick(self, cup):
         x, y = cup["x"], cup["y"]                  # the heights are fixed: PICK_Z, TRAVEL_Z
+        rz = cup.get("rz", LEFT_DOWN[2])           # jaws at 90 degrees to the handle (set_grip_rotation)
         arm = self.left
         arm.gripper("grip")                        # closed while it travels
         arm.move(LEFT_READY, LEFT_DOWN)            # from home via above the work area
-        arm.goto(x, y, TRAVEL_Z)
+        arm.goto(x, y, TRAVEL_Z, rz)               # above the cup, jaws turned to the handle
         arm.open_left_to(cup.get("aperture"))      # only here, right above the cup
-        arm.goto(x, y, PICK_Z)
+        arm.goto(x, y, PICK_Z, rz, PICK_SPEED)     # slow down to the cup
         arm.gripper("grip")
         cup["grip_left_mm"] = arm.grip_level()     # recorded with the base diameter (grips.csv)
-        arm.goto(x, y, TRAVEL_Z)
+        arm.goto(x, y, TRAVEL_Z, rz, PICK_SPEED)   # slow up with the cup
 
     def _pick_only_job(self, cup):
         arm = self.left
         self._pick(cup)
-        arm.goto(cup["x"], cup["y"], PICK_Z)       # put it back where it stood
+        arm.goto(cup["x"], cup["y"], PICK_Z, cup.get("rz", LEFT_DOWN[2]))       # put it back where it stood
         arm.gripper("open")
-        arm.goto(cup["x"], cup["y"], TRAVEL_Z)
+        arm.goto(cup["x"], cup["y"], TRAVEL_Z, cup.get("rz", LEFT_DOWN[2]))
         arm.gripper("grip")                        # closed on the way home
         arm.home()                                 # up first, then home
 
@@ -393,7 +398,7 @@ class Handover:
         arm = self.left
         self._pick(cup)
         self.left_has_cup.set()                    # -> right: come to the hand-over
-        arm.move(HANDOVER_L, LEFT_DOWN)
+        arm.move(HANDOVER_L, LEFT_DOWN, PICK_SPEED)   # slow to the hand-over, holding the cup
         self.at_handover.set()                     # -> right: come and take it
         self._wait_for(self.right_has_cup)
         arm.gripper("open")
@@ -560,6 +565,27 @@ def mark_cup_bases(objects, boxes):
         o["is_cup"] = o["in_cup"] or o["near_handle"] or o["cup_height"]
 
 
+def set_grip_rotation(cups, objects):
+    """Set each cup's "rz" so the jaws close at 90 degrees to the line cup centre -> handle.
+    At LEFT_DOWN the jaws close along robot X. The jaws are interchangeable, so the turn stays
+    within +-90 degrees of LEFT_DOWN. A cup with no handle of its own keeps LEFT_DOWN."""
+    closest = {}                                   # cup id -> (distance, handle x, handle y)
+    for o in objects:
+        if o["class"] != "CUP HANDLE" or o["robot_x_mm"] is None or not cups:
+            continue
+        hx, hy = o["robot_x_mm"], o["robot_y_mm"]
+        dist, cup = min(((np.hypot(hx - c["x"], hy - c["y"]), c) for c in cups), key=lambda d: d[0])
+        if dist <= HANDLE_MAX_DIST and dist < closest.get(cup["id"], (np.inf,))[0]:
+            closest[cup["id"]] = (dist, hx, hy)
+    for cup in cups:
+        cup["rz"] = LEFT_DOWN[2]
+        cup["has_handle"] = cup["id"] in closest
+        if cup["has_handle"]:
+            _, hx, hy = closest[cup["id"]]
+            angle = np.degrees(np.arctan2(hy - cup["y"], hx - cup["x"]))
+            cup["rz"] = round(float(LEFT_DOWN[2] + angle % 180 - 90), 1)
+
+
 def find_cups(objects):
     """Every CUP BASE that is a cup (see mark_cup_bases) = one cup, most certain first.
     Cups outside X_MIN..X_MAX, Y_MIN..Y_MAX get status "out of reach"."""
@@ -578,6 +604,7 @@ def find_cups(objects):
                      "z": o["robot_z_mm"], "diameter": diameter,
                      "aperture": None if diameter is None else round(diameter + GRIP_MARGIN, 1),
                      "status": "waiting" if reachable else "out of reach"})
+    set_grip_rotation(cups, objects)
     return cups
 
 

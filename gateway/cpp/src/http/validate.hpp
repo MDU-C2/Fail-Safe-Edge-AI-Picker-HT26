@@ -37,6 +37,35 @@ public:
     );
 
     //
+    // A list of min_length to max_length items; nothing if absent
+    // and not required.
+    //
+    std::optional<Json> list(
+        const std::string& name,
+        bool required,
+        std::size_t min_length,
+        std::size_t max_length
+    );
+
+    //
+    // The fields of item index of list name, a nested model (its
+    // errors located under it, e.g. body.points.0.x; a non-object
+    // item is an error of model). Hand it back with merge().
+    //
+    Fields item(
+        const std::string& name,
+        std::size_t index,
+        const std::string& model
+    ) const;
+
+    //
+    // Takes over the errors of an item().
+    //
+    void merge(
+        const Fields& other
+    );
+
+    //
     // A finite number (FiniteFloat) in range; nothing if absent and
     // not required.
     //
@@ -107,7 +136,11 @@ private:
     );
 
     Json values_;
-    std::string location_;
+
+    //
+    // ["body"], or ["body", "points", 0] for an item.
+    //
+    Json location_;
 
     std::vector<Json> errors_;
 };

@@ -5,6 +5,7 @@ import copy
 import io
 from pathlib import Path
 import tempfile
+import shutil
 import threading
 import time
 import unittest
@@ -34,7 +35,11 @@ class WebFixture:
         self.interpreter = Mock()
         self.interpreter.interpret.return_value = {
             "action": "hover", "selector": "id", "cup_id": 1, "message": "Hover above cup 1."}
-        self.session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: self.now)
+        # Never the team's real placing_grid.json: a copy in the test directory.
+        grid_file = Path(directory) / "placing_grid.json"
+        shutil.copy(Path(__file__).resolve().parent / "placing_grid.json", grid_file)
+        self.session = CupSession(self.capture, Mock(), self.robot, "cal-1", clock=lambda: self.now,
+                                  place_file=grid_file)
         self.language = LanguageController(self.session, self.interpreter,
                                            audit_dir=Path(directory), clock=lambda: self.now)
 
