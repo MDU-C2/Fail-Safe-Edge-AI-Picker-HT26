@@ -19,11 +19,13 @@ Every time you press Enter:
     5. every reachable cup is moved, most certain first, each to the next free spot in
        placing_grid.json; it stops at the first failure. The dual-arm movement uses
        handover_plan.handover_jobs, the same smooth buffered paths as the UI:
-           left:  close, LEFT_READY, open, approach/down, grip, lift/handover, wait, release, up
-           right: close, via/beside, wait, open, slide under/up, grip, wait, lower, turn/place
-                  then release, up and close
+           left:  open, LEFT_READY, open, approach/down, grip, lift/handover, wait, release, up
+           right: open, via/beside, wait, open, slide under/up, grip, wait, lower, turn/place
+                  then release and up (both grippers stay open, ready for the next cup)
        The arms overlap independent moves and wait at the shared plan's handover barriers.
-       Neither arm goes home between cups or after the last cup.
+       Neither arm goes home between cups. When every cup is done (or the grid is full),
+       both arms go home: the left first, then the right. After a failure they stay where
+       they are.
        With --left-only the right arm stays still: the left arm picks the cup, lifts it to
        TRAVEL_Z, puts it back where it stood, lets go and stays above it.
 
@@ -775,11 +777,26 @@ class Picker:
         cups = find_cups(objects)
         self.store.save_cups(cups, stamp)
         log(f"{len(cups)} cup(s) saved to cups.json")
+        placed = 0
         while self.move_one(cups, stamp):          # all cups of this capture, most certain first
-            pass
+            placed += 1
+        if placed and not any(c["status"] == "failed" for c in cups):
+            self.go_home()                         # all done: home once, not between cups
         out_of_reach = sum(c["status"] == "out of reach" for c in cups)
         if out_of_reach:
             log(f"  {out_of_reach} cup(s) not moved: out of reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
+
+    def go_home(self):
+        """Both arms home after the last cup: the left first (up, sideways, home), then the
+        right (up, home). Not after a failure: then the arms stay where they stopped."""
+        log("  All cups done: both arms home.")
+        try:
+            with self.gateway.control():
+                self.handover.left.home()
+                if not self.left_only:             # the right arm did not move with --left-only
+                    self.handover.right.home()
+        except RobotError as e:
+            log(f"  STOP: going home failed: {e}")
 
     def move_one(self, cups, stamp):
         """Hand over the first cup that is still "waiting" (the most certain reachable one).

@@ -278,7 +278,9 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     turn_half = tuple((a + b) / 2 for a, b in zip(below, place_above))
 
     # Grippers close only on a cup (grip_cup, right_grip); otherwise they stay
-    # open, ready for the next cup.
+    # open, ready for the next cup. Both open first, in case they start closed.
+    plan.grip("right_open_start", "right", "open")
+    plan.grip("left_open_start", "left", "open")
     if home_after_cup:
         plan.home("right_home_start", "right")
     plan.path("left_ready", "left", [(LEFT_READY, LEFT_DOWN, plan.speed, False)],
