@@ -151,8 +151,9 @@ coordinator and requires the updated gateway capability check.
 
 The same inference flags are available on `picker_workflow.py` for the
 advanced terminal workflow. Use `--dry-run` there too during development.
-The unchanged V4 `capture_and_detect.py` is independent and does not support
-these inference-fallback options.
+The V4 capture workflow in `capture_and_detect.py` is independent and does not
+support these inference-fallback options. It shares the UI's normal smooth
+dual-arm motion plan without importing the UI inference backend.
 
 For a camera-only cable experiment, `check_inference_switching.py` reads fresh
 paired RGB/depth frames and exercises the two inference workers directly. It

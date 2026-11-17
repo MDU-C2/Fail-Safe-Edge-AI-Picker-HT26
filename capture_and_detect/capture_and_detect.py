@@ -17,14 +17,15 @@ Every time you press Enter:
            grips.csv                                 per moved cup: base diameter and where
                                                      each gripper closed on it (grip level)
     5. every reachable cup is moved, most certain first, each to the next free spot in
-       placing_grid.json; it stops at the first failure (the hand-over of rapid/tests/handover.py):
-           left:  open, LEFT_READY, above the cup, down, grip, up, to HANDOVER_L ... wait, open, up, home
-           right: open ... wait, beside the hand-over ... wait, slide in under the cup, up, grip
-                  ... wait, down, turn over, place, open, up, home
-       Both arms move at the same time and only wait for each other (the "wait"s). The right arm
-       stays home while the left one picks, so they never share the picking area.
-       With --left-only the right arm stays home: the left arm picks the cup, lifts it to
-       TRAVEL_Z, puts it back where it stood, lets go and goes home.
+       placing_grid.json; it stops at the first failure. The dual-arm movement uses
+       handover_plan.handover_jobs, the same smooth buffered paths as the UI:
+           left:  close, LEFT_READY, open, approach/down, grip, lift/handover, wait, release, up
+           right: close, via/beside, wait, open, slide under/up, grip, wait, lower, turn/place
+                  then release, up and close
+       The arms overlap independent moves and wait at the shared plan's handover barriers.
+       Neither arm goes home between cups or after the last cup.
+       With --left-only the right arm stays still: the left arm picks the cup, lifts it to
+       TRAVEL_Z, puts it back where it stood, lets go and stays above it.
 
 A cup is a CUP BASE inside a detected CUP (the robot's joint was once seen as a CUP BASE).
 
@@ -32,12 +33,13 @@ The model is picked by the device; the weights sit next to this file:
     Westermo Lynx  -> best_ncnn_model/   (set PICKER_DEVICE=lynx in the Lynx container)
     anything else  -> best.pt            (Raspberry Pi, development laptop)
 
-The robot is driven through the gateway's RWS API (POST /robot/rws/move|home|gripper, see
+The robot is driven through the gateway's RWS API (POST /robot/rws/path|move|gripper, see
 gateway/scripts/client_template.py), so the RAPID program in rapid/ must be running
 (python rapid/rapidctl.py status). The camera gives each cup's x, y (gripper TCP, tGrip, as in
 the calibration); the heights are fixed (PICK_Z, TRAVEL_Z), since the cups stand on the table.
-The arm modules move tool0 (the flange): Arm.goto() adds GRIPPER_TCP_Z, and the fixed
-hand-over poses are flange positions.
+The arm modules move tool0 (the flange): Arm.goto() and the shared planner add GRIPPER_TCP_Z,
+and the fixed hand-over poses are flange positions. Dual-arm travel uses the shared
+planner's 175 mm TCP height; --left-only keeps TRAVEL_Z (250 mm).
 
 The gateway runs in strict mode and needs a token with robot.control (the operator token).
 Set it once in the terminal (never put it in this file):
@@ -66,6 +68,7 @@ import requests
 from ultralytics import YOLO
 
 import depth_average                               # depth of several frames, mask edge left out
+from handover_plan import handover_jobs
 
 # ================================================================
 # Settings
@@ -84,19 +87,15 @@ GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm",
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
 SPEED = 250               # TCP speed, mm/s (1..1500), sent with every move and home
-ACCELERATION = 100         # % of max acceleration (20..100)
-RAMP = 100                 # % how fast the acceleration builds up (10..100)
+ACCELERATION = 100         # legacy left-only moves; smooth paths use handover_plan's settings
+RAMP = 100                 # legacy left-only ramp; smooth paths use handover_plan's settings
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
 HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
 LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
 PICK_SPEED = 100           # mm/s: left arm down to the cup, up with it, and to the hand-over
-FLIP_ACCELERATION = 30     # %
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
-RIGHT_DOWN = (180, 0, 0)   # right gripper straight down (as in handover.py)
-RIGHT_UP = (0, 0, 0)       # right gripper pointing up
-RIGHT_SIDE = (90, 0, 0)    # right gripper sideways: halfway through turning the cup over
 
 # ---------------- Left arm: picking (gripper TCP, mm) ----------------
 # The camera gives x, y; the heights are fixed because the cups stand on the table.
@@ -108,7 +107,7 @@ CAMERA_Z_OFFSET = 20       # TCP height above the cup's camera base z
 CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
 USE_CAMERA_Z = False       # set by --camera-z
 DEPTH_FRAMES = 5           # depth = pixel-by-pixel median of this many camera frames (depth_average.py)
-TRAVEL_Z = 250             # TCP height above the cups, on the way to and from them
+TRAVEL_Z = 250             # left-only TCP travel height; dual-arm uses the shared plan's 175 mm
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
 GRIP_MARGIN = 70           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
@@ -117,27 +116,11 @@ Z_MIN = 199                # both arms: flange z stays within Z_MIN..GATEWAY_Z_M
 X_MIN, X_MAX = 350, 800    # cups outside this area are skipped
 Y_MIN, Y_MAX = -230, 420
 
-# ---------------- Hand-over and placing (tool0 = flange positions, mm, tuned in RobotStudio) ----
-# The left arm comes from home via LEFT_READY (straight from home, the joint move to a far cup
-# swings the hand into the table), picks the cup and holds it at HANDOVER_L. The right arm
-# waits at home until then, comes via R_VIA to R_BESIDE, slides in under the cup, goes up to
-# R_TAKE and grips the rim. The left lets go and lifts LEFT_LIFT (HANDOVER_L z + LEFT_LIFT
-# must stay within the gateway's z limit), the right goes down again, turns the cup over
-# PLACE_ABOVE mm above the first free spot in placing_grid.json and puts it down there.
+# ---------------- Left-only approach and placement storage ----------------
+# Dual-arm poses, blends and acceleration settings live only in handover_plan.py.
 LEFT_READY = (400, 100, 450)
 GATEWAY_Z_MAX = 700        # flange z limit set on the Pi (GATEWAY_RWS_SAFE_ZONE_MAX)
-LEFT_LIFT = 35             # straight up after letting go (then it waits until the right arm is away)
-LEFT_TOP = 690             # highest the left arm reaches at x 400, y -100 (tested: 690 DONE, 700 ERR move failed)
-# Meeting point as high as possible: the lift after letting go ends exactly at LEFT_TOP
-HANDOVER_X = 350           # meeting point distance from the robot (was 400; closer to the body)
-HANDOVER_L = (HANDOVER_X, -100, LEFT_TOP - LEFT_LIFT)
-R_VIA = (300, -300, 250)   # further out, higher and 50 mm right: pulls the elbow away from the tray
-                           # (was (200, -250, 200): elbow hit the tray; (200, -250, 350) hit itself)
-R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)   # same offset as the tested pair
-R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)            # straight under R_TAKE
-R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])       # beside it, away from the left arm
 PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
-PLACE_ABOVE = 80                             # mm above the place spot: the cup is turned over here
 
 
 def log(*parts):
@@ -231,16 +214,17 @@ class Gateway:
 
     def robot_job(self, arm, path, body):
         """POST one job to /robot/rws/<path> and wait until the arm has done it.
-        True if the robot reports DONE; prints the reply either way."""
+        True if the robot accepts the job and reports DONE; prints the reply either way."""
         try:
             r = self.post(f"/robot/rws/{path}", timeout=JOB_TIMEOUT, body={"arm": arm, **body})
         except requests.RequestException as e:
             log(f"    {arm}: {path} {body} -> {e}")
             return False
         # 200: {"accepted", "message"}; 409 busy / no lease / RAPID stopped, 503 unreachable, 504 timeout
-        reply = r.json()["message"] if r.status_code == 200 else f"HTTP {r.status_code}: {r.text}"
+        result = r.json() if r.status_code == 200 else {}
+        reply = result.get("message") if r.status_code == 200 else f"HTTP {r.status_code}: {r.text}"
         log(f"    {arm}: {path} {body} -> {reply}")
-        return reply == "DONE"
+        return result.get("accepted") is True and reply == "DONE"
 
 
 def frame_array(r, dtype, planes=1):
@@ -292,6 +276,33 @@ class Arm:
         rotation = (LEFT_DOWN[0], LEFT_DOWN[1], rz)
         self.move((x + ox, y + oy, z + GRIPPER_TCP_Z), rotation, speed, pick=pick or z == PICK_Z)
 
+    def run_plan_job(self, job):
+        """Dispatch one shared smooth-plan step, preserving its path and wait flag.
+
+        As with the UI, only the final linear picking/placing target may be
+        below the ordinary travel height. A failed path is never retried as moves.
+        """
+        body = dict(job["body"])
+        if body.pop("arm") != self.name:
+            raise RobotError(f"{self.name}: wrong arm for step {job['name']}")
+        if job["endpoint"] == "/robot/rws/gripper":
+            self.job("gripper", body)
+            return
+        if job["endpoint"] != "/robot/rws/path":
+            raise RobotError(f"Unsupported smooth-plan endpoint: {job['endpoint']}")
+        points = body["points"]
+        for index, point in enumerate(points):
+            pick = ((job["name"], self.name) in {
+                        ("approach_cup", "left"), ("right_place", "right")}
+                    and index == len(points) - 1 and point.get("linear") is True)
+            z = point["z"]
+            if z > GATEWAY_Z_MAX or (z < Z_MIN and not pick):
+                raise RobotError(f"{self.name} path to z {z} refused: outside z {Z_MIN}..{GATEWAY_Z_MAX}")
+        self.job("path", body)
+        target = points[-1]
+        self.last = (tuple(target[axis] for axis in ("x", "y", "z")),
+                     tuple(target[axis] for axis in ("rx", "ry", "rz")))
+
     def gripper(self, action):
         """action: "open" (fully) or "grip" (close until it holds the cup, 20 N)."""
         self.job("gripper", {"action": action})
@@ -342,17 +353,10 @@ class Arm:
 
 
 class Handover:
-    """Moves one cup with both arms at once; they only wait for each other at the hand-over."""
+    """Run the UI's shared smooth plan using the terminal's existing control lease."""
 
     def __init__(self, left, right, abort):
         self.left, self.right, self.abort = left, right, abort
-        self.left_has_cup = threading.Event()      # left gripped the cup and left the picking area
-        self.at_handover = threading.Event()       # left holds the cup at HANDOVER_L
-        self.right_has_cup = threading.Event()     # right closed on the rim
-        self.left_clear = threading.Event()        # left let go and moved up
-        self.right_away = threading.Event()        # right took the cup away from the hand-over
-        self.events = (abort, self.left_has_cup, self.at_handover, self.right_has_cup,
-                       self.left_clear, self.right_away)
 
     def run(self, cup, left_only=False, place=None):
         """True if the cup was placed. Ctrl+C stops both arms after their current job.
@@ -360,25 +364,72 @@ class Handover:
         place: the place spot from placing_grid.json (needed for the hand-over).
         Sets cup["grip_left_mm"] and cup["grip_right_mm"]: where each gripper closed
         on the cup (None if it did not get that far or the gateway cannot tell)."""
-        for event in self.events:
-            event.clear()
+        self.abort.clear()
         cup["grip_left_mm"] = None
         self.grip_right_mm = None
-        jobs = [(self._pick_only_job, (cup,))] if left_only else \
-               [(self._left_job, (cup,)), (self._right_job, (place,))]
-        arms = [threading.Thread(target=self._guarded, args=(job, *args), daemon=True)
-                for job, args in jobs]
+        if left_only:
+            jobs = [(self._pick_only_job, (cup,))]
+        else:
+            try:
+                plan = handover_jobs(
+                    cup, place=place, tag_offset=self.left.offset, speed=SPEED,
+                    camera_z=USE_CAMERA_Z, home_after_cup=False,
+                    phase_speeds={"pick_lift": PICK_SPEED, "handover": None,
+                                  "flip": FLIP_SPEED, "placement": None})
+                cup["pick_z"] = self.pick_z(cup)
+            except Exception as error:
+                log(f"  STOP: {error}")
+                self.abort.set()
+                cup["grip_right_mm"] = None
+                return False
+            log("  Smooth dual-arm handover (no automatic home).")
+            completed = {job["name"]: threading.Event() for job in plan}
+            jobs = [(self._plan_arm, (arm, plan, completed, cup))
+                    for arm in (self.left, self.right)]
+        finished = [threading.Event() for _ in jobs]
+        arms = [threading.Thread(target=self._guarded, args=(job, *args),
+                                 kwargs={"finished": done}, daemon=True)
+                for (job, args), done in zip(jobs, finished)]
         for arm in arms:
             arm.start()
         try:
-            while any(arm.is_alive() for arm in arms):
-                arms[0].join(0.2)                  # join with a timeout keeps Ctrl+C working
+            self._wait_workers(finished)
         except KeyboardInterrupt:
             log("\nStopped (Ctrl+C). An arm that is moving finishes its current move.")
             self.abort.set()
             raise
-        cup["grip_right_mm"] = self.grip_right_mm
+        finally:
+            # Keep the caller's control lease until in-flight jobs finish, even
+            # on Ctrl+C. Waiting peers see abort and dispatch no further jobs.
+            while not all(done.is_set() for done in finished):
+                try:
+                    self._wait_workers(finished)
+                except KeyboardInterrupt:
+                    self.abort.set()
+            cup["grip_right_mm"] = self.grip_right_mm
         return not self.abort.is_set()
+
+    @staticmethod
+    def _wait_workers(finished):
+        # Completion events describe actual job completion, even on Python
+        # versions where Ctrl+C can interrupt Thread.join's bookkeeping.
+        for done in finished:
+            while not done.wait(0.1):
+                pass
+
+    def _plan_arm(self, arm, plan, completed, cup):
+        """One worker per arm; cross-arm barriers come directly from the shared plan."""
+        for job in plan:
+            if job["body"]["arm"] != arm.name:
+                continue
+            for name in job["after"]:
+                self._wait_for(completed[name])
+            arm.run_plan_job(job)
+            if job["name"] == "grip_cup":
+                cup["grip_left_mm"] = arm.grip_level()
+            elif job["name"] == "right_grip":
+                self.grip_right_mm = arm.grip_level()
+            completed[job["name"]].set()
 
     @staticmethod
     def pick_z(cup):
@@ -417,60 +468,20 @@ class Handover:
         #arm.gripper("grip")                        # closed on the way home
         #arm.home()                                 # up first, then home
 
-    def _left_job(self, cup):
-        arm = self.left
-        self._pick(cup)
-        self.left_has_cup.set()                    # -> right: come to the hand-over
-        arm.move(HANDOVER_L, LEFT_DOWN, PICK_SPEED)   # slow to the hand-over, holding the cup
-        self.at_handover.set()                     # -> right: come and take it
-        self._wait_for(self.right_has_cup)
-        arm.gripper("open")
-        arm.move((HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT), LEFT_DOWN)  # straight up
-        self.left_clear.set()                      # -> right: you can pull it down
-        #self._wait_for(self.right_away)            # the way home could cross the right arm
-        #arm.gripper("grip")                        # closed on the way home
-        #arm.home()                               # out of the camera view for the next capture
-
-    def _right_job(self, place):
-        arm = self.right
-        spot = (place["x"], place["y"], place["z"])
-        above = (place["x"], place["y"], place["z"] + PLACE_ABOVE)
-        arm.gripper("grip")                        # closed while it travels
-        self._wait_for(self.left_has_cup)          # stay home, out of the picking area
-        arm.move(R_VIA, RIGHT_UP)
-        arm.move(R_BESIDE, RIGHT_UP)               # beside the hand-over, just under the rim height
-        self._wait_for(self.at_handover)
-        arm.gripper("open")                        # only here, just before it takes the cup
-        arm.move(R_BELOW, RIGHT_UP)                # slide in under the cup
-        arm.move(R_TAKE, RIGHT_UP)                 # the last bit straight up
-        arm.gripper("grip")
-        self.grip_right_mm = arm.grip_level()      # on the rim; recorded in grips.csv
-        self.right_has_cup.set()                   # -> left: let go
-        self._wait_for(self.left_clear)
-        arm.move(R_BELOW, RIGHT_UP)
-        # turn the cup over slowly and in two steps (the cup is heavy for the right arm)
-        half = tuple((a + b) / 2 for a, b in zip(R_BELOW, above))
-        arm.move(half, RIGHT_SIDE, FLIP_SPEED, FLIP_ACCELERATION)
-        arm.move(above, RIGHT_DOWN, FLIP_SPEED, FLIP_ACCELERATION)   # cup now upright
-        #self.right_away.set()                      # -> left: you can go home
-        arm.move(spot, RIGHT_DOWN, pick=True)        # putting the cup down may go lower
-        arm.gripper("open")
-        arm.move(above, RIGHT_DOWN)
-        #arm.gripper("grip")                        # closed on the way home
-        #arm.home()                               # out of the picking area for the next cup
-
     def _wait_for(self, event):
         """Wait for the other arm, but stop if it failed."""
         while not event.wait(0.1):
             if self.abort.is_set():
                 raise RobotError("the other arm failed")
 
-    def _guarded(self, job, *args):
+    def _guarded(self, job, *args, finished):
         try:
             job(*args)
         except Exception as e:
             log(f"  STOP: {e}")
             self.abort.set()
+        finally:
+            finished.set()
 
 
 # ================================================================

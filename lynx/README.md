@@ -1,9 +1,11 @@
 # Run the command-line cup picker on Lynx
 
 This managed CLI belongs to the enhanced UI/shared-controller workflow. It is
-separate from the restored `capture_and_detect/capture_and_detect.py` V4 terminal.
-The combined browser profile uses `web_app.py` and `picker_workflow.py`; it does
-not import or modify the original V4 terminal. See the
+separate from the V4 capture workflow in
+`capture_and_detect/capture_and_detect.py`. The combined browser profile uses
+`web_app.py` and `picker_workflow.py`; it does not import that terminal workflow.
+In the repository, both entry points share the normal smooth dual-arm plan in
+`handover_plan.py`. See the
 [entry-point guide](../capture_and_detect/README.md).
 
 The `cli` profile uses the **existing C++ gateway on port 8000** and adds a

@@ -1,10 +1,12 @@
-"""Keep the original V4 terminal entry point separate from the UI workflow.
+"""Keep V4 capture/detection and the terminal entry point separate from the UI.
 
-The hashes pin the source files from vision_detection4 commit
-52f54791e08709ce8e44d1f39b5687085ba8af21.  These tests do not require git,
-Ultralytics, model weights, a gateway, or a robot.
+The terminal now shares the UI's smooth motion plan. These hashes pin the
+unchanged capture/detection, storage and CLI from vision_detection4 commit
+52f54791e08709ce8e44d1f39b5687085ba8af21. Tests do not require git, Ultralytics,
+model weights, a gateway, or a robot.
 """
 
+import ast
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
 import hashlib
@@ -19,8 +21,24 @@ from unittest.mock import Mock, patch
 
 HERE = Path(__file__).resolve().parent
 V4_SOURCE_HASHES = {
-    "capture_and_detect.py": "f0f8402368f5d87b1cbe96445f9d34d039438be0b2303fc4eaeab96c77c1dd2a",
     "depth_average.py": "bb03d016435202c2618de394bad169e255e9c1fadecafa6b27e6fcad2f082190",
+}
+V4_TERMINAL_COMPONENT_HASHES = {
+    "load_token": "d4dc680e52d2e550aae214be0a69a8478c53684650e6f64e08a6212562e0b569",
+    "frame_array": "7617ba1a2d9017c5f2cef9944eb920ec7eea24299b99b27a214a89dc2d7bc3ba",
+    "load_model": "f40438a58de53213ce3d30b18cdcdd3b0c1bf754e570e31b5611edcc8b77a392",
+    "Calibration": "cf3705d3e2774760140c5652582827edd5c828ffcac4b798eeb05fe25d469e07",
+    "Detector": "b9632be21471c992d5cc1545d9806111ef167396188e73447333215c13c9b956",
+    "mm": "ab3f8eb0d67693e40814717929f09759e9421f6ad23776b2bdf29f80e0b5afeb",
+    "mark_cup_bases": "3a2aae8162c08360b8e91c5196fd294a485fd591c121bf3b9a6f38feab3cfc80",
+    "set_grip_rotation": "e71c3c8bdd7775388af0a3014a8e9e9da9de33b8d019f42fe6576686b7b158bf",
+    "find_cups": "15150648d2cc465ee5ed78e78ce1cadd500afdc0c9893e914f2aba441a9f912f",
+    "print_objects": "974991684b686a9c21c0bd33c18c3f46b068888062326dfda98512ffacc4203d",
+    "CaptureStore": "c0553c85514d0c2824d385c451c336ef6f93840bee1add6deb358a748a56a492",
+    "Picker": "d9d2ab4f2c8c891a1900cc28c748035cfa81436e744a092b52e05a1566155d59",
+    "load_places": "c2fb431b72c2b259350ef66a765446a64b7cecf1b560a18a4cb225cfb01fec17",
+    "save_places": "a54c57c29133a97acafa8db9e8fe93a64c683bd7e9f8c9daa2ed989cec7c8229",
+    "main": "08c3763360f6493c522dbeb2f9238dd2a0faba27e721da0f21ea4cc3285fe91a",
 }
 
 
@@ -55,10 +73,19 @@ def base(confidence, x):
 
 
 class V4SourceParityTests(unittest.TestCase):
-    def test_terminal_sources_are_byte_for_byte_original_v4(self):
+    def test_depth_averaging_is_byte_for_byte_original_v4(self):
         for name, expected in V4_SOURCE_HASHES.items():
             with self.subTest(file=name):
                 self.assertEqual(hashlib.sha256((HERE / name).read_bytes()).hexdigest(), expected)
+
+    def test_capture_detection_storage_and_cli_remain_original_v4(self):
+        source = (HERE / "capture_and_detect.py").read_text()
+        components = {node.name: ast.get_source_segment(source, node)
+                      for node in ast.parse(source).body
+                      if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
+        for name, expected in V4_TERMINAL_COMPONENT_HASHES.items():
+            with self.subTest(component=name):
+                self.assertEqual(hashlib.sha256(components[name].encode()).hexdigest(), expected)
 
 
 class V4TerminalTests(unittest.TestCase):

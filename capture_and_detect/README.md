@@ -4,7 +4,7 @@ There are two independent entry points. Run only one robot controller at a time.
 
 | Entry point | Workflow |
 | --- | --- |
-| `python capture_and_detect.py` | The original `vision_detection4` terminal program, restored unchanged. Enter captures and processes all reachable cups. |
+| `python capture_and_detect.py` | The V4 terminal capture workflow with the same smooth dual-arm handover as the UI. Enter captures and processes all reachable cups. |
 | `python web_app.py --gateway <gateway-url> --live` | The existing browser UI, single-cup selection, Assistant, smooth handover, placement checks, confirmations and recovery. |
 | `python web_app.py --demo` | The browser UI with simulated data and no gateway or robot connection. |
 | `python picker_workflow.py --commands` | The optional advanced scan/goto/confirm shell sharing the UI backend. |
@@ -14,12 +14,14 @@ otherwise. From the repository root, prefix the script with `capture_and_detect/
 For example, `python capture_and_detect/capture_and_detect.py` starts the V4
 terminal and `python capture_and_detect/web_app.py --demo` starts the UI preview.
 
-## Original V4 terminal
+## V4 terminal capture workflow
 
-`capture_and_detect.py` and its `depth_average.py` helper match the
-`vision_detection4` source at commit `52f54791e08709ce8e44d1f39b5687085ba8af21`.
-The terminal does not import the UI backend. Its behavior and command-line options
-are the original V4 ones:
+`capture_and_detect.py` preserves the capture, detection and terminal workflow
+from `vision_detection4` at commit
+`52f54791e08709ce8e44d1f39b5687085ba8af21`; its `depth_average.py` helper remains
+unchanged. Normal dual-arm motion now uses the same smooth `handover_jobs` plan
+in `handover_plan.py` as the UI. The terminal does not import the UI backend.
+Its capture behavior and command-line options remain:
 
 - Enter captures one scene, detects cups, then picks all reachable cups in
   confidence order, using the same saved positions throughout that cycle.
@@ -27,16 +29,22 @@ are the original V4 ones:
   placement marks that entry occupied. It stops the cycle at the first failure
   or when there is no free location. There are no UI camera-clearance checks,
   reservations, confirmation previews or persistent recovery journal.
-- The original separate movement commands and no-home sequence remain. The
-  dashboard's buffered smooth paths and saved speed settings do not affect it.
+- Normal dual-arm picks use buffered smooth paths, with no automatic Home
+  before, between or after cups. The terminal uses the shared plan's default
+  motion settings; saved dashboard speed settings do not affect it. `--left-only`
+  retains its original pick, lift and replace movements.
 - `q` followed by Enter exits at the prompt. During motion, Ctrl-C inhibits
-  subsequent jobs; a submitted movement can finish. This is the original V4
-  behavior, not the dashboard's responsive Stop/status command interface.
+  subsequent jobs; a submitted movement can finish. The terminal has no
+  dashboard Stop/status command interface.
 - Supported options are `--gateway`, `--output`, `--conf`, `--left-only`,
   `--camera-z` and `--depth-frames`. There is **no dry-run option** in this
-  unchanged program. Pressing Enter runs the physical workflow.
+  terminal program. Pressing Enter runs the physical workflow.
 
-Set the existing gateway token in your terminal, then launch:
+The gateway must support `POST /api/v1/robot/rws/path`, and the controller must
+have the same `RunPath` routine used by the UI loaded. There is no fallback to
+the previous individual-move handover if a path fails.
+
+The launch command is unchanged. Set the existing gateway token, then launch:
 
 ```powershell
 $env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
@@ -82,7 +90,7 @@ scene with the destination layout used by the next controller.
 
 **All sections below describe `web_app.py`, `picker_workflow.py` and their shared
 UI backend unless an entry point is explicitly named. They do not add features
-or checks to the unchanged V4 terminal.**
+or checks to the V4 terminal capture workflow.**
 
 The UI keeps the **V4 snapshot selection workflow**: Scan captures one
 averaged-depth observation; reviewed single picks and batches use those saved
@@ -100,7 +108,7 @@ Cup sequences send no automatic Home by default. After each handover the left
 arm stays above the handover and the right remains 80 mm above placement. In
 advanced-shell `--left-only` mode, the left arm stays above the replaced cup.
 `--home-after-cup` is an advanced-shell option; manual dashboard Home controls
-remain available. These options do not change the original V4 program.
+remain available. These options do not apply to `capture_and_detect.py`.
 
 Windows multi-device setup is described in
 [Windows PC / MacBook, Pi and Lynx](DEVICE_DASHBOARD.md#move-the-dashboard-between-mac-and-windows).
@@ -207,7 +215,8 @@ and the cup, recover the robot as needed, then acknowledge recovery through the
 UI or the shell's `reset` command. This sends no movement and does not release
 reserved placement cells. Restarting or scanning does not clear the record.
 Use the same UI output directory across restarts; do not delete or replace its
-recovery state to bypass it. The restored V4 terminal does not read this journal.
+recovery state to bypass it. The V4 terminal capture workflow does not read this
+journal.
 
 The advanced shell's `--left-only` option picks, lifts and replaces a selected cup
 with the left arm, without a handover or placement-grid update. Add `--dry-run`
@@ -295,8 +304,9 @@ send Stop. Demo and dry-run Stop make no robot or gateway requests.
 The shared plan in `handover_plan.py` adapts the normal smooth handover from
 `smooth-dual-arm-handover` at `46fd6f2`, with **no automatic home before,
 between or after cups**. It is used by the UI, Assistant actions, shared device
-services and `picker_workflow.py`; the original V4 `capture_and_detect.py` is
-unchanged. The branch's simulation-only overlapping multi-cup plan is not used.
+services, `picker_workflow.py` and normal dual-arm picks in `capture_and_detect.py`.
+The latter retains its V4 capture/detection workflow and original `--left-only`
+movements. The branch's simulation-only overlapping multi-cup plan is not used.
 
 Normal paths use **60% acceleration and 40% ramp**. Loaded paths also request
 **1.5 m/s²** maximum TCP acceleration/deceleration; turnover keeps **30%
@@ -326,7 +336,8 @@ rematches between cups. Each cup finishes completely before the next starts.
    destination, blending through the midpoint by 10 mm. The left stays clear.
 8. Lower the right hand straight to the selected grid location, release, lift
    straight to 80 mm above it, close the empty gripper and remain there.
-9. Complete the placement reservation only after every job finishes. The next
+9. Complete the UI placement reservation only after every job finishes;
+   `capture_and_detect.py` instead marks its chosen grid entry occupied. The next
    cup starts through left ready; neither arm automatically goes home.
 
 All normal dual-arm movements use the controller's loaded `RunPath` routine via
@@ -933,7 +944,8 @@ introduced by this dashboard.
 Web implementation: `web_app.py` (browser launcher and local HTTP server),
 `web_controller.py` (single controller worker), and `web_static/` (browser interface).
 The camera backend is imported from `picker_workflow.py`, using `picker_depth.py`.
-The restored V4 `capture_and_detect.py` and `depth_average.py` are independent.
+The V4 capture workflow in `capture_and_detect.py` and `depth_average.py` is
+independent of that backend; normal dual-arm motion shares `handover_plan.py`.
 Runtime dependencies are separate from the Pi gateway requirements.
 
 ### Robot controls panel

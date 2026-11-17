@@ -189,8 +189,10 @@ The shared smooth handover paths finish above the destination after each cup.
 Home remains a separate operator command.
 
 The CLI and combined dashboard use the enhanced shared workflow. The combined
-profile's `web_app.py` imports `picker_workflow.py`, independently of the unchanged
-V4 `capture_and_detect.py` terminal. Package 0.2.9 applies the updated shared
+profile's `web_app.py` imports `picker_workflow.py`, independently of the V4
+capture workflow in `capture_and_detect.py`. In the repository, both entry
+points share the normal smooth dual-arm plan in `handover_plan.py`. Package
+0.2.9 applies the updated shared
 workflow to the native CLI and managed Lynx service; older images retain their
 earlier behavior until replaced.
 

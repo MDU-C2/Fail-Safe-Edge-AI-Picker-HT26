@@ -85,7 +85,10 @@ $env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
 python capture_and_detect.py --gateway http://192.168.125.20:8000
 ```
 
-This is the unchanged V4 terminal: Enter captures and processes cups; `q` quits.
+This keeps the V4 terminal capture workflow: Enter captures and processes cups;
+`q` quits. Normal dual-arm picks use the same smooth handover plan as the UI,
+without automatic Home. The gateway must support `/api/v1/robot/rws/path` and
+the controller must have `RunPath` loaded. `--left-only` motion is unchanged.
 It has no `--dry-run`, `--commands`, Assistant, managed-device ownership or UI
 recovery/reservation workflow. It uses `Calibration/calibration.json` and
 `placing_grid.json`, not the managed dashboard's state. Add
@@ -100,7 +103,8 @@ python picker_workflow.py --commands --gateway http://192.168.125.20:8000 --dry-
 ```
 
 The browser and managed-device backends import `picker_workflow.py`; they do not
-import or modify the original V4 terminal. See [entry points](README.md).
+import the V4 terminal capture workflow. Both share the normal dual-arm motion
+plan in `handover_plan.py`. See [entry points](README.md).
 
 ## Prepare matching persistent state
 
