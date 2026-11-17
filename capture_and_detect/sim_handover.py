@@ -21,6 +21,10 @@ flange z 690: start the gateway with GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700].
 
 Refuses any gateway that is not on this PC unless --allow-remote is given:
 the real YuMi must not be driven by a made-up cup.
+
+The preserved classic plan has old 175 mm flange targets. These are below
+the shared client's 199 mm ordinary-motion limit and will be refused during
+execution; --dry-run remains available for comparing the historic plan.
 """
 
 import argparse
@@ -32,7 +36,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from handover_plan import handover_batch, handover_jobs, handover_paths  # noqa: E402
+from sim_handover_plan import handover_batch, handover_jobs, handover_paths  # noqa: E402
 from robot_client import RobotClient  # noqa: E402
 
 

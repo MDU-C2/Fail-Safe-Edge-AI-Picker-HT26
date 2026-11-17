@@ -198,3 +198,16 @@ python rapid/rapidctl.py --host 127.0.0.1 upload --gripper-stub
 - There is no `.dockerignore` (it was removed because it caused problems with the Westermo build), so `COPY gateway ./gateway` puts `gateway/.env` and `gateway/auth_clients.json` into the image as they are at build time.
 - Configuration is `GATEWAY_`-prefixed env vars / `gateway/.env`, defined in [gateway/config.py](gateway/config.py) and cached by `get_settings()` (`lru_cache`), so changes require a restart.
 - The code style is heavily vertical (one argument per line, `# ====` section banners); match it when editing gateway files.
+
+## Picker UI compatibility
+
+The picker UI uses the original gateway APIs for smooth paths, Home, grippers,
+status and software Stop. It does not expose program reset/start, collision
+acknowledgement or native controller access. Keep `rapidctl.py` as a separate
+operator tool; do not add gateway extensions to implement UI recovery. The
+ordinary control lease does not stop active RAPID work when it expires.
+
+The UI and terminal picker use `capture_and_detect/handover_plan.py`. The
+RobotStudio comparison script uses `sim_handover_plan.py`, which preserves
+main's simulation plans and optional overlap between cups. Keep its group
+stages separate from the UI's explicit job dependencies.

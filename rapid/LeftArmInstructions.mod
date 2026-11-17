@@ -62,6 +62,7 @@ MODULE LeftArm
     ENDWHILE
   ENDPROC
 
+  ! Controller path capability captured 2026-11-16.
   ! Path job. Checks every point first, so the arm never stops half way
   ! because of an unreachable point, then runs them all in one go: blended
   ! (zone) through the middle points, fine at the last one. Straight-line

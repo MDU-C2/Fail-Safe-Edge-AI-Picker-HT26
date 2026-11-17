@@ -9,7 +9,6 @@ import math
 import re
 import time
 
-import numpy as np
 import requests
 
 
@@ -19,6 +18,10 @@ class CameraError(RuntimeError):
 
 class _TransientCameraError(CameraError):
     pass
+
+
+class NoNewCameraFrame(_TransientCameraError):
+    """A connected camera kept returning the same valid pair until timeout."""
 
 
 def _integer(value, name, *, positive=False):
@@ -34,7 +37,8 @@ def _integer(value, name, *, positive=False):
 
 
 class CameraClient:
-    def __init__(self, api, headers, session=None):
+    def __init__(self, api, headers, session=None, *, max_dimensions=None):
+        self.max_dimensions = max_dimensions
         self.api = api.rstrip("/")
         self.headers = dict(headers)
         # Injection keeps tests offline; construction never makes a request.
@@ -99,6 +103,8 @@ class CameraClient:
         sequence = _integer(headers.get("X-Frame-Sequence"), "frame sequence")
         width = _integer(headers.get("X-Frame-Width"), "frame width", positive=True)
         height = _integer(headers.get("X-Frame-Height"), "frame height", positive=True)
+        if width * height > 8_400_000:
+            raise CameraError("Camera frame exceeds the supported 8.4 megapixel limit")
         if headers.get("X-Pixel-Format") != expected_format:
             raise CameraError(f"Unsupported camera format; expected {expected_format}")
         timestamp = headers.get("X-Frame-Timestamp")
@@ -124,7 +130,7 @@ class CameraClient:
             )
         return payload
 
-    def capture(self, timeout_s=10):
+    def capture_raw(self, timeout_s=10, *, fresh=True):
         """Return ``(bgr_image, uint16_depth_mm, metadata)`` for one new frame.
 
         Both streamed GETs are opened before either body is downloaded. This
@@ -141,12 +147,12 @@ class CameraClient:
         observed_at = datetime.now(timezone.utc).isoformat()
         deadline = observation_started + timeout_s
         baseline = None
-        last_error = "No newer matching RGB + depth pair was available"
+        last_error = CameraError("No newer matching RGB + depth pair was available")
 
         while time.monotonic() < deadline:
             rgb_response = depth_response = status_response = None
             try:
-                if baseline is None:
+                if fresh and baseline is None:
                     status_response = self._get_before("/camera/status", deadline)
                     try:
                         status = status_response.json()
@@ -163,10 +169,12 @@ class CameraClient:
                 rgb_sequence, width, height, timestamp = self._frame_headers(rgb_response, "BGR888p")
                 depth_sequence, depth_width, depth_height, depth_timestamp = self._frame_headers(depth_response, "RAW16")
 
+                if self.max_dimensions is not None and (width > self.max_dimensions[0] or height > self.max_dimensions[1]):
+                    raise CameraError("Camera frame exceeds this runtime's configured dimension limit")
                 if rgb_sequence != depth_sequence:
                     raise _TransientCameraError("RGB and depth frame sequences did not match")
-                if rgb_sequence <= baseline:
-                    raise _TransientCameraError("Camera has not published a newer frame (possibly frozen)")
+                if fresh and rgb_sequence <= baseline:
+                    raise NoNewCameraFrame("Camera has not published a newer frame (possibly frozen)")
                 if (width, height) != (depth_width, depth_height):
                     raise CameraError("RGB and aligned depth dimensions do not match")
                 if timestamp != depth_timestamp:
@@ -174,10 +182,9 @@ class CameraClient:
 
                 rgb_bytes = self._payload(rgb_response, width * height * 3, deadline)
                 depth_bytes = self._payload(depth_response, width * height * 2, deadline)
-                rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(3, height, width).transpose(1, 2, 0).copy()
-                depth = np.frombuffer(depth_bytes, dtype="<u2").reshape(height, width).astype(np.uint16, copy=True)
                 self._remaining(deadline)
-                return rgb, depth, {
+                return rgb_bytes, depth_bytes, {
+                    "width": width, "height": height,
                     "sequence": rgb_sequence,
                     "timestamp": timestamp,
                     "observed_at": observed_at,
@@ -185,7 +192,7 @@ class CameraClient:
                     "observation_started_monotonic": observation_started,
                 }
             except _TransientCameraError as error:
-                last_error = str(error)
+                last_error = error
             finally:
                 for response in (rgb_response, depth_response, status_response):
                     if response is not None:
@@ -195,4 +202,21 @@ class CameraClient:
             if remaining > 0:
                 time.sleep(min(0.05, remaining))
 
-        raise CameraError(f"Could not capture a fresh matching RGB + depth pair: {last_error}")
+        error_type = NoNewCameraFrame if isinstance(last_error, NoNewCameraFrame) else CameraError
+        raise error_type(f"Could not capture a fresh matching RGB + depth pair: {last_error}")
+
+    def capture_latest_raw(self, timeout_s=10):
+        """V4 scan entry point: use the latest matched pair without a baseline wait."""
+        return self.capture_raw(timeout_s=timeout_s, fresh=False)
+
+    def capture(self, timeout_s=10, *, fresh=True):
+        """Legacy NumPy adapter; raw clients never import the array runtime."""
+        import numpy as np
+        rgb_bytes, depth_bytes, frame = self.capture_raw(timeout_s, fresh=fresh)
+        width, height = frame.pop("width"), frame.pop("height")
+        rgb = np.frombuffer(rgb_bytes, dtype=np.uint8).reshape(3, height, width).transpose(1, 2, 0).copy()
+        depth = np.frombuffer(depth_bytes, dtype="<u2").reshape(height, width).astype(np.uint16, copy=True)
+        return rgb, depth, frame
+
+    def capture_latest(self, timeout_s=10):
+        return self.capture(timeout_s=timeout_s, fresh=False)
