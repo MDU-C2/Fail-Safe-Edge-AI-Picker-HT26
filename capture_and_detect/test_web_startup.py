@@ -44,9 +44,9 @@ class WebStartupTests(unittest.TestCase):
         detail = "Camera gateway request /camera/intrinsics failed (ConnectionError)"
         camera = Mock()
         camera.intrinsics.side_effect = CameraError(detail)
-        with patch("capture_and_detect.load_token", return_value="private-gateway-token"), \
-                patch("capture_and_detect.Calibration"), \
-                patch("capture_and_detect.load_model") as load_model, \
+        with patch("picker_workflow.load_token", return_value="private-gateway-token"), \
+                patch("picker_workflow.Calibration"), \
+                patch("picker_workflow.load_model") as load_model, \
                 patch("camera_client.CameraClient", return_value=camera), \
                 patch("inference_integration.create_detector") as create_detector, \
                 patch("inference_integration.create_robot") as create_robot:
@@ -72,8 +72,8 @@ class WebStartupTests(unittest.TestCase):
         camera = Mock()
         camera.intrinsics.return_value = intrinsics
         calibration = Mock()
-        with patch("capture_and_detect.load_token", return_value="private-gateway-token"), \
-                patch("capture_and_detect.Calibration", return_value=calibration), \
+        with patch("picker_workflow.load_token", return_value="private-gateway-token"), \
+                patch("picker_workflow.Calibration", return_value=calibration), \
                 patch("camera_client.CameraClient", return_value=camera), \
                 patch("inference_integration.create_detector", side_effect=SystemExit("Model not found: best.pt")) as detector:
             state, output = self.start(hardware_factory(self.args))
@@ -123,12 +123,12 @@ class WebStartupTests(unittest.TestCase):
             result["placement_observation"] = observation
             return result, time.monotonic()
         captures.capture.side_effect = capture
-        with patch("capture_and_detect.load_token", return_value="offline-token"), \
-                patch("capture_and_detect.Calibration", return_value=calibration), \
+        with patch("picker_workflow.load_token", return_value="offline-token"), \
+                patch("picker_workflow.Calibration", return_value=calibration), \
                 patch("camera_client.CameraClient"), \
                 patch("inference_integration.create_detector", return_value=(Mock(), "offline.pt")), \
                 patch("inference_integration.create_robot", return_value=fixture.robot), \
-                patch("capture_and_detect.CaptureService", return_value=captures), \
+                patch("picker_workflow.CaptureService", return_value=captures), \
                 redirect_stdout(io.StringIO()):
             session, _ = hardware_factory(self.args)(Mock())
             self.assertFalse(session.home_after_cup)

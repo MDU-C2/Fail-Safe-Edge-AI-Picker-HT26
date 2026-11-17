@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import capture_and_detect as app
+import picker_workflow as app
 from cup_commands import CupSession
 from cup_inventory import SelectionError
 from recovery_journal import RecoveryJournal

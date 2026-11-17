@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import cv2
 import numpy as np
 
-from capture_and_detect import Detector, KEEP_CLASSES, mark_cup_bases
-from depth_average import EDGE_PX
+from picker_workflow import Detector, KEEP_CLASSES, mark_cup_bases
+from picker_depth import EDGE_PX
 
 
 from .native_transport import InferenceError, WorkerTransport, _integer

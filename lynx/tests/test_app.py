@@ -352,7 +352,7 @@ def test_live_configuration_requires_explicit_robot_address(configured_state):
 
 @pytest.mark.parametrize("failure_stage", ["attach", "intrinsics", "storage"])
 def test_factory_releases_native_model_if_later_initialization_fails(tmp_path, monkeypatch, failure_stage):
-    import capture_and_detect
+    import picker_workflow
     import placing_grid
     from lynx import camera, inference
 
@@ -386,8 +386,8 @@ def test_factory_releases_native_model_if_later_initialization_fails(tmp_path, m
 
     monkeypatch.setattr(camera, "LocalCameraClient", Camera)
     monkeypatch.setattr(inference, "NativeWorker", Worker)
-    monkeypatch.setattr(capture_and_detect, "Calibration", lambda path: object())
-    monkeypatch.setattr(capture_and_detect, "CaptureStore", Store)
+    monkeypatch.setattr(picker_workflow, "Calibration", lambda path: object())
+    monkeypatch.setattr(picker_workflow, "CaptureStore", Store)
     monkeypatch.setattr(placing_grid, "PlacingGrid", lambda path: SimpleNamespace(snapshot=lambda: {}))
     controller = SimpleNamespace(event=lambda message: None, attach_resource=attach)
     factory = lynx_app.hardware_factory(lynx_app.arguments(BASE_ARGS + ["--mock"]), tmp_path, GATEWAY_TOKEN,
@@ -401,7 +401,7 @@ def test_factory_releases_native_model_if_later_initialization_fails(tmp_path, m
 
 @pytest.fixture
 def memory_factory(tmp_path, monkeypatch):
-    import capture_and_detect
+    import picker_workflow
     import placing_grid
     from lynx import camera, inference, resources
 
@@ -418,7 +418,7 @@ def memory_factory(tmp_path, monkeypatch):
     monkeypatch.setattr(camera, "LocalCameraClient", lambda *args, **kwargs: object())
     monkeypatch.setattr(inference, "NativeWorker", worker)
     monkeypatch.setattr(resources, "trim_unused_heap", trim)
-    monkeypatch.setattr(capture_and_detect, "Calibration", lambda path: object())
+    monkeypatch.setattr(picker_workflow, "Calibration", lambda path: object())
     monkeypatch.setattr(placing_grid, "PlacingGrid", lambda path: SimpleNamespace(snapshot=lambda: {}))
 
     def factory(extra=()):

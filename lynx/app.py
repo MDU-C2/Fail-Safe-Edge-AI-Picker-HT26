@@ -139,7 +139,7 @@ def compose(gateway, dashboard, *, live=False, dashboard_token=None):
 def hardware_factory(args, state, token, model, service, loop_getter):
     def factory(controller):
         import cv2
-        from capture_and_detect import Calibration, CaptureService, CaptureStore
+        from picker_workflow import Calibration, CaptureService, CaptureStore
         from cup_commands import CupSession
         from language_commands import LanguageController
         from placing_grid import PlacingGrid

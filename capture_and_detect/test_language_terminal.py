@@ -5,7 +5,7 @@ import io
 import unittest
 from unittest.mock import Mock, patch
 
-import capture_and_detect as app
+import picker_workflow as app
 from cup_inventory import SelectionError
 from cup_commands import CupSession
 from language_commands import LanguageController

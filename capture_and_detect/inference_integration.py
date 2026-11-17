@@ -57,7 +57,7 @@ def validate_inference_arguments(args, parser):
 
 def create_detector(args, calibration, intrinsics, *, on_update=None, register_resource=None):
     """Return (detector, weights), loading optional heavy dependencies lazily."""
-    from capture_and_detect import Detector, load_model
+    from picker_workflow import Detector, load_model
 
     if not (getattr(args, "mac_inference_url", None) or getattr(args, "isolated_inference", False)):
         model, weights = load_model()
@@ -147,7 +147,7 @@ class ProviderDetector:
         import cv2
         import numpy as np
         from camera_client import CameraError
-        from capture_and_detect import Detector, mark_cup_bases
+        from picker_workflow import Detector, mark_cup_bases
         from inference_protocol import make_request, decode_detections
 
         observation_id = f"{uuid.uuid4().hex}:{frame.get('sequence', 'image')}"

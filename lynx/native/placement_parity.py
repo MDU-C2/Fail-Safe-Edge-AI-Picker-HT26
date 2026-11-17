@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "capture_and_detect"))
 import cv2
 import numpy as np
-from capture_and_detect import Calibration
+from picker_workflow import Calibration
 from detection_masks import encode_mask
 import placement_vision
 from placement_vision import PlacementVision

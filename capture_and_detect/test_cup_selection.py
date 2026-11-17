@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from capture_and_detect import handle_terminal
+from picker_workflow import handle_terminal
 from cup_commands import CupSession
 from cup_inventory import SelectionError, atomic_json, build_inventory, selected_cup
 from handover_plan import handover_jobs

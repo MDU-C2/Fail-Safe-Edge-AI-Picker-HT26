@@ -2,3 +2,7 @@
 # Keep their established LF checksums when Git for Windows has core.autocrlf=true.
 /calibration/*.json text eol=lf
 /capture_and_detect/*.table-reference.json text eol=lf
+
+# Preserve the original V4 terminal sources byte-for-byte on every checkout.
+/capture_and_detect/capture_and_detect.py text eol=lf
+/capture_and_detect/depth_average.py text eol=lf

@@ -1,102 +1,140 @@
-# Select a cup and run the handover
+# Terminal picker and browser dashboard
 
-The picker uses the **v4 snapshot workflow**: Scan captures one averaged-depth
-observation; reviewed single picks and batches use those saved cup coordinates.
-No new camera capture, matching check or image-age deadline runs between cups.
-Completed cups are removed from the available selection, while remaining cups
-can be selected from the same scan. Scan again when you change the scene.
+There are two independent entry points. Run only one robot controller at a time.
+
+| Entry point | Workflow |
+| --- | --- |
+| `python capture_and_detect.py` | The original `vision_detection4` terminal program, restored unchanged. Enter captures and processes all reachable cups. |
+| `python web_app.py --gateway <gateway-url> --live` | The existing browser UI, single-cup selection, Assistant, smooth handover, placement checks, confirmations and recovery. |
+| `python web_app.py --demo` | The browser UI with simulated data and no gateway or robot connection. |
+| `python picker_workflow.py --commands` | The optional advanced scan/goto/confirm shell sharing the UI backend. |
+
+Commands in this guide run from the `capture_and_detect` directory unless stated
+otherwise. From the repository root, prefix the script with `capture_and_detect/`.
+For example, `python capture_and_detect/capture_and_detect.py` starts the V4
+terminal and `python capture_and_detect/web_app.py --demo` starts the UI preview.
+
+## Original V4 terminal
+
+`capture_and_detect.py` and its `depth_average.py` helper match the
+`vision_detection4` source at commit `52f54791e08709ce8e44d1f39b5687085ba8af21`.
+The terminal does not import the UI backend. Its behavior and command-line options
+are the original V4 ones:
+
+- Enter captures one scene, detects cups, then picks all reachable cups in
+  confidence order, using the same saved positions throughout that cycle.
+- Each cup uses the next unoccupied entry in `placing_grid.json`; successful
+  placement marks that entry occupied. It stops the cycle at the first failure
+  or when there is no free location. There are no UI camera-clearance checks,
+  reservations, confirmation previews or persistent recovery journal.
+- The original separate movement commands and no-home sequence remain. The
+  dashboard's buffered smooth paths and saved speed settings do not affect it.
+- `q` followed by Enter exits at the prompt. During motion, Ctrl-C inhibits
+  subsequent jobs; a submitted movement can finish. This is the original V4
+  behavior, not the dashboard's responsive Stop/status command interface.
+- Supported options are `--gateway`, `--output`, `--conf`, `--left-only`,
+  `--camera-z` and `--depth-frames`. There is **no dry-run option** in this
+  unchanged program. Pressing Enter runs the physical workflow.
+
+Set the existing gateway token in your terminal, then launch:
+
+```powershell
+$env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
+python capture_and_detect.py --gateway http://192.168.125.20:8000
+```
+
+On macOS/Linux:
+
+```sh
+export GATEWAY_TOKEN="YOUR_ACTUAL_GATEWAY_TOKEN"
+python capture_and_detect.py --gateway http://192.168.125.20:8000
+```
+
+The V4 defaults remain `../Calibration/calibration.json`, `placing_grid.json`
+and `Data/Detections`, resolved relative to the script. These defaults are distinct
+from the UI's `calibration_grid.json` and seven-cell outside-tray grid. The
+terminal has no `--calibration` or `--placing-grid` override.
+
+The source deliberately keeps V4's uppercase `Calibration` path, while the
+tracked directory is lowercase `calibration`. Normal case-insensitive macOS and
+Windows checkouts resolve it directly. On a case-sensitive Linux filesystem,
+create the alias once **from the repository root**, only if it is absent:
+
+```sh
+[ -e Calibration ] || ln -s calibration Calibration
+```
+
+When using both workflows at different times, give the terminal a separate
+capture directory so it does not replace the UI's `cups.json`, `latest.json` or
+CSV records:
+
+```sh
+python capture_and_detect.py --gateway http://192.168.125.20:8000 \
+  --output Data/TerminalDetections
+```
+
+This changes only the output location. It does not synchronize the terminal's
+placement occupancy with the UI grid, reservations or recovery state. Finish
+and close the current controller before switching, and reconcile the physical
+scene with the destination layout used by the next controller.
+
+## Browser UI and advanced shell
+
+**All sections below describe `web_app.py`, `picker_workflow.py` and their shared
+UI backend unless an entry point is explicitly named. They do not add features
+or checks to the unchanged V4 terminal.**
+
+The UI keeps the **V4 snapshot selection workflow**: Scan captures one
+averaged-depth observation; reviewed single picks and batches use those saved
+cup coordinates. No new camera capture, rematching or image-age deadline runs
+between cups. Completed cups become unavailable, while remaining cups can be
+selected from the same scan. Scan again when you change the scene.
+
 The UI, Assistant, 60-second confirmations, destination reservations, recovery,
 software Stop and smooth handover remain. Receiving offsets are fixed at zero.
+The camera and enhanced terminal backend now live in `picker_workflow.py`, with
+UI depth sampling in `picker_depth.py`. `web_app.py` is the separate browser
+launcher; the V4 script no longer accepts `--web`.
 
-
-Run **`python capture_and_detect.py` for the terminal** and
-**`python web_app.py` for the browser dashboard**. These are separate commands;
-run one controller at a time. Both use the same camera, grid, motion and recovery
-modules. `--web` on the terminal script remains a dashboard alias.
-
-The default terminal uses the `vision_detection4` workflow: **Enter captures a fresh
-scene and processes all available cups; `q` then Enter quits.** Live Enter starts
-the checked pick-and-place cycle without another confirmation. Use `--dry-run`
-to preview it without movement. Each cup uses the saved snapshot while destination reservations and recovery
-checks remain in effect.
-
-The next prompt appears after the whole batch finishes or is blocked. During a
-batch, `stop` and `status` remain available; extra Enter presses are rejected
-without queuing another cycle. **Cup workflows send no automatic Home by default
-before, between or after cups, including the dashboard, command shell and language mode.** After each handover the left arm stays above the
-handover; the right releases the cup and stays 80 mm above its placement. The
-next cup starts through the existing left-ready and right-approach poses. In
-`--left-only` mode, the left arm stays above the cup it replaced. Both grippers
-are empty at a successfully completed cycle's end. Start with empty grippers
-and the picking/transfer paths clear; this mode does not park the arms for you.
-Add `--home-after-cup` to restore automatic Home in the terminal, including
-`--commands` or `--llm` mode. Manual dashboard Home controls remain available.
-
-For the optional `scan`, `goto 2`, and `goto all` command shell, add `--commands`.
-In that shell, `scan` only observes, `goto 2` verifies and picks cup 2, and
-`goto all` previews a batch for confirmation. Cup IDs refer to the current scan.
-That shell and the dashboard use the same clearance poses at the end of each cup.
-For a browser preview without hardware, use `python web_app.py --demo`.
+Cup sequences send no automatic Home by default. After each handover the left
+arm stays above the handover and the right remains 80 mm above placement. In
+advanced-shell `--left-only` mode, the left arm stays above the replaced cup.
+`--home-after-cup` is an advanced-shell option; manual dashboard Home controls
+remain available. These options do not change the original V4 program.
 
 Windows multi-device setup is described in
 [Windows PC / MacBook, Pi and Lynx](DEVICE_DASHBOARD.md#move-the-dashboard-between-mac-and-windows).
-The local device uses the computer running the dashboard: Windows PC on Windows,
-MacBook on macOS. The private device configuration is required to show all three
-choices; `--gateway` alone starts a local-only dashboard.
+The private device configuration is required to show all three processing
+choices; `--gateway` alone starts a local-only dashboard. Existing managed UI
+launches should keep their current `--device-config` and other arguments with
+the `web_app.py` command.
 
-The program uses the existing calibration, YOLO weights and RAPID program over
-`/api/v1/robot/rws/move`, `/gripper` and `/home`. It does not install or start RAPID.
-Dependencies are `ultralytics`, `opencv-python`, `numpy`, and `requests`.
-`best.pt` is next to the script; `PICKER_DEVICE=lynx` selects `best_ncnn_model`.
-Calibration defaults to `../calibration/calibration_grid.json`, relative to the
-script. This is the verified calibration for the seven outside-tray positions and
-their empty-table reference. The latest branch's `calibration/calibration.json`
-and `calibration_fused.py` remain available for calibration experiments. The
-experimental file changes the Z tag offset from 40 to 20 mm: using it with the
-existing grid makes six known-empty cells unknown and invalidates the reference.
-Use `--calibration` only with a matching, independently validated grid reference.
+The UI uses the existing YOLO weights and running RAPID program. It does not
+install or start RAPID. Dependencies include `ultralytics`, `opencv-python`,
+`numpy` and `requests`. `best.pt` is next to the script;
+`PICKER_DEVICE=lynx` selects `best_ncnn_model`.
 
-## Integration with vision_detection3
+The UI's calibration defaults to `../calibration/calibration_grid.json`, relative
+to the script. Keep it paired with the seven-cell outside-tray layout and its
+empty-table reference. The separate `calibration/calibration.json` changes the
+Z tag offset from 40 to 20 mm and is not a substitute for that validated pair.
 
-The unified entry point retains the browser UI, seven-cell grid, supported gateway
-controls, placement uncertainty handling, recovery records and inference failover.
-`capture_and_detect_custom.py` remains removed. The incoming branch's model assets,
-fused-calibration tool, gateway script addresses and depth-sampling helper remain.
+`--depth-frames` defaults to **5**. Samples form one observation, not five grid
+checks. Cup geometry uses the V4 mask-depth rule and available positive depth
+samples, without the removed core/spread rejection. The latest matched RGB and
+its raw aligned depth are retained for UI placement checks and saved images.
+If no new sequence arrives, the available samples can be used. There is no
+per-cup or post-clearance recapture. Destination evidence comes from the saved
+scan; reservations and recovery checks still apply before execution.
 
-`--depth-frames` defaults to **5** in terminal and hardware web modes; choose 1 to
-disable temporal averaging. Each observation collects fresh matched RGB/depth
-pairs with strictly increasing sequences, within a single 10-second collection
-budget. The latest RGB and its **raw aligned depth** are retained for grid checks
-and saved images. Cup coordinates average the per-frame interior depths, with
-per-frame camera/robot Z recorded in detection JSON and robot Z in CSV and cup
-inventory. An invalid base core or depth spread above 20 mm leaves the cup without
-a usable pick coordinate. This preserves the existing centre-depth guard.
+Travel TCP height remains **250 mm** and requested gripper opening remains
+**diameter + 70 mm**. `--camera-z` is disabled by default; when enabled it uses
+`max(40, round(cup_base_z + 20, 1))` mm TCP for picking and replacing. Otherwise
+pick TCP height is 70 mm. No movement occurs merely by launching the UI.
 
-The five samples form one observation, not five clear-grid checks. Three
-consecutive independent clear observations are still required for the batch's
-post-clearance placement check (post-home when automatic Home is enabled); averaging never fills a depth hole or replaces that
-raw-frame evidence. The observation age starts before the oldest sample. A
-frozen/restarted stream or incomplete sample set is rejected. Only the latest raw
-image pair is archived; per-frame depths are recorded as object measurements.
-A locked detections CSV falls back to a capture-specific CSV so an open spreadsheet
-does not interrupt capture storage.
-
-The user-approved incoming movement settings are **250 mm travel TCP height** and
-**diameter + 70 mm gripper opening**. `--camera-z` is available in terminal and web
-modes and remains **disabled by default**. When enabled it uses
-`max(40, round(cup_base_z + 20, 1))` mm TCP for picking, with the same height used
-when replacing a cup in left-only mode. The guarded planner, confirmation and
-snapshot selection still applies. Without this flag, pick TCP stays at 70 mm.
-
-The incoming no-home sequence is used by all cup workflows. Fresh placement checks
-run after the preceding cup's complete clearance sequence and still require
-unobstructed camera evidence; an arm hiding a destination blocks the next cup.
-The established handover barriers and completion checks remain in place.
-No automatic movement is performed merely by launching the app.
-
-The direct MacBook dashboard uses GPT-6 Astra, configured in **Settings**;
-see [Assistant setup](ASSISTANT.md). YOLO still detects cups. The legacy terminal
-interface retains its optional `--llm` Ollama integration, described below.
+The MacBook dashboard uses GPT-6 Astra, configured in **Settings**;
+see [Assistant setup](ASSISTANT.md). The optional `picker_workflow.py --llm`
+advanced shell retains its separate Ollama integration, described below.
 
 ## Dishwasher tray: offline height preview
 
@@ -131,57 +169,9 @@ placement cells overlap the rack in the image, and the RAPID arm modules use
 physical geometry/path validation before enabling tray motion. The preview does
 not change calibration, placement reservations, RAPID or live movement targets.
 
-The detector requires valid depth near each CUP BASE centre and
-across its interior. It uses the interior median instead of edge/background
-samples; an unreliable base stays visible but has no usable robot coordinates.
-The saved detection and inventory include a `depth_quality` explanation. Restart
-the app and scan again to apply this check; archived scans are not rewritten.
+## Run the UI or advanced shell
 
-## Run
-
-From the repository's `capture_and_detect` directory, set the existing gateway
-token. In Windows PowerShell:
-
-```powershell
-$env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
-python capture_and_detect.py --gateway http://192.168.125.20:8000
-```
-
-On macOS/Linux:
-
-```sh
-export GATEWAY_TOKEN="YOUR_ACTUAL_GATEWAY_TOKEN"
-python capture_and_detect.py --gateway http://192.168.125.20:8000
-```
-
-The terminal runs **live by default**. Press Enter once to capture and process
-cups, or `q` then Enter to quit. While a cycle runs, another Enter is rejected
-instead of queued; `status` shows progress and `stop` requests a software stop.
-Add `--dry-run` to preview only. Use the actual reachable gateway address if it
-has changed.
-
-If startup reports an unfinished sequence, **blank Enter cannot clear it**.
-The message refers to this computer's saved recovery record. Manually homing
-the arms or restarting RAPID does not update that record. This is a retained
-recovery check from this branch; the original `vision_detection4` terminal did
-not have a persistent recovery acknowledgement.
-Finish and close any other controller, inspect both arms and the cup, and recover
-the robot as needed. At the program's prompt, type `reset` and press Enter. Wait
-for `Recovery acknowledged. No command sent.` before pressing Enter again to
-start a fresh cycle. Reset itself sends no movement and does not release reserved
-placement cells.
-
-If the UI works but the terminal reports recovery, compare their startup commands
-and capture directories. The direct UI and terminal default to this checkout's
-`Data/Detections/robot_recovery.json`; `--output`, another checkout, or a managed
-device configuration can select a different record. A blocked terminal prints
-its record's path. An already-running terminal also keeps its recovery block
-even if another process clears that file; close controllers before switching
-between them. A dry-run reset only acknowledges recovery for that preview
-session and leaves the real recovery record intact. Do not delete records to
-bypass recovery.
-
-Launch the local-only UI separately:
+Launch the local-only UI separately, with `GATEWAY_TOKEN` already set:
 
 ```sh
 python web_app.py --gateway http://192.168.125.20:8000 --live --port 8087
@@ -189,12 +179,13 @@ python web_app.py --gateway http://192.168.125.20:8000 --live --port 8087
 
 Open `http://localhost:8087`. For the device selector, use the private
 `--device-config` command in [device setup](DEVICE_DASHBOARD.md), instead of
-`--gateway`. The UI defaults to dry run without `--live`.
+`--gateway`. The UI defaults to dry run without `--live`. For a gateway-free
+preview use `python web_app.py --demo`.
 
-To use the optional detailed terminal shell:
+To use the optional advanced shell:
 
 ```sh
-python capture_and_detect.py --commands --gateway http://192.168.125.20:8000 --dry-run
+python picker_workflow.py --commands --gateway http://192.168.125.20:8000 --dry-run
 ```
 
 ```text
@@ -202,11 +193,23 @@ cups> scan
 cups> list
 cups> show 2
 cups> goto 2
-... verification image and planned requests, no robot movement ...
+... saved-scan plan and planned requests, no robot movement ...
 cups> quit
 ```
 
-The terminal-only `--left-only` option picks, lifts and replaces a selected cup
+`picker_workflow.py` without `--commands` retains the enhanced Enter-to-pick
+interface with UI placement reservations, Stop/status and persistent recovery.
+It is separate from `capture_and_detect.py` and is not the original V4 program.
+The advanced shell runs live unless `--dry-run` is supplied.
+
+If the UI or advanced shell reports an unfinished sequence, inspect both arms
+and the cup, recover the robot as needed, then acknowledge recovery through the
+UI or the shell's `reset` command. This sends no movement and does not release
+reserved placement cells. Restarting or scanning does not clear the record.
+Use the same UI output directory across restarts; do not delete or replace its
+recovery state to bypass it. The restored V4 terminal does not read this journal.
+
+The advanced shell's `--left-only` option picks, lifts and replaces a selected cup
 with the left arm, without a handover or placement-grid update. Add `--dry-run`
 to preview that sequence first. Browser mode does not accept `--left-only`.
 
@@ -216,8 +219,8 @@ checks. Use one operator instance at a time. Start with both grippers empty and
 the known calibrated table/gripper arrangement; `goto` opens the grippers as part
 of picking. Check that grid locations marked free are physically clear.
 
-The following table describes **`--commands` mode**. In the default terminal,
-Enter processes cups instead of only scanning.
+The following table describes **`picker_workflow.py --commands` mode**.
+These commands are not available in the original V4 terminal.
 
 | Command | Behavior |
 | --- | --- |
@@ -234,7 +237,7 @@ Enter processes cups instead of only scanning.
 | `confirm <code>` | Execute the exact batch or language proposal, once, within 60 seconds. |
 | `cancel` | Discard a pending proposal; does not stop robot movement. |
 | `reset` | Acknowledge manually checking/recovering the robot; no hardware command. Requires a new scan. |
-| `q` / `quit` | Exit. If terminal work is active, request software stop before waiting for it to unwind. |
+| `q` / `quit` | Exit. If advanced-shell work is active, request software stop before waiting for it to unwind. |
 
 After a successful pick, select another available cup or run `scan` to replace the snapshot. `reset` is for recovery after an interrupted
 or unconfirmed action; it is not needed after a successful cycle and is not a
@@ -242,7 +245,7 @@ command to move home.
 
 ## Start, software stop, status and help
 
-The web dashboard and `--commands` terminal accept these exact commands without an LLM:
+The web dashboard and `picker_workflow.py --commands` shell accept these exact commands without an LLM:
 
 ```text
 start
@@ -278,12 +281,12 @@ and unfinished placement reservations remain occupied. Inspect both arms and the
 cup, and recover/restart RAPID through the robot's established operator controls.
 An interrupted program can resume its old motion if restarted; this app does not
 issue a RAPID start or clear its pending variables. Once active requests have
-finished, use the inspection acknowledgement (`reset` in the terminal), then scan
+finished, use the inspection acknowledgement (`reset` in the advanced shell), then scan
 again. A new Start request cannot bypass this lockout.
 
-The interactive terminal processes normal work on one worker, keeping `stop`,
+The advanced shell processes normal work on one worker, keeping `stop`,
 `status` and `help` responsive. Other actions are rejected while busy; they are
-not queued. Ctrl-C, EOF, or quitting during active terminal work requests software
+not queued. Ctrl-C, EOF, or quitting during active advanced-shell work requests software
 stop before shutdown. An idle exit sends nothing. Closing the browser does not
 send Stop. Demo and dry-run Stop make no robot or gateway requests.
 
@@ -305,12 +308,12 @@ also allows separate pick/lift, right handover, flip and placement settings.
 The overall speed caps every stage. For example, applying 75 mm/s sets normal, loaded-pick, turning and
 sequence-home speeds to 75 mm/s. Actual speed
 also depends on the robot controller. Both arms share one control lease and
-renewal loop, with at most one outstanding request per arm and a camera
+renewal loop, with at most one outstanding request per arm,
 planning from the saved snapshot before each cup's motion. The sequence below is the default in
-every cup workflow. It omits the initial Home and both return sequences.
+the UI and advanced shell. It omits the initial Home and both return sequences.
 
-1. Verify the selected cup, grip geometry and destination with three consecutive
-   clear camera observations, then close the empty right gripper.
+1. Use the selected cup and clear destination from the saved scan, validate the
+   placement reservation, then close the empty right gripper.
 2. Close the empty left gripper and move the left arm to ready.
 3. Approach above the verified cup with its detected grip rotation, open the
    left gripper to the measured opening, descend, grip, and lift.
@@ -337,7 +340,7 @@ Existing joint-space targets, orientations, phase speeds and turnover
 acceleration are retained. Receiving offsets are fixed at zero. Blending changes
 the curve near intermediate points, so physical clearance still needs checking.
 
-With terminal `--home-after-cup` (or explicit `CupSession(..., home_after_cup=True)`),
+With advanced-shell `--home-after-cup` (or explicit `CupSession(..., home_after_cup=True)`),
 step 1 also homes the right arm and checks its joints before picking. After the
 right arm clears the handover in step 7, the empty left gripper closes, the left
 arm moves laterally to Y=400 mm at Z=690 mm, and homes with a joint check while
@@ -364,7 +367,7 @@ the newer Python gateway's cancellation guarantees cannot be assumed.
 The detected CUP BASE mask and reliable interior depth provide an estimated
 diameter. The requested opening is diameter + 70 mm, converted to a bounded
 0–25 mm finger-position command using the calibrated 75 mm closed gap. Missing
-diameter falls back to fully open. A nearby unambiguous handle selects pickup
+diameter falls back to fully open. The nearest assigned handle selects pickup
 yaw between 90° and 270°; no usable handle uses 180°. The selected handle, yaw and opening come from the saved snapshot; they are not
 recomputed during the pick.
 
@@ -391,14 +394,14 @@ accepted during loading but normalized to zero; they cannot alter the motion.
 
 ## Placement grid and batches
 
-Terminal and browser modes default to the seven-position `placing_grid_outside_tray.json` next to the script;
+The advanced shell and browser modes default to the seven-position `placing_grid_outside_tray.json` next to the script;
 `--placing-grid /path/to/grid.json` selects another file. Locations are flange
 coordinates, used without camera offsets. The next location is the first free
 entry in file order that is free and not blocked by an uncertain camera check.
 
 ### Camera grid and automatic release
 
-Restart the terminal or web app after updating, then use **Scan workspace**
+Restart the advanced shell or web app after updating, then use **Scan workspace**
 or `scan`. The saved annotated capture shows all 12 actual placement locations,
 labelled **P1–P12**, projected onto the table. Cup IDs remain separate. The physical
 four-by-three layout appears as three columns and four rows from this camera angle.
@@ -476,10 +479,8 @@ below must agree with that assignment; it cannot move a cup to another cell or
 resolve a tied segmentation assignment.
 
 The dashboard reports confidently located cups and their distinct owner cells
-from the **last frame**, without adding repeated detections across the three
-frames. Two cups in one cell count as two cups but occupy only that one cell.
-If per-cell counts change during the scan, the dashboard says so and keeps all
-observed blocks. The count is not a quota: other detected objects, unassigned
+from the saved observation. Two cups in one cell count as two cups but occupy
+only that one cell. The count is not a quota: other detected objects, unassigned
 cups, raised depth and uncertain visibility still prevent placement. The image
 labels distinguish **CUP**, **OBJECT** and **DEPTH CHECK** so an unmatched depth
 patch is not presented as an additional cup.
@@ -682,7 +683,7 @@ new reference; a fresh scan is still required after the layout changes.
 
 The grid file's optional `cell_size_mm` is now authoritative for each capture,
 including initial scan placement checks. This file sets it to 90. `--grid-cell-size` is
-the fallback for older grid files without that field. Each three-frame scan
+the fallback for older grid files without that field. Each scan
 uses one snapshot and size, and changes invalidate stale placement previews.
 The earlier `placing_grid_spaced.json` extends into the marked tray area; use
 the outside-tray file for this setup. The layout does not track a moved tray.
@@ -690,7 +691,7 @@ the outside-tray file for this setup. The layout does not track a moved tray.
 Stop the current dashboard while it is idle, then start the outside-tray layout:
 
 ```sh
-python capture_and_detect.py --web --gateway http://192.168.125.20:8000 \
+python web_app.py --gateway http://192.168.125.20:8000 \
   --live --port 8086 \
   --placing-grid placing_grid_outside_tray.json --grid-cell-size 90
 ```
@@ -701,8 +702,8 @@ the layout backup; the interrupted run's recovery journal remains unchanged.
 Removing a destination does not acknowledge recovery or release a held cup.
 A complete backup of the former twelve-position grid is
 saved in `output/placing-grid-before-eight-cells-20261111_123234_115061.json`
-relative to the repository root. The usual three-frame checks, cup assignment,
-obstacle checks and reservation rules still apply. Flat tape does not count as
+relative to the repository root. Saved-scan cup assignment, obstacle checks and
+reservation rules still apply. Flat tape does not count as
 a raised obstacle, and a camera-clear cell is not a reachability guarantee.
 
 `goto 2` and `pick cup 2` select only cup 2. To pick several cups:
@@ -779,15 +780,16 @@ and `(180, 0, 0)` for placement, with `(90, 0, 0)` at the halfway turn.
 Home uses the existing RAPID home routines;
 the client also checks all seven reported axes within 1 degree of those targets.
 
-Saved XY limits remain X=350–800 and Y=-230–420 mm. Corrected flange targets
-must also fit the configured gateway limits: X=180–800, Y=-400–500, Z=50–700 mm.
-Ordinary movement targets must be at least 199 mm high; the pick and placement
-targets may go lower within the flange limits. The running Pi gateway must
+Saved XY limits remain X=350–800 and Y=-230–420 mm. The UI no longer applies
+the removed whole-plan flange-envelope checks. The gateway retains its own
+configured limits. The V4-style per-command height check requires ordinary
+movement targets to be at least 199 mm high and no higher than 700 mm; pick and
+placement targets may go below 199 mm. The running Pi gateway must
 allow Z=700 mm for the updated handover poses; changing the Mac app alone does
 not change the Pi's configured limits.
-Full picking additionally requires a detected cup-base Z of −30–150 mm.
-A candidate permitted only for hovering is labelled `HOVER ONLY` in the image
-and `hover only` in the list. A cup with Y=-627 mm remains blocked even when
+A base qualifies through a CUP body, nearby handle or plausible cup height;
+it is not additionally rejected solely because its Z lies outside −30–150 mm.
+A cup with Y=-627 mm remains blocked even when
 explicitly selected. Place it inside the calibrated work area and scan again;
 selecting an ID never bypasses coordinate checks.
 
@@ -820,8 +822,8 @@ expire a new lease; expired or inconsistent replies still block commands.
 
 `robot_recovery.json` records an active sequence before the first live command.
 An interruption requires checking/recovering both arms and the cup, then `reset`
-and a fresh scan (`scan` in `--commands` mode, or Enter for a fresh cycle in the
-default terminal). Restarting the program or scanning does not clear this lockout.
+and a fresh scan (`scan` in `picker_workflow.py --commands` mode). Restarting the
+program or scanning does not clear this lockout.
 Use the same output directory across runs: the journal belongs to that directory.
 The flag is cleared only after a fully completed sequence or explicit `reset`.
 Dry-run does not acquire control or send any robot HTTP request; it still uses
@@ -848,7 +850,7 @@ change thresholds, replace outdated capture IDs, or acknowledge recovery itself.
 
 ## Local web dashboard
 
-The browser dashboard reuses the terminal's `CupSession`, saved-snapshot selection,
+The browser dashboard and advanced shell share `CupSession`, saved-snapshot selection,
 fixed motion plan and recovery journal. It shows the latest numbered scan,
 selectable cup cards, typed commands, an expiring action confirmation, controller
 progress and blocked reasons. It is a local app; no hosting or cloud account is
@@ -859,7 +861,7 @@ Python environment where your existing detection script works. From this folder:
 
 ```sh
 python3 -m pip install -r requirements-web.txt
-python capture_and_detect.py --web --demo
+python web_app.py --demo
 ```
 
 Open **http://localhost:8080** in your browser. Demo mode uses an illustrated scene,
@@ -872,11 +874,11 @@ or a simulation of all checks during movement.
 For real camera detections, use the terminal where `GATEWAY_TOKEN` is already set:
 
 ```sh
-python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --dry-run
+python web_app.py --gateway http://192.168.125.204:8000 --dry-run
 ```
 
 This mode captures a scan and previews the plan but sends no robot
-commands. As with the terminal dry-run, checks that normally run between physical
+commands. As with the advanced-shell dry-run, checks that normally run between physical
 steps are not executed. Scan and explicit cup buttons need no language API key.
 For flexible requests and real saved-cup matching, configure GPT-6 Astra in
 **Settings** and use **Assistant**. The dashboard no longer accepts `--llm`,
@@ -892,14 +894,14 @@ To enable the physical robot, stop the web server while the robot is idle and
 start it with the explicit **`--live`** flag:
 
 ```sh
-python capture_and_detect.py --web --gateway http://192.168.125.204:8000 --live
+python web_app.py --gateway http://192.168.125.204:8000 --live
 ```
 
 Omitting `--dry-run` alone does **not** enable movement in the web app. The page
 shows **PHYSICAL ROBOT**, and each motion still requires clicking **Confirm cup N**.
 The button binds to the exact scan, cup, action and one-use confirmation token;
 it expires after 60 seconds. Even typed `goto 2` creates a proposal in the web app.
-The terminal's exact `goto 2` command executes directly from the selected snapshot. A new scan or request
+The advanced shell's exact `goto 2` command executes directly from the selected snapshot. A new scan or request
 invalidates an older proposal. Cup IDs belong to one scan and can change on rescan.
 
 Only one action runs at a time. Work happens in a dedicated worker so status stays
@@ -929,12 +931,11 @@ does not independently prove that the cup was gripped or placed. No continuous
 collision monitoring, automatic home/recovery, raw XYZ controls or voice stop is
 introduced by this dashboard.
 
-Web implementation: `web_app.py` (local HTTP and compatibility launcher), `web_controller.py`
-(single controller worker), and `web_static/` (self-contained browser interface).
-The camera backend is imported from `capture_and_detect.py`. Existing
-`python web_app.py ...` commands remain supported; the documented application
-launcher is `python capture_and_detect.py --web ...`. Runtime dependencies are
-separate from the Pi gateway requirements.
+Web implementation: `web_app.py` (browser launcher and local HTTP server),
+`web_controller.py` (single controller worker), and `web_static/` (browser interface).
+The camera backend is imported from `picker_workflow.py`, using `picker_depth.py`.
+The restored V4 `capture_and_detect.py` and `depth_average.py` are independent.
+Runtime dependencies are separate from the Pi gateway requirements.
 
 ### Robot controls panel
 
@@ -1053,12 +1054,12 @@ Do not update/restart either gateway or dashboard during robot movement.
 The direct MacBook dashboard uses the configured GPT-6 Astra client for language
 and real saved-cup visual matching. It sends reference and candidate photos to
 OpenAI when finding and verifying a named cup. YOLO detection and the existing
-motion checks remain local. The terminal's optional Ollama path is separate and
-described under **Local language commands (terminal only)** below.
+motion checks remain local. The advanced shell's optional Ollama path is separate and
+described under **Local language commands (advanced shell only)** below.
 
 ### Save a cup and request it by name
 
-Start the dashboard directly with `--web --gateway ...` and configure Astra in
+Start the dashboard directly with `python web_app.py --gateway ...` and configure Astra in
 **Settings**. Scan, then send `Remember cup 2 as Kasun's cup` in **Assistant** and
 click **Save cup reference**. Saving a reference sends no API request or movement.
 The **Saved cup references** panel keeps the reference photo across scans and app
@@ -1066,10 +1067,10 @@ restarts. Request `Pick Kasun's cup` to compare the current snapshot's cup crops
 with the reference through Astra. Review the saved photo, matched cup and grid
 destination inside **Assistant**, then confirm the existing pick/handover/place/clearance
 sequence there once. There is no second confirmation in Pick cups. See [Assistant setup](ASSISTANT.md) for the full
-workflow. In terminal camera mode, saved-cup matching still requires the legacy
+workflow. In advanced-shell camera mode, saved-cup matching still requires the legacy
 `--llm --llm-model qwen3-vl:4b-instruct` options and a local Ollama server.
 
-These fixed commands remain available in the web command box and terminal:
+These fixed commands remain available in the web command box and advanced shell:
 
 ```text
 scan
@@ -1080,7 +1081,7 @@ pick saved Kasun mug
 
 `pick Kasun mug` is also accepted when the entire name exactly matches a saved
 entry. Names are case insensitive. Saving never moves the robot. A named pick
-always needs confirmation, including in the terminal (`confirm <code>`).
+always needs confirmation, including in the advanced shell (`confirm <code>`).
 `forget saved Kasun mug` or **Forget** removes the reference without moving.
 Duplicate names are rejected; forget the old entry before saving a replacement.
 
@@ -1117,10 +1118,11 @@ reference. It may reject that target but cannot redirect the pick. It uses the
 same saved image, with no camera recapture or image-age expiry. Stop remains
 independent of model processing. Numeric picks keep the same robot sequence.
 
-## Local language commands (terminal only)
+## Local language commands (advanced shell only)
 
-The following Ollama instructions apply only to `capture_and_detect.py` without
-`--web`. The dashboard uses Astra and does not start or contact this local model.
+The following Ollama instructions apply only to `picker_workflow.py --llm`.
+The original V4 terminal has no language mode. The dashboard uses Astra and does
+not start or contact this local model.
 Voice recording, speech recognition and spoken replies are not implemented.
 
 ```text
@@ -1129,7 +1131,7 @@ Operator sentence -> local Ollama model -> validated action + cup selector
                   -> existing CupSession camera checks -> existing robot sequence
 ```
 
-The default terminal model is `qwen3-vl:4b-instruct`. This vision-language model
+The default advanced-shell model is `qwen3-vl:4b-instruct`. This vision-language model
 accepts text-only requests for command interpretation. Ordinary language commands
 send text and scene metadata; saved-cup requests also send the reference photo and
 current raw cup crops. Both use a 4096-token context and disable thinking output.
@@ -1137,7 +1139,7 @@ Visual matching sends one labelled comparison image containing the reference and
 every candidate. Actual RAM use and performance must be checked on the MacBook.
 [Model details](https://ollama.com/library/qwen3-vl:4b-instruct).
 
-In this terminal mode, images are sent only to the configured local Ollama endpoint using its
+In this advanced-shell mode, images are sent only to the configured local Ollama endpoint using its
 [vision API](https://docs.ollama.com/capabilities/vision) and
 [structured output](https://docs.ollama.com/capabilities/structured-outputs).
 
@@ -1156,7 +1158,7 @@ never given to the language model. If Ollama is not running, open its app or run
 First check the language model alone from `capture_and_detect`:
 
 ```sh
-python capture_and_detect.py --check-llm
+python picker_workflow.py --check-llm
 ```
 
 This sends a synthetic “Hover above cup two” request to local Ollama. It does not
@@ -1167,7 +1169,7 @@ not a complete language accuracy evaluation.
 Then try actual camera observations in dry-run:
 
 ```sh
-python capture_and_detect.py --gateway http://192.168.125.204:8000 --llm --dry-run
+python picker_workflow.py --gateway http://192.168.125.204:8000 --llm --dry-run
 ```
 
 ```text
@@ -1204,7 +1206,7 @@ plans are not supported. Use an explicit cup ID or the separate pick-all action.
 The model is prompted to clarify unsupported
 requests, but the operator must still inspect every proposal for misinterpretation.
 
-Exact existing terminal commands such as `goto 2` and `hover 2` remain direct
+Exact existing advanced-shell commands such as `goto 2` and `hover 2` remain direct
 operator commands and do not go through the LLM or proposal step. `scan`, `reset`,
 direct movement, quitting, or a new language request invalidates a pending
 proposal. `list`, `show 2`, and `help` can inspect it without invalidating it.
@@ -1295,7 +1297,7 @@ From `capture_and_detect` in PowerShell:
 ```powershell
 git pull --ff-only
 python repair_reference_line_endings.py --apply
-python capture_and_detect.py --web --gateway http://192.168.125.20:8000 --live --port 8087
+python web_app.py --gateway http://192.168.125.20:8000 --live --port 8087
 ```
 
 Use the existing `GATEWAY_TOKEN` and the gateway's current address. The helper

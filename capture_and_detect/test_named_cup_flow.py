@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import cv2
 import numpy as np
 
-from capture_and_detect import handle_input
+from picker_workflow import handle_input
 from cup_commands import CupSession
 from cup_inventory import SelectionError
 from language_commands import LanguageController

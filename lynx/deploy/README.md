@@ -178,16 +178,18 @@ After validation, explicit live startup is:
   --state-dir /state/cli-0.2.0 --live
 ```
 
-The default uses **one full inference pass per scan**, followed by **one mandatory
-fresh verification pass before each pick**, with no automatic depth-uncertainty
-retries. Each pass still collects five fresh raw depth samples for stable object
-coordinates; five samples do not mean five inference passes. Placement evidence
-uses the newest raw depth. The verification age limit is **60 seconds**, selectable
-with `--max-result-age`; it starts when the first raw-frame capture begins,
-includes inference and pre-grip motion, and is checked immediately before grip
-dispatch. A failed or stale
-check blocks the pick. The Mac's 15-second default and existing three-observation
-profile are unchanged.
+The current source uses **one full inference pass per scan**. Picks reuse its
+saved cup coordinates and placement evidence; there is no per-cup verification
+capture, cup rematching or observation-age expiry. Each observation collects up
+to five distinct raw depth samples for object coordinates and uses the latest
+raw aligned frame for placement evidence. Legacy verification-age arguments
+remain accepted for compatibility but do not expire the snapshot. Confirmation,
+reservations, Stop and recovery checks still apply.
+
+The CLI and combined dashboard use the enhanced shared workflow. The combined
+profile's `web_app.py` imports `picker_workflow.py`, independently of the unchanged
+V4 `capture_and_detect.py` terminal. These are source changes; an existing deployed
+image keeps its prior behavior until rebuilt and replaced.
 
 Camera-derived picking height remains off by default, with 250 mm travel TCP
 height and the existing diameter + 70 mm opening allowance. Shared library speed defaults remain
@@ -197,8 +199,9 @@ The fixed pick TCP height is 70 mm. No Mac UI speed override is imported.
 Empty Enter is ignored; type `scan` to request a new camera check. The terminal
 offers scan/list/show, goto/hover, batch preview and confirmation,
 stop/status/reset, and supported Home proposals. `home right|left|both` previews
-an action; `confirm-home <code>` confirms the operator's inspection. Unsupported
-gateway capabilities remain unavailable. `home both` runs right then left. See
+an action; `confirm-home <code>` confirms the operator's inspection. Gateway
+discovery is informational; the actual operation still reports unsupported
+commands or invalid controller state. `home both` runs right then left. See
 [the picker guide](../README.md) for the complete command table and recovery rules.
 
 ## Measure before live use

@@ -117,7 +117,7 @@ mkdir -p Data/DegradationDryRun
 cp -n placing_grid.json Data/DegradationDryRun/placing_grid.json
 export GATEWAY_TOKEN='<existing-pi-operator-token>'
 export INFERENCE_TOKEN='<same-inference-token-as-the-mac>'
-python capture_and_detect.py --web \
+python web_app.py \
   --gateway http://127.0.0.1:8000 --dry-run \
   --mac-inference-url http://MAC_IP:8090 \
   --inference-model ./best.pt \
@@ -149,8 +149,10 @@ workspace** to produce one. A local development run on a Mac is labelled
 `local`, not `Pi`. Live Mac/Pi fallback is permitted only on a Linux ARM64
 coordinator and requires the updated gateway capability check.
 
-The same inference flags are available on `capture_and_detect.py` for
-terminal operation. Use `--dry-run` there too during development.
+The same inference flags are available on `picker_workflow.py` for the
+advanced terminal workflow. Use `--dry-run` there too during development.
+The unchanged V4 `capture_and_detect.py` is independent and does not support
+these inference-fallback options.
 
 For a camera-only cable experiment, `check_inference_switching.py` reads fresh
 paired RGB/depth frames and exercises the two inference workers directly. It
@@ -256,10 +258,11 @@ does not acquire a weaker fallback identity check.
 
 `--mac-timeout 2` and `--pi-timeout 5` are initial full-request budgets, not
 measured guarantees. Measure capture, image encoding/transfer, prediction,
-validation and the three-frame grid scan with both hosts running the full
-application. Keep the existing 15-second pre-grip observation-age checks.
-Do not raise that limit simply to hide slow fallback. Tune inference threads
-and deadlines while measuring gateway and stop responsiveness under load.
+validation and the single saved-scene observation with both hosts running the
+full application. Confirmed picks reuse that snapshot without an age expiry or
+new per-cup capture. Inference deadlines still apply while producing a scan.
+Tune inference threads and deadlines while measuring gateway and stop
+responsiveness under load.
 The worker's `--request-timeout` and the local/remote backend deadline values
 must be finite, greater than zero and at most 300 seconds. The example worker
 limit of 10 seconds includes request-body reception and local prediction;

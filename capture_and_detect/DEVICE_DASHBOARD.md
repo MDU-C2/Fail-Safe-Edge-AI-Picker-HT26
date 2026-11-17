@@ -85,10 +85,22 @@ $env:GATEWAY_TOKEN = "YOUR_ACTUAL_GATEWAY_TOKEN"
 python capture_and_detect.py --gateway http://192.168.125.20:8000
 ```
 
-Enter captures and processes cups; `q` quits. Add `--dry-run` to preview only,
-or `--commands` for the optional scan/goto/confirm shell. Do not run this direct
-terminal while a managed picker is operating; it uses the checkout's own local
-state rather than the transferred dashboard directory.
+This is the unchanged V4 terminal: Enter captures and processes cups; `q` quits.
+It has no `--dry-run`, `--commands`, Assistant, managed-device ownership or UI
+recovery/reservation workflow. It uses `Calibration/calibration.json` and
+`placing_grid.json`, not the managed dashboard's state. Add
+`--output Data/TerminalDetections` to keep its capture files separate from the UI.
+Do not run it while a managed picker is operating. Reconcile the physical scene
+and the next controller's destination layout before switching.
+
+The optional enhanced scan/goto/confirm shell is a separate command:
+
+```sh
+python picker_workflow.py --commands --gateway http://192.168.125.20:8000 --dry-run
+```
+
+The browser and managed-device backends import `picker_workflow.py`; they do not
+import or modify the original V4 terminal. See [entry points](README.md).
 
 ## Prepare matching persistent state
 

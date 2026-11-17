@@ -30,7 +30,7 @@ def _external_token(path):
 
 def prepare(state_dir, calibration, placing_grid, *, table_reference=None,
             external_gateway_token_file=None):
-    from capture_and_detect import Calibration
+    from picker_workflow import Calibration
     from placing_grid import PlacingGrid
     # Read and validate before creating anything. Never invent calibration or
     # empty occupied placement cells when moving an existing installation.

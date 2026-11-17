@@ -2,14 +2,13 @@
 More stable depth (Z) for capture_and_detect.py:
 
     capture_averaged(gateway, n)  RGB of the first frame + the depth of n frames averaged
-                                  pixel by pixel (mean, 0 = no depth is ignored)
+                                  pixel by pixel (median, 0 = no depth is ignored)
     mask_depth(depth, mask)       depth of an object: median inside its mask, shrunk by
                                   EDGE_PX first, because the edge pixels mix the object
                                   with what is behind it
 
-The legacy capture_averaged helper assumes a static scene. The unified application
-uses capture_fresh_samples and preserves newest raw aligned depth for grid checks.
-Needs: numpy, opencv-python, requests (through the gateway object).
+The camera does not move between the frames, so the RGB of the first frame matches the
+averaged depth. Needs: numpy, opencv-python, requests (through the gateway object).
 """
 
 import time
@@ -17,7 +16,6 @@ import time
 import cv2
 import numpy as np
 
-DEFAULT_DEPTH_FRAMES = 5
 EDGE_PX = 5            # pixels taken off the mask edge before reading its depth
 NEW_FRAME_WAIT = 2.0   # s, longest wait for the camera to deliver the next frame
 
@@ -44,11 +42,10 @@ def average_depth(depths):
     a pixel without depth in every image stays 0. (Saved as the capture's depth image;
     each object's Z is the mean of its Z in the single frames, see capture_and_detect.describe.)"""
     stack = np.stack(depths).astype(np.float32)
-    valid = np.isfinite(stack) & (stack > 0)
-    count = valid.sum(axis=0)
-    mean = np.divide(np.where(valid, stack, 0).sum(axis=0), count,
-                     out=np.zeros(stack.shape[1:], dtype=np.float32), where=count > 0)
-    return mean.round().astype(np.uint16)
+    stack[stack == 0] = np.nan
+    with np.errstate(all="ignore"):
+        mean = np.nanmean(stack, axis=0)        # all-NaN pixels give NaN (and a warning, silenced)
+    return np.nan_to_num(mean, nan=0).round().astype(np.uint16)
 
 
 def capture_averaged(gateway, n=3):
@@ -81,61 +78,5 @@ def mask_depth(depth, mask, edge_px=EDGE_PX):
         if shrunk.any():
             inner = shrunk
     vals = depth[inner]
-    vals = vals[np.isfinite(vals) & (vals > 0)]  # 0 = no depth there
+    vals = vals[vals > 0]                       # 0 = no depth there
     return float(np.median(vals)) if vals.size else None
-
-
-def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
-    """Collect available distinct aligned pairs for V4 coordinate averaging.
-
-    Return newest RGB and its RAW depth, metadata, and the individual depths.
-    The samples are for object-coordinate averaging only. Placement evidence
-    must remain the last raw aligned image; a mean could hide holes/obstacles.
-    As in V4, a stopped frame stream ends the burst with the samples collected.
-    Transport and malformed-frame failures still propagate. Placement vision
-    keeps the latest raw aligned pair, independently of coordinate averaging.
-    """
-    from camera_client import CameraError, NoNewCameraFrame
-    if type(count) is not int or not 1 <= count <= 9:
-        raise ValueError("Depth frame count must be an integer from 1 to 9")
-    initial_capture = getattr(camera, "capture_latest", camera.capture)
-    if count == 1:
-        rgb, depth, frame = initial_capture()
-        return rgb, depth, frame, (depth,)
-    deadline = time.monotonic() + timeout_s
-    samples, metadata = [], []
-    shape = None
-    for _ in range(count):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            if samples:
-                break
-            raise CameraError("Depth sample collection timed out")
-        try:
-            capture = camera.capture if samples else initial_capture
-            pair = capture(timeout_s=min(remaining, NEW_FRAME_WAIT) if samples else remaining)
-        except NoNewCameraFrame:
-            if samples:
-                break
-            raise
-        next_rgb, next_depth, frame = pair
-        sequence = frame.get("sequence")
-        if type(sequence) is not int:
-            raise CameraError("Depth sample has no valid frame sequence")
-        if metadata and sequence == metadata[-1]["sequence"]:
-            break
-        rgb, depth = next_rgb, next_depth
-        if (depth.ndim != 2 or depth.dtype != np.uint16 or rgb.ndim != 3
-                or rgb.shape[2] != 3 or depth.shape != rgb.shape[:2]
-                or depth.size > 8_400_000 or (shape is not None and depth.shape != shape)):
-            raise CameraError("Depth sample dimensions or format changed")
-        shape = depth.shape
-        samples.append(depth)
-        metadata.append(dict(frame))
-    result = dict(metadata[-1])
-    result["observation_started_monotonic"] = metadata[0]["observation_started_monotonic"]
-    result["depth_sampling"] = {"count": len(samples), "method": "mean_of_available_eroded_mask_depths",
-                                "sequences": [item["sequence"] for item in metadata],
-                                "timestamps": [item.get("timestamp") for item in metadata],
-                                "grid_evidence": "latest_raw_aligned_frame"}
-    return rgb, depth, result, tuple(samples)

@@ -3,3 +3,26 @@
 Project repository for the **DVA490 / DVA474 – Projektkurs i Robotik** course at Mälardalen University (MDU), autumn semester 2026 (HT2026).
 
 Course center: [Projects @ Collaborative Center (C2) MDU](https://github.com/MDU-C2)
+
+## Cup picker entry points
+
+Run from the repository root with the existing gateway token set:
+
+```sh
+# Original vision_detection4 terminal; Enter runs the physical pick-and-place cycle.
+python capture_and_detect/capture_and_detect.py --gateway http://192.168.125.20:8000
+
+# Existing browser UI and its separate enhanced workflow.
+python capture_and_detect/web_app.py --gateway http://192.168.125.20:8000 --live
+
+# UI preview without camera, gateway or robot.
+python capture_and_detect/web_app.py --demo
+```
+
+`capture_and_detect.py` and `depth_average.py` are restored unchanged from V4.
+UI services use `picker_workflow.py` and `picker_depth.py`. The original terminal
+has no dry-run mode or UI reservations/recovery checks; it uses its original
+calibration and placement grid. Run only one controller at a time. Use a separate
+`--output capture_and_detect/Data/TerminalDetections` for terminal captures when
+switching between workflows. Full commands and state differences are in the
+[cup picker guide](capture_and_detect/README.md).

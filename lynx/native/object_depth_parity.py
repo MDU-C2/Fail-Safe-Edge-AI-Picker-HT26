@@ -42,7 +42,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "capture_and_detect"))
-from capture_and_detect import Calibration, Detector, KEEP_CLASSES, mark_cup_bases
+from picker_workflow import Calibration, Detector, KEEP_CLASSES, mark_cup_bases
 
 
 NAMES = ["CUP", "CUP BASE", "CUP HANDLE", "TRAY"]

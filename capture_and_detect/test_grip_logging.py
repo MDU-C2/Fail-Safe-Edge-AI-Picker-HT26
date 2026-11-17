@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from capture_and_detect import CaptureStore
+from picker_workflow import CaptureStore
 from cup_commands import CupSession
 from test_cup_selection import RobotDouble, inventory
 

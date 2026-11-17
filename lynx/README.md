@@ -1,5 +1,11 @@
 # Run the command-line cup picker on Lynx
 
+This managed CLI belongs to the enhanced UI/shared-controller workflow. It is
+separate from the restored `capture_and_detect/capture_and_detect.py` V4 terminal.
+The combined browser profile uses `web_app.py` and `picker_workflow.py`; it does
+not import or modify the original V4 terminal. See the
+[entry-point guide](../capture_and_detect/README.md).
+
 The `cli` profile uses the **existing C++ gateway on port 8000** and adds a
 command-line picker. The gateway remains the sole OAK camera and robot connection
 owner. One persistent C++ process runs NCNN segmentation, object-depth geometry
@@ -153,8 +159,9 @@ controller from connecting, so close that controller before live use.
 | `reset` | Acknowledge recovery after inspection; sends no movement |
 | `quit` | Exit; active work receives a software-stop request, with no automatic home/resume |
 
-Home support is discovered from the gateway. Unsupported or unverifiable controls
-remain unavailable. `home both` returns the right arm first, then the left. A
+Gateway discovery is informational. Implemented Home controls are offered with
+their existing confirmation and execution checks; unsupported operations can
+still fail when requested. `home both` returns the right arm first, then the left. A
 legacy gateway may need the existing read-only `--controller-profile` for the
 required status checks; adding that profile does not create missing gateway
 endpoints or weaken the guarded-restart fence. Software stop still depends on
@@ -173,31 +180,29 @@ choreography, completion checks, reservations and recovery journal. Defaults are
 | Ordinary travel speed | 250 mm/s |
 | Automatic Home speed | 200 mm/s, subject to an explicitly selected lower speed cap |
 | Camera-derived picking height | Off; `--camera-z` explicitly selects the existing measured-height policy |
-| Object-depth samples | Five fresh frames; `--depth-frames` accepts 1..9 |
+| Object-depth samples | Up to five distinct frames; `--depth-frames` accepts 1..9 |
 | Normal scan | One full YOLO/perception pass |
-| Placement verification | One mandatory fresh pass before each pick; no automatic depth-uncertainty retries |
-| Maximum verification age | 60 seconds; configurable with `--max-result-age` |
+| Placement evidence | The saved scan; no capture before or between picks |
+| Observation expiry | None in the snapshot workflow; `--max-result-age` is retained for argument compatibility |
 
 `--speed` selects a different travel speed through the existing plan limits. An
 explicit setting previously used in the Mac UI is not automatically imported.
 With `--camera-z`, the pick TCP uses the existing base Z + 20 mm policy with a
-40 mm floor. Stable object cores may use the five-frame depth mean; placement
-evidence and saved depth always use the **latest raw aligned frame**, never a
-smoothed grid image. **Five raw depth samples do not mean five inference passes.**
-The one scan pass and the later mandatory verification pass are separate camera
-observations. An occupied, unknown or otherwise invalid verification blocks the
-pick without automatically capturing again. Batch verification begins after
-the previous cup's Home sequence completes.
+40 mm floor. Object depth uses the V4 mask-depth rule and available positive
+samples; the removed core/spread rejection does not block cup selection.
+Placement evidence and saved depth use the **latest raw aligned frame**.
+**Five raw depth samples do not mean five inference passes.** A scan performs
+one observation. If no new camera sequence arrives, available samples may be
+used. The initial saved destination evidence must be clear, and its reservation
+must still be valid before motion.
 
-The 60-second age limit includes processing and pre-grip motion: its clock starts
-at the **start of the first raw-frame capture**, not when inference finishes.
-Age is checked throughout that sequence, including immediately before grip
-dispatch. For example, `--max-result-age 45` selects a
-45-second limit; it does not disable freshness checks. Missing/unstable depth,
-changes to calibration/reference/intrinsics, stale observations and interrupted
-motion still block dispatch. These defaults apply only to the lightweight Lynx
-CLI; the Mac's 15-second default and existing three-observation profile remain
-unchanged.
+There is no automatic recapture, cup rematching or observation-age deadline
+before or between picks. Completed cups become unavailable; untouched cups stay
+selectable from the same scan. Scan again when the physical scene changes.
+Confirmation expiry, Stop, lease/session checks, placement reservations and the
+recovery journal remain. These are current source defaults; the 0.2.5 deployment
+report above records the earlier deployed behavior. Rebuild and deploy the
+updated runtime to apply the current workflow on a device.
 
 Native grid assessment preserves cup-to-cell ownership, connected depth groups,
 cup-edge uncertainty, visibility and other-object checks. Oversized cup masks or

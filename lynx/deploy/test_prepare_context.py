@@ -39,6 +39,9 @@ class ContextTests(unittest.TestCase):
             "lynx/native/vendor/nlohmann/LICENSE.MIT": "MIT License\n",
             "lynx/native/vendor/nlohmann/README.md": "source hashes\n",
             "capture_and_detect/capture_and_detect.py": "import cv2\nimport numpy\n",
+            "capture_and_detect/depth_average.py": "import cv2\nimport numpy\n",
+            "capture_and_detect/picker_workflow.py": "import cv2\nimport numpy\n",
+            "capture_and_detect/picker_depth.py": "import cv2\nimport numpy\n",
             "capture_and_detect/placement_vision.py": "import cv2\nimport numpy\n",
             "capture_and_detect/placing_grid_outside_tray.json": "live-state",
             "capture_and_detect/placing_grid_outside_tray.table-reference.json": "private-reference",
@@ -73,6 +76,8 @@ class ContextTests(unittest.TestCase):
         output = self.root / "context"
         files = prepare_context.stage(self.repo, self.model, output)
         self.assertIn("app/gateway/camera/service.py", files)
+        self.assertIn("app/capture_and_detect/picker_workflow.py", files)
+        self.assertIn("app/capture_and_detect/picker_depth.py", files)
         self.assertIn("model/manifest.json", files)
         for forbidden in (".env", "auth_clients.json", "calibration.json", "placing_grid.json", "best.pt", "unrelated.pt", "secret.json"):
             self.assertFalse(any(path.name == forbidden for path in output.rglob("*")), forbidden)
@@ -111,7 +116,8 @@ class ContextTests(unittest.TestCase):
             self.assertIn("native/vendor/nlohmann/" + name, files)
         self.assertFalse((output / "app/gateway").exists())
         self.assertFalse((output / "app/capture_and_detect/web_static").exists())
-        for forbidden in ("app.py", "web_app.py", "capture_and_detect.py", "placement_vision.py",
+        for forbidden in ("app.py", "web_app.py", "capture_and_detect.py", "depth_average.py",
+                          "picker_workflow.py", "picker_depth.py", "placement_vision.py",
                           ".env", "gateway-token", "robot_recovery.json", "placing_grid_outside_tray.json",
                           "placing_grid_outside_tray.table-reference.json", "unrelated.pt"):
             self.assertFalse(any(path.name == forbidden for path in output.rglob("*")), forbidden)

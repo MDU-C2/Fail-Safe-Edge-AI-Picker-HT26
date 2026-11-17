@@ -11,7 +11,7 @@ import weakref
 import numpy as np
 
 from camera_client import CameraError
-from capture_and_detect import CaptureService
+from picker_workflow import CaptureService
 from cup_inventory import SelectionError
 from test_cup_selection import detection
 from test_support_grid import temporary_grid

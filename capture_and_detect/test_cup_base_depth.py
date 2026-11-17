@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from capture_and_detect import Detector
+from picker_workflow import Detector
 from cup_inventory import build_inventory
 
 

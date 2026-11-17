@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from capture_and_detect import CaptureService
+from picker_workflow import CaptureService
 from cup_inventory import SelectionError
 from placement_table_reference import fit_reference
 from placement_vision import PlacementVision

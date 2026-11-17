@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
-import capture_and_detect as picker
+import picker_workflow as picker
 from device_service import arguments, python_factory
 from robot_client import RobotClient
 

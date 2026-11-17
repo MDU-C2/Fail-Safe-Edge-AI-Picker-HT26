@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from camera_client import CameraError
-from capture_and_detect import CaptureService
+from picker_workflow import CaptureService
 from inference_integration import (ProviderDetector, add_inference_arguments,
                                     validate_inference_arguments, create_robot)
 from inference_protocol import make_response, make_settings, validate_response

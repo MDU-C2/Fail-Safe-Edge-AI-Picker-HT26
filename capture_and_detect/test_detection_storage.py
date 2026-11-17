@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import cv2
 import numpy as np
 
-import capture_and_detect as app
+import picker_workflow as app
 from camera_client import CameraError
 from cup_inventory import SelectionError
 

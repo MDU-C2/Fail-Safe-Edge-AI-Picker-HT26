@@ -224,7 +224,7 @@ class HandoverPlanTests(unittest.TestCase):
     def test_canonical_entry_uses_shared_motion_configuration(self):
         # The canonical entrypoint imports shared values; explicit pose and speed
         # checks above remain independent of that wiring.
-        import capture_and_detect as entry
+        import picker_workflow as entry
         self.assertEqual(entry.DEFAULT_SPEED, DEFAULT_SPEED)
         self.assertEqual(entry.HOME_SPEED, HOME_SPEED)
         self.assertEqual(entry.FLIP_SPEED, FLIP_SPEED)

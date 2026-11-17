@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from capture_and_detect import CaptureService
+from picker_workflow import CaptureService
 from cup_inventory import SelectionError
 from placing_grid import PlacingGrid
 from placement_vision import PlacementVision

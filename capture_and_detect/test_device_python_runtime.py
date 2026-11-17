@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-import capture_and_detect as picker
+import picker_workflow as picker
 from device_agent import ExecutionLock
 from device_service import arguments, python_factory
 from placing_grid import PlacingGrid
@@ -98,6 +98,7 @@ factory = python_factory(SimpleNamespace(state_dir=pathlib.Path('/absent'),
 assert factory.metadata()['backend'] == 'python'
 assert 'web_app' not in sys.modules
 assert 'capture_and_detect' not in sys.modules
+assert 'picker_workflow' not in sys.modules
 assert 'inference_integration' not in sys.modules
 assert not blocked.intersection(sys.modules)
 '''

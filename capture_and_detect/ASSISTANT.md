@@ -9,7 +9,7 @@ Use direct `--gateway` mode, or the combined `--device-config` dashboard with it
 From this folder:
 
 ```sh
-python capture_and_detect.py --web --demo --port 8087
+python web_app.py --demo --port 8087
 ```
 
 Open `http://localhost:8087`, click **Scan** in **Pick cups**, then open **Assistant**.

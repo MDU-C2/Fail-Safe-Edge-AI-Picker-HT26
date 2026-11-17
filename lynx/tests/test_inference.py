@@ -10,7 +10,7 @@ import pytest
 import lynx.inference as inference
 import lynx.native_transport as transport
 from lynx.inference import InferenceError, LynxDetector, NativeWorker
-from capture_and_detect import Calibration, Detector
+from picker_workflow import Calibration, Detector
 
 
 def model():

@@ -32,7 +32,7 @@ def main():
     import requests
     import uvicorn
     import lynx
-    import capture_and_detect
+    import picker_workflow
     import depthai
 
     cv2.setNumThreads(1)

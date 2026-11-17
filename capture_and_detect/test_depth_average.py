@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from camera_client import CameraClient, CameraError, NoNewCameraFrame
-from capture_and_detect import CaptureService, CaptureStore, Detector
-from depth_average import average_depth, capture_fresh_samples, mask_depth
+from picker_workflow import CaptureService, CaptureStore, Detector
+from picker_depth import average_depth, capture_fresh_samples, mask_depth
 
 
 class DepthSamplingTests(unittest.TestCase):
@@ -128,7 +128,7 @@ class AveragedObjectTests(unittest.TestCase):
         camera = SimpleNamespace(intrinsics=lambda: K)
         service = CaptureService(camera, detector, None, "weights.pt", depth_frames=3)
         frame = {"observation_started_monotonic": 1.0}
-        with patch("capture_and_detect.capture_fresh_samples", return_value=(np.zeros((*shape, 3), np.uint8), raw, frame, tuple(self.depths))):
+        with patch("picker_workflow.capture_fresh_samples", return_value=(np.zeros((*shape, 3), np.uint8), raw, frame, tuple(self.depths))):
             observation = service._observe()
         self.assertIs(observation[1], raw)
         self.assertEqual(detector._depth_samples, ())

@@ -93,7 +93,7 @@ class DetectionMaskTests(unittest.TestCase):
             decode.assert_not_called()
 
     def test_detector_and_mac_pi_adapter_preserve_identical_segmentation(self):
-        from capture_and_detect import Detector
+        from picker_workflow import Detector
         from inference_integration import ProviderDetector
         from inference_protocol import make_response, make_settings
 
@@ -111,7 +111,7 @@ class DetectionMaskTests(unittest.TestCase):
         np.testing.assert_array_equal(self.restore(local_object["segmentation"], self.mask.shape), self.mask)
 
     def test_capture_archive_retains_exact_mask_in_json_and_legacy_csv_still_writes(self):
-        from capture_and_detect import CaptureStore
+        from picker_workflow import CaptureStore
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

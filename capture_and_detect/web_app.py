@@ -332,7 +332,7 @@ def demo_factory(directory, *, speed=None, camera_z=False):
 def hardware_factory(args):
     def factory(controller):
         # Deferred imports keep demo and tests independent of YOLO/OpenCV.
-        from capture_and_detect import (load_token, Calibration,
+        from picker_workflow import (load_token, Calibration,
                                                CaptureStore, CaptureService)
         from inference_integration import create_detector, create_robot
         from camera_client import CameraClient
