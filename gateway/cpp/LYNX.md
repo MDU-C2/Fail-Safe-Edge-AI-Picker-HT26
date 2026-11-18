@@ -4,7 +4,7 @@ How the C++ gateway gets onto the lab's Lynx and runs there as a WeOS
 app, with every step as it was done and tested on 2026-11-11 (Lynx-3510,
 WeOS 5.30.0, arm64, `lynx-91-13-c0` at `169.254.219.127`). The device
 itself, its CLI and a generic deployment for any app are in
-[lynx/](../../lynx/README.md); this file is what is specific to the
+[lynx-docs/](../../lynx-docs/README.md); this file is what is specific to the
 gateway.
 
 **Short version**, from the repository root:
@@ -94,7 +94,7 @@ redeploys (the same version is replaced in place).
 ## 3. Deploy by hand
 
 The same steps without the script. SSH to the Lynx with
-`ssh admin@169.254.219.127` (or `plink`, see [lynx/README.md](../../lynx/README.md)).
+`ssh admin@169.254.219.127` (or `plink`, see [lynx-docs/README.md](../../lynx-docs/README.md)).
 
 **Serve the package from the laptop.** The Lynx pulls files (FTP, TFTP,
 SCP, SFTP, HTTP, HTTPS); scp *to* it is switched off
@@ -300,7 +300,7 @@ see below).
   unaffected (it runs on the monotonic clock). Set it by hand in local time
   (timezone `Europe/Stockholm`, saved 2026-11-11) with the EXEC command
   `date YYYY-MM-DD hh:mm:ss`, e.g. from the laptop (see
-  [lynx/DEPLOY.md](../../lynx/DEPLOY.md)); it was set on 2026-11-11 and is
+  [lynx-docs/DEPLOY.md](../../lynx-docs/DEPLOY.md)); it was set on 2026-11-11 and is
   most likely lost on a reboot.
 - **The robot needs a 192.168.125.x address on the Lynx.** The YuMi
   is cabled to the Lynx but only answers on `192.168.125.1`, and the
