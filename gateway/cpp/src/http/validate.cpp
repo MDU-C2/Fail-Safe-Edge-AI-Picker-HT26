@@ -83,6 +83,36 @@ Fields Fields::item(
     return fields;
 }
 
+Fields Fields::object(
+    const std::string& name,
+    const std::string& model,
+    bool required
+) {
+    const Json* found = find(name);
+    const bool absent = found == nullptr || found->is_null();
+
+    //
+    // Missing and required: that one error, none for its fields
+    // (they see no object, as for a non-object item()).
+    //
+    if (absent && required) {
+        missing(name);
+    }
+
+    const Json value = !absent ? *found : required ? Json() : Json::object();
+
+    Fields fields(value, "");
+
+    fields.location_ = location_;
+    fields.location_.push_back(name);
+
+    if (!absent && !value.is_object()) {
+        fields.error("", "model_type", "Input should be a valid dictionary or instance of " + model, value);
+    }
+
+    return fields;
+}
+
 void Fields::merge(
     const Fields& other
 ) {

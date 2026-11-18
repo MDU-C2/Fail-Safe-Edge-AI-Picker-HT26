@@ -315,6 +315,16 @@ bool RwsMotion::in_safe_zone(
     return true;
 }
 
+void RwsMotion::check_idle(
+    Arm arm
+) {
+    if (busy_[index(arm)].load()) {
+        throw MotionConflict(format("A %s arm job is already in progress", arm_name(arm)));
+    }
+
+    check_ready(arm);
+}
+
 bool RwsMotion::is_moving() const {
     return busy_[0].load() || busy_[1].load();
 }

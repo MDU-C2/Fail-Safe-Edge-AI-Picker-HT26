@@ -58,7 +58,8 @@ Json camera_health(
 Json robot_controller_health(
     App& app
 ) {
-    const bool moving = app.motion.is_moving();
+    const bool moving = app.motion.is_moving() || app.queue.running();
+    const char* queue_state = rws::queue_state_name(app.queue.snapshot().state);
 
     try {
         //
@@ -76,6 +77,7 @@ Json robot_controller_health(
             {"operation_mode", operation_mode},
             {"rapid_execution_state", execution_state},
             {"move_in_progress", moving},
+            {"queue_state", queue_state},
             {"error", nullptr},
         };
 
@@ -87,6 +89,7 @@ Json robot_controller_health(
             {"operation_mode", nullptr},
             {"rapid_execution_state", nullptr},
             {"move_in_progress", moving},
+            {"queue_state", queue_state},
             {"error", error.message},
         };
     }

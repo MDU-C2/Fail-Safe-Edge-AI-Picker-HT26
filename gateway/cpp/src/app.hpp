@@ -11,6 +11,7 @@
 #include "robot/service.hpp"
 #include "rws/client.hpp"
 #include "rws/motion.hpp"
+#include "rws/queue.hpp"
 #include "security/auth.hpp"
 #include "security/client_registry.hpp"
 #include "util/time.hpp"
@@ -70,6 +71,11 @@ public:
     rws::RwsClient rws;
 
     rws::RwsMotion motion;
+
+    //
+    // RWS jobs run in sequence by the gateway (rws/queue.hpp).
+    //
+    rws::MotionQueue queue;
 
     SteadyTime started;
 

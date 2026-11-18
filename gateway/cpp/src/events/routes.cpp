@@ -18,6 +18,7 @@ const std::map<std::string, std::string> EVENT_PERMISSIONS = {
     {"robot.status", "robot.read"},
     {"robot.error", "robot.read"},
     {"robot.rapid", "robot.read"},
+    {"robot.queue", "robot.read"},
     {"camera.status", "camera.read"},
     {"calibration", "camera.read"},
 };

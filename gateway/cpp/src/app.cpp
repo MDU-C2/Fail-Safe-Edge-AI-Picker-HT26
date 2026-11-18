@@ -83,6 +83,7 @@ App::App(
               settings.rws_default_ramp,
           }
       ),
+      queue(motion),
       started(std::chrono::steady_clock::now()) {
     add_routes();
 }

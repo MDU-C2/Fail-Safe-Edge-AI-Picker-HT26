@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gateway_cpp
-    VERSION 0.5.0
+    VERSION 0.6.0
     LANGUAGES C CXX
 )
 
@@ -71,6 +71,7 @@ add_library(
     src/rws/errors.cpp
     src/rws/motion.cpp
     src/rws/motion_routes.cpp
+    src/rws/queue.cpp
     src/rws/rapid.cpp
     src/rws/rapid_routes.cpp
     src/security/auth.cpp

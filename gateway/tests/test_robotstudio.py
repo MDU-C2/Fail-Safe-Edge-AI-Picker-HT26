@@ -14,6 +14,7 @@ again at the end, but the program is left stopped.
 """
 
 import re
+from contextlib import contextmanager
 import threading
 import time
 from pathlib import Path
@@ -366,17 +367,16 @@ def module_source(
 LoadProgram = Callable[[dict[str, list[Path]]], Client]
 
 
-@pytest.fixture()
-def load_program(
+def save_program(
     admin: Client,
-) -> Iterator[LoadProgram]:
-    """Load and start a program; restore the saved one afterwards."""
+) -> dict[str, dict[str, str]]:
+    """The program modules of the arm tasks: task -> module -> source."""
 
     controller = Controller()
 
     rapid = expect(admin.get("/robot/rapid"), 200)
 
-    backup = {
+    return {
         task: {
             module: controller.save_module(task, module)
             for module in loaded(rapid, task)
@@ -384,30 +384,63 @@ def load_program(
         for task in TASKS
     }
 
-    def replace_program(
-        program: dict[str, dict[str, str]],
-    ) -> None:
-        rapid = expect(admin.get("/robot/rapid"), 200)
 
-        for task in TASKS:
-            for module in loaded(rapid, task):
-                expect(admin.delete(f"/robot/rapid/tasks/{task}/modules/{module}"), 200)
+def replace_program(
+    admin: Client,
+    program: dict[str, dict[str, str]],
+) -> None:
+    """Unload the arm tasks' modules and load these (RAPID stopped)."""
 
-            for module, source in program[task].items():
-                expect(
-                    admin.put(f"/robot/rapid/tasks/{task}/modules/{module}", json={"source": source}),
-                    200,
-                )
+    rapid = expect(admin.get("/robot/rapid"), 200)
+
+    for task in TASKS:
+        for module in loaded(rapid, task):
+            path = f"/robot/rapid/tasks/{task}/modules/{module}"
+
+            #
+            # Right after a stop the virtual controller sometimes
+            # still refuses an unload ("current PGM state") although
+            # it reports RAPID stopped; it accepts it moments later.
+            #
+            deadline = time.monotonic() + 5
+
+            while (
+                (response := admin.delete(path)).status_code == 409
+                and "PGM state" in response.text
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.5)
+
+            expect(response, 200)
+
+        for module, source in program[task].items():
+            expect(
+                admin.put(f"/robot/rapid/tasks/{task}/modules/{module}", json={"source": source}),
+                200,
+            )
+
+
+def program_sources(
+    program: dict[str, list[Path]],
+) -> dict[str, dict[str, str]]:
+    return {
+        task: dict(module_source(path) for path in paths)
+        for task, paths in program.items()
+    }
+
+
+@pytest.fixture()
+def load_program(
+    admin: Client,
+) -> Iterator[LoadProgram]:
+    """Load and start a program; restore the saved one afterwards."""
+
+    backup = save_program(admin)
 
     def load(
         program: dict[str, list[Path]],
     ) -> Client:
-        replace_program(
-            {
-                task: dict(module_source(path) for path in paths)
-                for task, paths in program.items()
-            }
-        )
+        replace_program(admin, program_sources(program))
 
         expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
 
@@ -419,7 +452,7 @@ def load_program(
     finally:
         admin.post("/robot/rapid/stop")
 
-        replace_program(backup)
+        replace_program(admin, backup)
 
 
 def arm_pose(
@@ -829,6 +862,363 @@ def test_rws_move_needs_running_rapid(
     detail = expect(admin.post("/robot/rws/home"), 409)["detail"]
 
     assert detail == "RAPID is not running"
+
+
+# ================================================================
+# Motion queue (C++ gateway only)
+# ================================================================
+#
+# The model tiers act here, not the admin: queue_program loads the
+# RWS program with the admin's lease and gives it back, so primary
+# and secondary can take turns. Test gateways lease for 2 s.
+#
+
+QUEUE_TIMEOUT_SECONDS = 120
+
+SECOND = (300.0, 150.0, 280.0)
+
+#
+# TARGET <-> SECOND at this speed take about 6 s each, long enough
+# for a lease to lapse and change hands meanwhile.
+#
+SLOW_MM_S = 10.0
+
+
+def queue_move(
+    name: str,
+    position: tuple[float, float, float],
+    *,
+    arm: str = "left",
+    rotation: tuple[float, float, float] | None = None,
+    speed: float | None = None,
+    group: str | None = None,
+) -> dict:
+    body: dict = {"arm": arm, **dict(zip(("x", "y", "z"), position))}
+
+    if rotation is not None:
+        body.update(zip(("rx", "ry", "rz"), rotation))
+
+    if speed is not None:
+        body["speed"] = speed
+
+    step = {"name": name, "type": "move", "body": body}
+
+    if group is not None:
+        step["group"] = group
+
+    return step
+
+
+QUEUE_HOME = {"name": "home", "type": "home"}
+
+SLOW_QUEUE = [
+    queue_move("to target", TARGET),
+    queue_move("slow 1", SECOND, speed=SLOW_MM_S),
+    queue_move("slow 2", TARGET, speed=SLOW_MM_S),
+    queue_move("slow 3", SECOND, speed=SLOW_MM_S),
+]
+
+
+def wait_for_queue(
+    client: Client,
+) -> dict:
+    """The queue once it no longer runs."""
+
+    deadline = time.monotonic() + QUEUE_TIMEOUT_SECONDS
+
+    while (queue := expect(client.get("/robot/rws/queue"), 200))["state"] == "running":
+        assert time.monotonic() < deadline, queue
+
+        time.sleep(0.2)
+
+    return queue
+
+
+@contextmanager
+def take_control(
+    client: Client,
+) -> Iterator[None]:
+    """Acquire the lease once it is free (its holder stopped
+    renewing), renew it until preempted or the block ends, then
+    release it."""
+
+    deadline = time.monotonic() + 10
+
+    while client.post("/control/acquire").status_code != 200:
+        assert time.monotonic() < deadline, "the lease did not become free"
+
+        time.sleep(0.2)
+
+    stop = threading.Event()
+
+    def renew() -> None:
+        while not stop.wait(0.5):
+            if client.post("/control/renew").status_code != 200:
+                return
+
+    thread = threading.Thread(target=renew, daemon=True)
+
+    thread.start()
+
+    try:
+        yield
+
+    finally:
+        stop.set()
+        thread.join()
+
+        client.post("/control/release")
+
+
+def job_states(
+    queue: dict,
+) -> list[str]:
+    return [step["state"] for step in queue["steps"]]
+
+
+@pytest.fixture()
+def queue_program(
+    robotstudio_gateway: Gateway,
+) -> Iterator[Gateway]:
+    """The RWS program running, both arms home and the lease free;
+    the saved program back afterwards (RAPID stopped)."""
+
+    admin = robotstudio_gateway.client("admin")
+
+    with admin.control():
+        expect(admin.post("/robot/rapid/stop"), 200)
+
+        backup = save_program(admin)
+
+        replace_program(admin, program_sources(RWS_PROGRAM))
+
+        expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
+
+        assert rws_home(admin) == DONE
+        assert rws_home(admin, "right") == DONE
+
+    try:
+        yield robotstudio_gateway
+
+    finally:
+        wait_for_queue(admin)
+
+        #
+        # The admin outranks whoever holds the lease now.
+        #
+        with admin.control():
+            admin.delete("/robot/rws/queue")
+            admin.post("/robot/rapid/stop")
+
+            replace_program(admin, backup)
+
+
+@pytest.mark.cpp_only
+def test_queue_runs_every_job_and_refuses_others_meanwhile(
+    queue_program: Gateway,
+) -> None:
+    primary = queue_program.client("primary")
+    diagnostics = queue_program.client("diagnostics")
+
+    steps = [
+        queue_move("approach", TARGET, rotation=TARGET_ROTATION),
+        {"name": "grip", "type": "gripper", "body": {"action": "grip", "force": 10}},
+        queue_move("left aside", SECOND, group="both"),
+        queue_move("right out", RIGHT_TARGET, arm="right", group="both"),
+        {"name": "open", "type": "gripper", "body": {"action": "open"}},
+        {"name": "home left", "type": "home", "group": "home"},
+        {"name": "home right", "type": "home", "body": {"arm": "right"}, "group": "home"},
+    ]
+
+    with primary.control():
+        queue = expect(primary.post("/robot/rws/queue", json={"steps": steps}), 202)
+
+        assert queue["state"] == "running"
+        assert queue["owner"] == "primary"
+        assert queue["length"] == len(steps)
+        assert [step["name"] for step in queue["steps"]] == [step["name"] for step in steps]
+        assert queue["steps"][3] == {
+            "name": "right out",
+            "type": "move",
+            "arm": "right",
+            "group": "both",
+            "state": "pending",
+            "message": None,
+        }
+
+        #
+        # Nothing gets in between its jobs, not even its owner.
+        #
+        detail = expect(primary.post("/robot/rws/move", json=dict(zip(("x", "y", "z"), TARGET))), 409)["detail"]
+
+        assert detail.startswith("A queue is running (owner primary)")
+
+        detail = expect(primary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 409)["detail"]
+
+        assert detail.startswith("A queue is running (owner primary, job ")
+
+        assert expect(diagnostics.get("/robot/rws/queue"), 200)["state"] == "running"
+
+        controller = expect(diagnostics.get("/health"), 200)["robot_controller"]
+
+        assert controller["queue_state"] == "running"
+        assert controller["move_in_progress"] is True
+
+        queue = wait_for_queue(primary)
+
+    assert queue["state"] == "done", queue
+    assert queue["step"] is None
+    assert job_states(queue) == ["done"] * len(steps)
+    assert {step["message"] for step in queue["steps"]} == {"DONE"}
+    assert queue["finished_at"] is not None
+
+
+@pytest.mark.cpp_only
+def test_running_queue_outlives_its_owner_and_preemption(
+    queue_program: Gateway,
+) -> None:
+    primary = queue_program.client("primary")
+    secondary = queue_program.client("secondary")
+    diagnostics = queue_program.client("diagnostics")
+
+    expect(primary.post("/control/acquire"), 200)
+
+    expect(primary.post("/robot/rws/queue", json={"steps": SLOW_QUEUE}), 202)
+
+    #
+    # primary "crashes": it stops renewing, the lease lapses and the
+    # next tier takes it. The queue goes on.
+    #
+    with take_control(secondary):
+        queue = expect(secondary.get("/robot/rws/queue"), 200)
+
+        assert queue["state"] == "running"
+        assert queue["owner"] == "primary"
+
+        detail = expect(secondary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 409)["detail"]
+
+        assert detail.startswith("A queue is running (owner primary")
+
+        expect(secondary.post("/robot/rws/home"), 409)
+
+        #
+        # primary comes back and preempts secondary: still the same
+        # queue, running.
+        #
+        expect(primary.post("/control/acquire"), 200)
+
+        assert expect(diagnostics.get("/robot/rws/queue"), 200)["state"] == "running"
+
+        assert expect(diagnostics.get("/control"), 200)["client_id"] == "primary"
+
+    queue = wait_for_queue(diagnostics)
+
+    assert queue["state"] == "done", queue
+    assert job_states(queue) == ["done"] * len(SLOW_QUEUE)
+
+    assert_position(arm_pose(diagnostics), SECOND)
+
+    #
+    # done refuses nothing: the lease holder queues the next.
+    #
+    with take_control(primary):
+        expect(primary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 202)
+
+        assert wait_for_queue(primary)["state"] == "done"
+
+
+@pytest.mark.cpp_only
+def test_new_lease_holder_cancels_and_clears_the_queue(
+    queue_program: Gateway,
+) -> None:
+    primary = queue_program.client("primary")
+    secondary = queue_program.client("secondary")
+
+    expect(primary.post("/control/acquire"), 200)
+
+    expect(primary.post("/robot/rws/queue", json={"steps": SLOW_QUEUE}), 202)
+
+    with take_control(secondary):
+        #
+        # The owner no longer holds the lease, so it cannot cancel.
+        #
+        expect(primary.delete("/robot/rws/queue"), 409)
+
+        cancelling = expect(secondary.delete("/robot/rws/queue"), 200)
+
+        assert cancelling["state"] == "running"
+        assert cancelling["cancel_requested"] is True
+
+        queue = wait_for_queue(secondary)
+
+        #
+        # The job running at the cancel finished; the rest was
+        # never sent.
+        #
+        states = job_states(queue)
+        stop = states.index("skipped")
+
+        assert queue["state"] == "cancelled", queue
+        assert queue["step"] == stop
+        assert states == ["done"] * stop + ["skipped"] * (len(states) - stop)
+
+        stopped_at = {"to target": TARGET, "slow 1": SECOND, "slow 2": TARGET}
+
+        assert_position(arm_pose(secondary), stopped_at[queue["steps"][stop - 1]["name"]])
+
+        #
+        # Part way through the plan: no new queue until cleared,
+        # single jobs (recovery) allowed.
+        #
+        detail = expect(secondary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 409)["detail"]
+
+        assert "clear it first" in detail
+
+        assert rws_home(secondary) == DONE
+
+        assert expect(secondary.delete("/robot/rws/queue"), 200)["state"] == "idle"
+
+        expect(secondary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 202)
+
+        assert wait_for_queue(secondary)["state"] == "done"
+
+
+@pytest.mark.cpp_only
+def test_failed_queue_blocks_new_queues_until_cleared(
+    queue_program: Gateway,
+) -> None:
+    primary = queue_program.client("primary")
+
+    steps = [
+        queue_move("approach", TARGET),
+        queue_move("unreachable", UNREACHABLE),
+        QUEUE_HOME,
+    ]
+
+    with primary.control():
+        expect(primary.post("/robot/rws/queue", json={"steps": steps}), 202)
+
+        queue = wait_for_queue(primary)
+
+        assert queue["state"] == "failed", queue
+        assert queue["step"] == 1
+        assert job_states(queue) == ["done", "failed", "skipped"]
+        assert queue["steps"][1]["message"] == "ERR move failed"
+        assert queue["message"] == "Job 2 (unreachable): ERR move failed"
+
+        assert_position(arm_pose(primary), TARGET)
+
+        detail = expect(primary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 409)["detail"]
+
+        assert detail == "The last queue failed at job 2 of 3; clear it first (DELETE /robot/rws/queue)"
+
+        assert rws_home(primary) == DONE
+
+        assert expect(primary.delete("/robot/rws/queue"), 200)["state"] == "idle"
+
+        expect(primary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 202)
+
+        assert wait_for_queue(primary)["state"] == "done"
 
 
 def send_command(
