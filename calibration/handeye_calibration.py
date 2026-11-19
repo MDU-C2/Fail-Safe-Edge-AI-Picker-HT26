@@ -1,5 +1,5 @@
 """
-Hand-eye calibration (eye-to-hand) for the YuMi left arm with a ChArUco board held by the gripper.
+Hand-eye calibration (eye-to-hand) for the YuMi with a ChArUco board held by the gripper.
 
 The camera is fixed, the board is fixed to the gripper. The robot moves the board to POSES:
 different places AND different tilts. At each pose the camera finds the board (24 corners)
@@ -16,9 +16,17 @@ Depth is not used for the camera pose; instead the same pictures are used to fit
 correction  Z_true = depth_scale * depth + depth_offset, by comparing the stereo depth at
 every board corner with the corner's true distance from the board pose.
 
+The gripper points down (vertical) in every pose, tilted about 15-20 degrees. Mount the board so
+its printed side faces up towards the camera, and so the arm doesn't hide it from the camera.
+
+Either arm can hold the board (--arm left or right, default left). The right arm's poses are
+the left arm's mirrored to the other side (y -> -y), with the same gripper orientations. Both
+arms give the camera in the same base frame (wobj0).
+
 Usage:
     py handeye_calibration.py --board        write charuco_board.png to print (300 dpi, 100 %)
-    py handeye_calibration.py                run the poses step by step, then solve
+    py handeye_calibration.py                left arm, poses step by step, then solve
+    py handeye_calibration.py --arm right    right arm instead
     py handeye_calibration.py --auto         run all poses without stopping, then solve
     py handeye_calibration.py --fit handeye_runs/session_20261116_110000   solve a saved run
 """
@@ -31,7 +39,7 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from camera_calibration import (acquire_control, capture, get_intrinsics, home, orient_zyx,
+from camera_calibration import (acquire_control, capture, get_intrinsics, orient_zyx,
                                 release_control, robot_job)
 
 # Board: measure the printed squares with a ruler and put the real size here
@@ -44,21 +52,32 @@ MIN_CORNERS = 10                 # fewer than this and the pose is skipped
 SETTLE = 1.0                     # s to wait after the robot reports DONE
 FRAMES = 4                       # frames per pose; the first is discarded
 
-# FLANGE (tool0) poses: x, y, z mm and rx, ry, rz degrees, wobj0. (90, 0, 90) is the gripper
-# horizontal with the board facing up. Tilts of about 20 degrees around all three axes give the
-# solve the rotation it needs. START and END are high, only for getting in and out.
-START_POSE = (420, 80, 320, 90, 0, 90)
-END_POSE = (520, 80, 320, 90, 0, 90)
-POSES = [
-    (320, -180, 180, 90, 0, 90),   (320, 80, 180, 110, 0, 90),    (320, 340, 180, 90, 20, 90),
-    (320, 340, 260, 90, 0, 70),    (320, 80, 260, 75, -15, 100),  (320, -180, 260, 105, 15, 80),
-    (420, -180, 180, 90, -20, 90), (420, 80, 180, 90, 0, 110),    (420, 340, 180, 70, 0, 90),
-    (420, 340, 260, 105, -15, 100), (420, 80, 260, 90, 20, 90),   (420, -180, 260, 75, 15, 80),
-    (520, -180, 180, 90, 0, 70),   (520, 80, 180, 110, 15, 90),   (520, 340, 180, 90, -20, 110),
-    (520, 340, 260, 75, 0, 90),    (520, 80, 260, 90, 0, 90),     (520, -180, 260, 105, -15, 100),
-    (620, -180, 180, 70, 15, 90),  (620, 80, 180, 90, -20, 70),   (620, 340, 180, 105, 0, 110),
-    (620, 340, 260, 90, 20, 80),   (620, 80, 260, 110, 0, 100),   (620, -180, 260, 75, -15, 90),
+# FLANGE (tool0) poses: x, y, z mm and rx, ry, rz degrees, wobj0. (180, 0, 180) is the gripper
+# vertical, pointing straight down. Tilts of about 15-20 degrees around all three axes give the
+# solve the rotation it needs. The flange stays at z 300 or higher, so fingers and board (about
+# 160 mm below the flange) stay clear of the table even when tilted. START and END are high,
+# only for getting in and out.
+START_POSE = (420, 80, 420, 180, 0, 180)
+END_POSE = (500, 80, 420, 180, 0, 180)
+POSES_LEFT = [
+    (340, -180, 300, 180, 0, 180), (340, 80, 300, 200, 0, 180),    (340, 340, 300, 180, 20, 180),
+    (340, 340, 380, 180, 0, 160),  (340, 80, 380, 165, -15, 190),  (340, -180, 380, 195, 15, 170),
+    (420, -180, 300, 180, -20, 180), (420, 80, 300, 180, 0, 200),  (420, 340, 300, 160, 0, 180),
+    (420, 340, 380, 195, -15, 190), (420, 80, 380, 180, 20, 170),  (420, -180, 380, 165, 15, 180),
+    (500, -180, 300, 180, 0, 180), (500, 80, 300, 200, 0, 180),    (500, 340, 300, 180, 20, 180),
+    (500, 340, 380, 180, 0, 160),  (500, 80, 380, 165, -15, 190),  (500, -180, 380, 195, 15, 170),
+    (580, -180, 300, 180, -20, 180), (580, 80, 300, 180, 0, 200),  (580, 340, 300, 160, 0, 180),
+    (580, 340, 380, 195, -15, 190), (580, 80, 380, 180, 20, 170),  (580, -180, 380, 165, 15, 180),
 ]
+
+
+def mirror(pose):
+    """Left-arm pose -> the same pose on the right arm's side (y -> -y), same orientation."""
+    x, y, z, rx, ry, rz = pose
+    return (x, -y, z, rx, ry, rz)
+
+
+ARM = "left"                     # set by --arm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -227,7 +246,7 @@ def solve(folder):
     else:
         print("Depth correction: not enough depth readings at the board corners")
 
-    result = {"method": "handeye_charuco", "R": Y[:3, :3].tolist(), "t": Y[:3, 3].tolist(),
+    result = {"method": "handeye_charuco", "arm": session.get("arm", "left"), "R": Y[:3, :3].tolist(), "t": Y[:3, 3].tolist(),
               "intrinsics": k, "T_flange_board": Z.tolist(),
               "depth_scale": dc["depth_scale"] if dc else 1.0,
               "depth_offset": dc["depth_offset"] if dc else 0.0,
@@ -243,9 +262,20 @@ def solve(folder):
 
 # Robot run
 
+def poses_for_arm():
+    """START, POSES and END for the arm in ARM."""
+    if ARM == "left":
+        return START_POSE, POSES_LEFT, END_POSE
+    return mirror(START_POSE), [mirror(p) for p in POSES_LEFT], mirror(END_POSE)
+
+
 def move_flange(pose):
     x, y, z, rx, ry, rz = pose
-    return robot_job("move", {"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+    return robot_job("move", {"arm": ARM, "x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+
+
+def home_arm():
+    return robot_job("home", {"arm": ARM})
 
 
 def measure(folder, n):
@@ -270,21 +300,23 @@ def measure(folder, n):
 
 def run(auto):
     k = get_intrinsics()
-    folder = os.path.join(HERE, "handeye_runs", datetime.now().strftime("session_%Y%m%d_%H%M%S"))
+    start, poses, end = poses_for_arm()
+    folder = os.path.join(HERE, "handeye_runs", datetime.now().strftime(f"session_%Y%m%d_%H%M%S_{ARM}"))
     os.makedirs(os.path.join(folder, "rgb"))
     os.makedirs(os.path.join(folder, "depth"))
-    session = {"intrinsics": k, "samples": []}
+    session = {"intrinsics": k, "arm": ARM, "samples": []}
+    print(f"Arm: {ARM}")
 
     def ask(what):
         return auto or input(f"Enter = {what}, q = stop: ").strip().lower() != "q"
 
     lease = acquire_control()
-    if not ask("go HOME") or not home() or not ask(f"start pose {START_POSE}") or not move_flange(START_POSE):
+    if not ask(f"go HOME ({ARM} arm)") or not home_arm() or not ask(f"start pose {start}") or not move_flange(start):
         release_control(lease)
         raise SystemExit("Stopped before the first pose")
 
-    for n, pose in enumerate(POSES, 1):
-        if not ask(f"pose {n}/{len(POSES)} {pose}"):
+    for n, pose in enumerate(poses, 1):
+        if not ask(f"pose {n}/{len(poses)} {pose}"):
             break
         if not move_flange(pose):
             print(f"  pose {n}: robot did not reach it, skipped")
@@ -296,8 +328,8 @@ def run(auto):
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
-    print(f"Going to the end pose {END_POSE}")
-    move_flange(END_POSE)
+    print(f"Going to the end pose {end}")
+    move_flange(end)
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
     solve(folder)
@@ -320,7 +352,9 @@ if __name__ == "__main__":
     parser.add_argument("--auto", action="store_true", help="run all poses without waiting for Enter")
     parser.add_argument("--fit", metavar="SESSION_FOLDER", help="solve a saved run, no robot")
     parser.add_argument("--board", action="store_true", help="write the board image to print")
+    parser.add_argument("--arm", choices=("left", "right"), default="left", help="arm that holds the board")
     args = parser.parse_args()
+    ARM = args.arm
 
     if args.board:
         write_board()
