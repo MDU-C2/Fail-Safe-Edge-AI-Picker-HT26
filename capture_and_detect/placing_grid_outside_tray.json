@@ -13,46 +13,42 @@
       "x": 450,
       "y": -260,
       "z": 230,
-      "occupied": true,
-      "reserved": true,
-      "reservation_id": "e6d162901e19435ca7af6fb1120bdb38"
+      "occupied": true
     },
     {
       "id": 4,
       "x": 550,
       "y": -260,
       "z": 230,
-      "occupied": true,
-      "reserved": true,
-      "reservation_id": "e6d162901e19435ca7af6fb1120bdb38"
+      "occupied": true
     },
     {
       "id": 5,
       "x": 650,
       "y": -260,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 8,
       "x": 350,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 9,
       "x": 450,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 10,
       "x": 550,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     }
   ],
   "cell_size_mm": 90

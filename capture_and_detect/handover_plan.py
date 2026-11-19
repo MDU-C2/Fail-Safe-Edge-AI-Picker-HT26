@@ -33,6 +33,10 @@ DEFAULT_SPEED = 250
 HOME_SPEED = 200
 HOME_UP_Z = 600
 LEFT_HOME_Y = 400
+# Where the empty left arm waits after the handover, out of the camera's view, until
+# the next cup: sideways to the left (+y) at the handover height (the same side move
+# its home routine uses). Tune it so the arm is not in the camera image.
+LEFT_PARK = (HANDOVER_X, LEFT_HOME_Y, LEFT_TOP)
 LEFT_GAP_CLOSED = 75
 PICK_SPEED = 100
 FLIP_SPEED = 100
@@ -253,8 +257,8 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     release the arms move straight apart together. Turnover waits for both to
     finish, then placement completes before another cup can start.
 
-    By default left stays open above the handover and right stays open above
-    placement; the grippers close only on a cup. No home command is issued,
+    By default left parks open out of the camera's view (LEFT_PARK) and
+    right stays open above placement; the grippers close only on a cup. No home command is issued,
     even for the last cup. Explicit ``home_after_cup=True`` retains the
     initial right home and return-home sequences. There is no retry or fallback after an unconfirmed movement.
     """
@@ -280,20 +284,21 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     # Grippers close only on a cup (grip_cup, right_grip); otherwise they stay
     # open, ready for the next cup. Both open first, in case they start closed.
     plan.grip("right_open_start", "right", "open")
-    plan.grip("left_open_start", "left", "open")
     if home_after_cup:
         plan.home("right_home_start", "right")
-    plan.path("left_ready", "left", [(LEFT_READY, LEFT_DOWN, plan.speed, False)],
-              move_speed=plan.speed,
-              after=("right_home_start",) if home_after_cup else ())
+    # The left opens to the cup's width where it waits (out of the camera's view),
+    # then goes to the cup in one smooth motion without stopping: through LEFT_READY
+    # and above the cup (both blended), then straight down to the grip height (stop).
     if aperture is None:
         plan.grip("left_open", "left", "open")
     else:
         position = round(min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25), 1)
         plan.grip("left_open", "left", "move", position=position)
     plan.path("approach_cup", "left",
-              [(above, rotation, plan.speed, False),
-               (pick, rotation, pick_speed, True)], move_speed=plan.speed)
+              [(LEFT_READY, LEFT_DOWN, plan.speed, False),
+               (above, rotation, plan.speed, False),
+               (pick, rotation, pick_speed, True)], move_speed=plan.speed,
+              after=("right_home_start",) if home_after_cup else ())
     plan.grip("grip_cup", "left", "grip")
     plan.path("right_via", "right", [(R_VIA, RIGHT_UP, receive_speed, False)],
               move_speed=receive_speed, after=("left_open",))
@@ -317,6 +322,10 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     left_clear = (HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT)
     plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, plan.speed, True)],
               move_speed=plan.speed)
+    if not home_after_cup:
+        # Out of the camera's view before the next cup; the right arm's flip does not wait for it.
+        plan.path("left_park", "left", [(LEFT_PARK, LEFT_DOWN, plan.speed, False)],
+                  move_speed=plan.speed)
     plan.path("right_lower", "right", [(below, RIGHT_UP, receive_speed, True)],
               move_speed=receive_speed, after=("left_release",), **carrying)
     plan.path("right_retreat", "right",
