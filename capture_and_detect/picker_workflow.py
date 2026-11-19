@@ -722,12 +722,14 @@ def main(argv=None):
     parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"), help="Placement locations and their occupied/reserved flags")
     parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table, mm (default 0)")
     parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Fallback cell width in mm (default 80; 20..200); the grid file's cell_size_mm takes precedence")
-    parser.add_argument("--gateway", default="http://169.254.125.202:8000")
+    parser.add_argument("--gateway", default="http://169.254.219.127:8000")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=DEFAULT_DEPTH_FRAMES,
                         help="Fresh frames averaged for cup coordinates (default 5; 1 disables averaging); grid checks use raw aligned depth")
-    parser.add_argument("--camera-z", action="store_true",
-                        help="Use measured cup-base Z + 20 mm for picking, with a 40 mm minimum TCP height")
+    parser.add_argument("--camera-z", dest="camera_z", action="store_true", default=True,
+                        help="Use measured cup-base Z + 20 mm for picking, 40 mm minimum (DEFAULT)")
+    parser.add_argument("--fixed-z", dest="camera_z", action="store_false",
+                        help="Use the fixed pick height instead of the camera depth")
     parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
     parser.add_argument("--speed", type=positive, default=None,
                         help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "
