@@ -254,8 +254,9 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     Left approach/grip overlaps right preparation at R_VIA. Both finish before
     left lift/handover overlaps the right move beside it. Right opening waits
     for both arrivals; left release waits for confirmed right grip. After the
-    release the arms move straight apart together. Turnover waits for both to
-    finish, then placement completes before another cup can start.
+    release the arms move straight apart: the left up out of the cup, the right
+    down. The turnover waits until the left is up; only after the turnover does
+    the left move on to LEFT_PARK. Placement completes before another cup starts.
 
     By default left parks open out of the camera's view (LEFT_PARK) and
     right stays open above placement; the grippers close only on a cup. No home command is issued,
@@ -319,22 +320,26 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               move_speed=receive_speed, zone=RECEIVING_BLEND_MM)
     plan.grip("right_grip", "right", "grip")
     plan.grip("left_release", "left", "open", after=("right_grip",))
+    # 1. Apart: the left goes straight up out of the cup (slowly, its jaws are
+    #    still around it) while the right takes the cup down out of the jaws.
     left_clear = (HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT)
-    plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, plan.speed, True)],
-              move_speed=plan.speed)
-    if not home_after_cup:
-        # Out of the camera's view before the next cup; the right arm's flip does not wait for it.
-        plan.path("left_park", "left", [(LEFT_PARK, LEFT_DOWN, plan.speed, False)],
-                  move_speed=plan.speed)
+    plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, pick_speed, True)],
+              move_speed=pick_speed)
     plan.path("right_lower", "right", [(below, RIGHT_UP, receive_speed, True)],
               move_speed=receive_speed, after=("left_release",), **carrying)
+    # 2. The right turns the cup over only once the left is up.
     plan.path("right_retreat", "right",
               [(turn_half, RIGHT_SIDE, flip_speed, False),
                (place_above, RIGHT_DOWN, flip_speed, False)],
               move_speed=flip_speed, acceleration=FLIP_ACCELERATION,
               after=("left_clear",), **carrying)
+    # 3. After the turnover the left moves on: to LEFT_PARK (out of the camera's
+    #    view) between cups, or home.
     if home_after_cup:
         plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
+    else:
+        plan.path("left_park", "left", [(LEFT_PARK, LEFT_DOWN, plan.speed, False)],
+                  move_speed=plan.speed, after=("right_retreat",))
     plan.path("right_place", "right", [(spot, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed, **carrying)
     plan.grip("right_release", "right", "open")
