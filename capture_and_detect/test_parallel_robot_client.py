@@ -202,6 +202,35 @@ class ParallelRobotClientTests(unittest.TestCase):
         self.assertEqual(self.controls.count("/control/acquire"), 1)
         self.assertEqual(self.controls.count("/control/release"), 1)
 
+    def test_executor_keeps_lease_and_waits_for_left_park_after_right_clear(self):
+        jobs = self.plan()
+        right_reported = threading.Event()
+        record_completion = self.after
+
+        def after(index, job):
+            record_completion(index, job)
+            if job["name"] == "right_clear":
+                right_reported.set()
+
+        self.after = after
+        self.launch(jobs, blocked=("left_park",), client_type=QuickRenewClient)
+        self.wait_started("left_park")
+        self.wait_started("right_clear")
+        self.assertTrue(self.returned["right_clear"].wait(1))
+        self.assertTrue(right_reported.wait(1))
+        self.assertTrue(self.renewed.wait(1))
+        self.assertFalse(self.finished.is_set(), "Caller returned while left parking was still in flight")
+        self.assertFalse(self.released.is_set(), "Control lease released before both arms finished")
+        self.assertNotIn("left_park", self.completed)
+
+        self.gates["left_park"].set()
+        self.finish()
+        self.assertEqual(set(self.completed), {job["name"] for job in jobs})
+        self.assertEqual(self.completed[-1], "left_park")
+        self.assertTrue(self.released.is_set())
+        self.assertEqual(self.controls.count("/control/acquire"), 1)
+        self.assertEqual(self.controls.count("/control/release"), 1)
+
     def test_path_completion_is_the_handover_barrier(self):
         def path(name, arm):
             job = move(name, arm, after=[])

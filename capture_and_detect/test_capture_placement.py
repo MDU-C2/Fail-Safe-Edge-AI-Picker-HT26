@@ -5,12 +5,13 @@ import copy
 import io
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import weakref
 
 import numpy as np
 
-from camera_client import CameraError
+from camera_client import CameraError, NoNewCameraFrame
+from detection_masks import encode_mask
 from picker_workflow import CaptureService
 from cup_inventory import SelectionError
 from test_cup_selection import detection
@@ -212,6 +213,265 @@ class CapturePlacementTests(unittest.TestCase):
         self.assertNotIn("placement_location_ids", source)
         self.assertEqual(self.grid.path.read_bytes(), before)
         self.assertEqual(self.store.save_capture.call_args.args[0]["cups"], result["cups"])
+
+    def test_between_cups_uses_one_fresh_depth_burst_without_grid_or_reference_access(self):
+        self.service.capture("scan")
+        self.camera.capture.reset_mock(side_effect=True)
+        self.camera.capture.side_effect = [self.frame(sequence) for sequence in (20, 21, 22)]
+        self.camera.capture_latest = Mock(side_effect=AssertionError("Cached image reused"))
+        self.detector.analyse.reset_mock()
+        self.store.save_capture.reset_mock()
+        self.service.depth_frames = 3
+        with patch.object(self.grid, "snapshot", side_effect=AssertionError("Grid read")), \
+                patch.object(self.service, "_read_table_reference", side_effect=AssertionError("Reference read")), \
+                patch.object(self.service, "_check_table_reference", side_effect=AssertionError("Reference validation")), \
+                patch.object(self.service.placement_vision, "assess", side_effect=AssertionError("Grid assessment")), \
+                patch.object(self.service.placement_vision, "draw", side_effect=AssertionError("Grid drawing")):
+            result, _ = self.service.capture("between_cups")
+        self.assertEqual(self.camera.capture.call_count, 3)
+        self.camera.capture_latest.assert_not_called()
+        self.detector.analyse.assert_called_once()
+        self.assertEqual(result["frame"]["depth_sampling"]["sequences"], [20, 21, 22])
+        self.assertNotIn("placement_observation", result)
+        self.store.save_capture.assert_called_once()
+        self.assertEqual(self.store.save_capture.call_args.args[-1], "between_cups")
+
+    def test_between_cups_excludes_placed_cups_using_original_scan_geometry_only(self):
+        self.service.capture("scan")
+        geometry = copy.deepcopy(self.service._source_grid_geometry)
+        self.assertTrue(all(set(place) == {"id", "x", "y"} for place in geometry["locations"]))
+        objects = []
+        for u, v, x, y in ((320, 240, 515, 0), (460, 100, 650, 100)):
+            for kind in ("CUP", "CUP BASE"):
+                obj = detection(kind, u, x=x)
+                obj.update(robot_y_mm=y, y_px=v)
+                obj["bbox_xyxy"][1::2] = [v - 20, v + 20]
+                objects.append(obj)
+        self.detector.analyse.side_effect = lambda rgb, depth: (copy.deepcopy(objects), rgb.copy())
+        self.camera.capture.side_effect = [self.frame(20)]
+        # Neither current occupancy/geometry nor the reference is consulted.
+        self.grid.path.write_text("invalid grid after original scan")
+        self.service.table_reference_path.write_text("invalid reference after original scan")
+        self.service.placement_vision = None
+        result, _ = self.service.capture("between_cups")
+        placed, source = result["cups"]
+        self.assertFalse(placed["selectable"])
+        self.assertEqual(placed["placement_location_ids"], [1])
+        self.assertTrue(source["selectable"])
+        self.assertNotIn("placement_observation", result)
+        self.assertEqual(self.service._source_grid_geometry, geometry)
+
+    def test_between_cups_without_full_scan_fails_before_camera_or_grid_access(self):
+        with patch.object(self.grid, "snapshot", side_effect=AssertionError("Grid read")), \
+                patch.object(self.service, "_check_table_reference", side_effect=AssertionError("Reference validation")):
+            with self.assertRaisesRegex(SelectionError, "full scan"):
+                self.service.capture("between_cups")
+        self.camera.capture.assert_not_called()
+        self.detector.analyse.assert_not_called()
+        self.store.save_capture.assert_not_called()
+
+    def test_between_cups_without_new_source_frame_does_not_infer_or_save(self):
+        self.service.capture("scan")
+        self.camera.capture.side_effect = NoNewCameraFrame("No new source frame")
+        self.camera.capture_latest = Mock(return_value=self.frame(12))
+        self.detector.analyse.reset_mock()
+        self.store.save_capture.reset_mock()
+        with self.assertRaisesRegex(NoNewCameraFrame, "No new source frame"):
+            self.service.capture("between_cups")
+        self.camera.capture_latest.assert_not_called()
+        self.detector.analyse.assert_not_called()
+        self.store.save_capture.assert_not_called()
+
+
+    def test_between_cups_grid_forces_fresh_bursts_and_keeps_complete_scan_evidence(self):
+        for observation_count in (1, 3):
+            with self.subTest(observations=observation_count):
+                service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                         placing_grid=self.grid, depth_frames=3,
+                                         scan_observations=observation_count)
+                frames = [self.frame(sequence) for sequence in range(20, 20 + observation_count * 3)]
+                self.camera.capture.reset_mock(side_effect=True)
+                self.camera.capture.side_effect = frames
+                self.camera.capture_latest = Mock(side_effect=AssertionError("Cached pre-motion image reused"))
+                self.detector.analyse.reset_mock()
+                self.store.save_capture.reset_mock()
+                before, snapshot = self.grid.path.read_bytes(), self.grid.snapshot()
+                with patch.object(service.placement_vision, "assess", wraps=service.placement_vision.assess) as assess:
+                    result, _ = service.capture("between_cups_grid")
+                self.assertEqual(self.camera.capture.call_count, observation_count * 3)
+                self.camera.capture_latest.assert_not_called()
+                self.assertTrue(all(call.kwargs.get("timeout_s", 0) > 0 for call in self.camera.capture.call_args_list))
+                self.assertEqual(self.detector.analyse.call_count, observation_count)
+                self.assertEqual(assess.call_count, observation_count)
+                for index, call in enumerate(assess.call_args_list):
+                    self.assertIs(call.args[0], frames[3 * index + 2][1], "Grid must use latest raw aligned depth")
+                observation = result["placement_observation"]
+                self.assertEqual(observation["frame_count"], observation_count)
+                self.assertEqual(observation["frame_sequences"], list(range(22, 20 + observation_count * 3, 3)))
+                self.assertEqual(observation["grid_snapshot"], snapshot)
+                self.assertEqual([slot["state"] for slot in observation["slots"]], ["clear"] * 3)
+                self.assertFalse(observation["applied"])
+                self.assertEqual(result["frame"]["sequence"], frames[-1][2]["sequence"])
+                self.assertEqual(self.grid.path.read_bytes(), before)
+                self.store.save_capture.assert_called_once()
+                self.assertEqual(self.store.save_capture.call_args.args[-1], "between_cups_grid")
+
+    def test_between_cups_grid_observes_removed_and_added_cups_and_excludes_placements_from_sources(self):
+        service = CaptureService(self.camera, self.detector, self.store, "offline.pt", placing_grid=self.grid)
+        objects = []
+        rgb, depth, frame = self.frame(20)
+        # P1 is occupied in bookkeeping but empty in this photo. A new cup is
+        # centered on P2, while the second detection remains in the source area.
+        for u, v, x, y in ((368, 240, 595, 0), (460, 100, 650, 100)):
+            for kind in ("CUP", "CUP BASE"):
+                obj = detection(kind, u, x=x)
+                obj.update(robot_y_mm=y, y_px=v)
+                obj["bbox_xyxy"][1::2] = [v - 20, v + 20]
+                x0, y0, x1, y1 = obj["bbox_xyxy"]
+                mask = np.zeros(depth.shape, dtype=bool)
+                mask[y0:y1, x0:x1] = True
+                obj["segmentation"] = encode_mask(mask)
+                if y == 0:
+                    depth[mask] = 900  # A measured cup surface 100 mm above the table.
+                objects.append(obj)
+        self.detector.analyse.side_effect = lambda rgb, depth: (copy.deepcopy(objects), rgb.copy())
+        self.camera.capture.side_effect = [(rgb, depth, frame)]
+        self.camera.capture_latest = Mock(side_effect=AssertionError("Cached image reused"))
+        before = self.grid.path.read_bytes()
+        result, _ = service.capture("between_cups_grid")
+        observation = result["placement_observation"]
+        self.assertEqual([slot["state"] for slot in observation["slots"]], ["clear", "occupied", "clear"])
+        self.assertTrue(observation["grid_snapshot"]["locations"][0]["occupied"])
+        self.assertFalse(observation["grid_snapshot"]["locations"][1]["occupied"])
+        self.assertEqual(observation["slots"][0]["evidence"], [])
+        self.assertEqual(observation["slots"][1]["cup_count"], 1)
+        self.assertIn("cup", observation["slots"][1]["evidence"])
+        self.assertEqual(observation["cup_summary"]["location_ids"], [2])
+        placed, source = result["cups"]
+        self.assertEqual(placed["placement_location_ids"], [2])
+        self.assertFalse(placed["selectable"])
+        self.assertTrue(source["selectable"])
+        self.assertNotIn("placement_location_ids", source)
+        self.assertEqual([cup["x"] for cup in result["cups"] if not cup.get("placement_location_ids")], [650])
+        # Applying occupancy is the session's responsibility after completion.
+        self.assertEqual(self.grid.path.read_bytes(), before)
+        self.assertFalse(observation["applied"])
+        self.assertEqual(result["source_presence"], {"cup_detections": 1})
+        self.camera.capture_latest.assert_not_called()
+
+    def test_between_cups_grid_without_new_frame_does_not_fall_back_or_save(self):
+        self.camera.capture.side_effect = NoNewCameraFrame("No post-motion frame")
+        self.camera.capture_latest = Mock(return_value=self.frame(12))
+        before = self.grid.path.read_bytes()
+        with self.assertRaisesRegex(NoNewCameraFrame, "No post-motion frame"):
+            self.service.capture("between_cups_grid")
+        self.camera.capture_latest.assert_not_called()
+        self.detector.analyse.assert_not_called()
+        self.store.save_capture.assert_not_called()
+        self.assertEqual(self.grid.path.read_bytes(), before)
+
+    def test_between_cups_grid_keeps_invalid_depth_unknown_instead_of_clearing_occupancy(self):
+        service = CaptureService(self.camera, self.detector, self.store, "offline.pt", placing_grid=self.grid)
+        rgb, depth, frame = self.frame(20)
+        self.camera.capture.side_effect = [(rgb, np.zeros_like(depth), frame)]
+        before = self.grid.path.read_bytes()
+        result, _ = service.capture("between_cups_grid")
+        self.assertEqual([slot["state"] for slot in result["placement_observation"]["slots"]], ["unknown"] * 3)
+        self.assertEqual(self.grid.path.read_bytes(), before)
+
+    def test_between_cups_grid_rejects_changed_table_reference_before_capture(self):
+        self.service.table_reference_path.write_text("changed after startup")
+        with self.assertRaisesRegex(SelectionError, "reference changed"):
+            self.service.capture("between_cups_grid")
+        self.camera.capture.assert_not_called()
+        self.detector.analyse.assert_not_called()
+        self.store.save_capture.assert_not_called()
+
+    def test_source_presence_counts_visible_cup_without_a_pickable_base(self):
+        for purpose in ("scan", "between_cups_grid", "between_cups"):
+            with self.subTest(purpose=purpose):
+                service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                         placing_grid=self.grid)
+                if purpose == "between_cups":
+                    self.camera.capture.side_effect = [self.frame(19)]
+                    self.detector.analyse.side_effect = lambda rgb, depth: ([], rgb.copy())
+                    service.capture("scan")
+                objects = [detection("CUP", 100, x=650)]
+                original = copy.deepcopy(objects)
+                self.detector.analyse.side_effect = lambda rgb, depth: (objects, rgb.copy())
+                self.camera.capture.side_effect = [self.frame(20)]
+                result, _ = service.capture(purpose)
+                self.assertEqual(result["cups"], [])
+                self.assertEqual(result["source_presence"], {"cup_detections": 1})
+                self.assertEqual(objects, original)
+                self.assertEqual(self.store.save_capture.call_args.args[0]["source_presence"],
+                                 {"cup_detections": 1})
+
+    def test_source_presence_counts_unlocated_cups_even_over_the_grid_image(self):
+        for missing in ("robot_x_mm", "robot_y_mm", "robot_z_mm"):
+            with self.subTest(missing=missing):
+                service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                         placing_grid=self.grid)
+                cup = detection("CUP", 320, x=515)
+                cup.update(robot_y_mm=0, y_px=240, bbox_xyxy=[305, 220, 335, 260])
+                cup[missing] = None
+                self.detector.analyse.side_effect = lambda rgb, depth: ([cup], rgb.copy())
+                self.camera.capture.side_effect = [self.frame(20)]
+                result, _ = service.capture("between_cups_grid")
+                self.assertEqual(result["cups"], [])
+                self.assertEqual(result["source_presence"], {"cup_detections": 1})
+
+    def test_source_presence_excludes_grid_cups_by_existing_xy_offsets_without_a_base(self):
+        self.calibration.offset = (-115, 17, 40)
+        for purpose in ("scan", "between_cups_grid", "between_cups"):
+            with self.subTest(purpose=purpose):
+                service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                         placing_grid=self.grid)
+                if purpose == "between_cups":
+                    self.camera.capture.side_effect = [self.frame(19)]
+                    self.detector.analyse.side_effect = lambda rgb, depth: ([], rgb.copy())
+                    service.capture("scan")
+                cup = detection("CUP", 320, x=515)
+                cup.update(robot_y_mm=-17, y_px=240, bbox_xyxy=[305, 220, 335, 260])
+                self.detector.analyse.side_effect = lambda rgb, depth: ([cup], rgb.copy())
+                self.camera.capture.side_effect = [self.frame(20)]
+                result, _ = service.capture(purpose)
+                self.assertEqual(result["cups"], [])
+                self.assertEqual(result["source_presence"], {"cup_detections": 0})
+
+    def test_source_presence_reuses_latest_mask_assignment_when_centroid_depth_is_unknown(self):
+        service = CaptureService(self.camera, self.detector, self.store, "offline.pt",
+                                 placing_grid=self.grid, scan_observations=3)
+        grid_cup = detection("CUP", 368, x=None, z=None)
+        grid_cup.update(robot_y_mm=None, y_px=240, bbox_xyxy=[353, 220, 383, 260])
+        mask = np.zeros((480, 640), dtype=bool)
+        mask[220:260, 353:383] = True
+        grid_cup["segmentation"] = encode_mask(mask)
+        source = detection("CUP", 100, x=650)
+        # Object indices differ between frames: only the latest assignments
+        # may exclude the latest CUPs, not an index union from earlier frames.
+        groups = [[grid_cup, source], [grid_cup, source], [source, grid_cup]]
+        self.detector.analyse.side_effect = [(copy.deepcopy(group), self.frame(20)[0]) for group in groups]
+        frames = []
+        for sequence in (20, 21, 22):
+            rgb, depth, frame = self.frame(sequence)
+            depth[mask] = 900
+            frames.append((rgb, depth, frame))
+        self.camera.capture.side_effect = frames
+        result, _ = service.capture("between_cups_grid")
+        self.assertEqual(result["cups"], [])
+        self.assertEqual(result["placement_observation"]["slots"][1]["cup_count"], 1)
+        self.assertEqual(result["placement_observation"]["slots"][1]["assigned_cups"][0]["object_indices"], [1])
+        self.assertEqual(result["source_presence"], {"cup_detections": 1})
+
+    def test_source_presence_is_zero_for_empty_or_parts_only_views(self):
+        service = CaptureService(self.camera, self.detector, self.store, "offline.pt", placing_grid=self.grid)
+        for objects in ([], [detection("CUP BASE", 100)], [detection("CUP HANDLE", 100)]):
+            with self.subTest(objects=objects):
+                self.detector.analyse.side_effect = lambda rgb, depth: (objects, rgb.copy())
+                self.camera.capture.side_effect = [self.frame(20)]
+                result, _ = service.capture("between_cups_grid")
+                self.assertEqual(result["source_presence"], {"cup_detections": 0})
 
 
 if __name__ == "__main__":

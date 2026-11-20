@@ -39,7 +39,7 @@ class HandoverDependencyTests(unittest.TestCase):
                 if arm in previous:
                     self.assertIn(previous[arm], job["after"])
                 previous[arm] = name
-        self.assertEqual(self.ready(set()), {"right_open_start", "left_open_start"})
+        self.assertEqual(self.ready(set()), {"right_open_start", "left_open"})
         for name in self.ready(set()):
             self.assertEqual(self.by_name[name]["body"]["action"], "open")
 
@@ -67,15 +67,18 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertEqual(self.ready(released), {"left_clear", "right_lower"})
         # Turning must wait for BOTH separation movements to report DONE; an
         # early completion by either arm must never release the turn barrier.
-        for finished, waiting in (("left_clear", "right_lower"), ("right_lower", "left_clear")):
-            self.assertEqual(self.ready(released | {finished}), {waiting})
-        self.assertEqual(self.ready(released | {"left_clear", "right_lower"}), {"right_retreat"})
+        self.assertEqual(self.ready(released | {"left_clear"}), {"left_park", "right_lower"})
+        self.assertEqual(self.ready(released | {"right_lower"}), {"left_clear"})
+        self.assertEqual(self.ready(released | {"left_clear", "right_lower"}),
+                         {"left_park", "right_retreat"})
 
-    def test_left_holds_at_clearance_until_right_has_finished_turning(self):
+    def test_left_parks_after_clearance_without_delaying_right_turnover(self):
         left = [job for job in self.jobs if job["body"]["arm"] == "left"]
-        self.assertEqual(left[-1]["name"], "left_clear")
+        self.assertEqual(left[-1]["name"], "left_park")
+        self.assertEqual(self.by_name["left_park"]["after"], ["left_clear"])
+        self.assertNotIn("left_park", self.ancestors("right_retreat"))
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
-        self.assertEqual(self.ready(retreated), {"right_place"})
+        self.assertEqual(self.ready(retreated), {"left_park", "right_place"})
         self.assertIn("right_place", self.ancestors("right_release"))
         self.assertIn("right_release", self.ancestors("right_clear"))
         self.assertEqual(self.by_name["right_clear"]["after"], ["right_release"])
@@ -86,11 +89,12 @@ class HandoverDependencyTests(unittest.TestCase):
     def test_optional_homes_start_and_finish_with_confirmed_clearances(self):
         self.jobs = handover_jobs(self.cup, place=self.place, home_after_cup=True)
         self.by_name = {job["name"]: job for job in self.jobs}
-        self.assertEqual(self.ready(set()), {"right_open_start", "left_open_start"})
+        self.assertEqual(self.ready(set()), {"right_open_start", "left_open"})
         self.assertEqual(self.by_name["right_home_start"]["after"], ["right_open_start"])
-        self.assertEqual(self.ready({"right_open_start", "left_open_start"}), {"right_home_start"})
-        self.assertIn("right_home_start", self.ancestors("left_ready"))
-        self.assertIn("left_open_start", self.by_name["left_ready"]["after"])
+        self.assertEqual(self.ready({"right_open_start", "left_open"}), {"right_home_start"})
+        self.assertIn("right_home_start", self.by_name["approach_cup"]["after"])
+        self.assertIn("left_open", self.by_name["approach_cup"]["after"])
+        self.assertNotIn("left_park", self.by_name)
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
         self.assertEqual(self.ready(retreated), {"left_close_return", "right_place"})
         self.assertEqual(self.by_name["right_home"]["after"], ["right_clear"])

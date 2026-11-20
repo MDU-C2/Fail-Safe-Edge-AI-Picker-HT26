@@ -160,10 +160,11 @@
     }
     dom["mode-panel"].classList.toggle("live", mode === "live");
     text("mode-footer", mode === "demo" ? "Local demo · no physical movement" : "One controller · one action at a time");
-    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
+    const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : state?.motion?.continuous_batch ? "Pick all: Home once when workspace is empty" : "Automatic home off";
     const smooth = state?.motion?.handover_plan === "smooth_dual_arm_v1" ? " · Smooth dual-arm handover"
       : state?.motion?.handover_motion === "blended_path" ? " · Smooth handover" : "";
-    text("motion-summary", `${state?.motion?.workflow === "v4_snapshot" ? "Snapshot picking · " : ""}Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · ${home}${smooth}`);
+    const capturePolicy = state?.motion?.between_cup_grid_check ? "Workspace + grid refresh after each cup · " : state?.motion?.between_cup_check ? "Source-cup refresh after each cup · " : state?.motion?.workflow === "v4_snapshot" ? "Snapshot picking · " : "";
+    text("motion-summary", `${capturePolicy}Normal ${speedText(state?.motion?.speed)} · Cup flip ${speedText(state?.motion?.flip_speed)} · ${home}${smooth}`);
   }
 
   function renderConnection() {
@@ -438,8 +439,9 @@
       selectedCapture = inventory?.capture || null;
     }
     const capture = inventory?.capture || null;
-    if (capture !== imageCapture) {
-      imageCapture = capture;
+    const photoCapture = inventory?.image_capture || capture;
+    if (photoCapture !== imageCapture) {
+      imageCapture = photoCapture;
       imageLoaded = false;
       dom["selection-overlay"].replaceChildren();
       hide("image-stage", true);
@@ -622,7 +624,9 @@
     dom["placement-summary"].classList.toggle("has-error", !ready);
     const observationMessage = observation ? [placementCupSummary(observation.cup_summary), asMessage(observation.message), released.length ? `${released.length} location${released.length === 1 ? "" : "s"} released: ${released.join(", ")}.` : "", observation.applied === false ? "Saved location status was not updated." : ""].filter(Boolean).join(" ") : state?.mode === "demo" ? "Sample placement status. This demo does not check a camera." : "No placement camera check in this scan.";
     text("placement-observation", observationMessage);
-    text("placement-snapshot", state?.inventory ? `Last scan only${clockText(state.inventory.saved_at) ? ` · ${clockText(state.inventory.saved_at)}` : ""}. Scan again after removing a cup; this view does not update continuously.` : "Scan checks the placement area. Remove a cup and scan again to update its location.");
+    text("placement-snapshot", state?.motion?.between_cup_grid_check
+      ? "Placement occupancy refreshes after each live placement, once both arms finish. Camera-cleared cells can be reused; occupied or uncertain cells stay unavailable. Scan workspace also updates this view."
+      : state?.inventory ? `Last scan only${clockText(state.inventory.saved_at) ? ` · ${clockText(state.inventory.saved_at)}` : ""}. Scan again after removing a cup; this view does not update continuously.` : "Scan checks the placement area. Remove a cup and scan again to update its location.");
     const key = JSON.stringify([grid, observation, state?.proposal?.placements]);
     if (key === placementsKey) return;
     placementsKey = key;
@@ -659,12 +663,17 @@
     hide("proposal-panel", !proposal || Boolean(proposal.assistant_request_id) || state?.busy || localStopInhibit || state?.stop_requested);
     if (!proposal || proposal.assistant_request_id) return;
     const batch = proposal.action === "goto_all";
+    const dynamicBatch = batch && proposal.dynamic_batch;
+    const continuousBatch = dynamicBatch && (proposal.continuous_batch ?? state?.motion?.continuous_batch ?? false);
+    const gridCheck = proposal.between_cup_grid_check ?? state?.motion?.between_cup_grid_check ?? false;
+    const workspaceCheck = proposal.between_cup_check ?? state?.motion?.between_cup_check ?? false;
     const ids = batch && Array.isArray(proposal.cup_ids) ? proposal.cup_ids : [proposal.cup_id];
     const cupCount = `${ids.length} cup${ids.length === 1 ? "" : "s"}`;
-    text("proposal-cup", batch ? `Pick ${cupCount}` : `Cup ${proposal.cup_id}`);
+    text("proposal-cup", dynamicBatch ? "Pick all workspace cups" : batch ? `Pick ${cupCount}` : `Cup ${proposal.cup_id}`);
     const homeAfterCup = proposal.home_after_cup ?? state?.motion?.home_after_cup ?? false;
+    const rightPark = proposal.right_park_pose ?? state?.motion?.right_park_pose;
     text("proposal-action", proposal.action === "hover" ? "Hover above the cup"
-      : homeAfterCup ? "Pick → handover → place → return home" : "Pick → handover → place → lift clear");
+      : homeAfterCup ? "Pick → handover → place → return home" : rightPark ? "Pick → handover → place → move right arm clear" : "Pick → handover → place → lift clear");
     text("proposal-description", proposal.description);
     const saved = proposal.saved_cup;
     hide("proposal-saved-cup", !saved);
@@ -675,15 +684,16 @@
     }
     const placements = Array.isArray(proposal.placements) ? proposal.placements : [];
     hide("proposal-destinations", !placements.length);
-    text("proposal-destinations", placements.map((place, index) => `Cup ${ids[index] ?? "?"} → location ${place.id}`).join(" · "));
+    text("proposal-destinations", `${dynamicBatch ? "Initial destinations: " : ""}${placements.map((place, index) => `Cup ${ids[index] ?? "?"} → location ${place.id}`).join(" · ")}`);
     const excluded = Array.isArray(proposal.excluded_cup_ids) ? proposal.excluded_cup_ids : [];
     hide("proposal-excluded", !excluded.length);
-    text("proposal-excluded", `Not included because no destination slots remain: ${excluded.map((id) => `cup ${id}`).join(", ")}.`);
+    text("proposal-excluded", `${dynamicBatch ? "Initially no destination slots for" : "Not included because no destination slots remain"}: ${excluded.map((id) => `cup ${id}`).join(", ")}.`);
     const motion = state?.motion;
     const normal = `Overall: ${speedText(proposal.speed ?? motion?.speed)}, ${accelerationText(proposal.acceleration ?? motion?.acceleration)}`;
     const flip = `Cup flip: ${speedText(proposal.flip_speed ?? motion?.flip_speed)}, ${accelerationText(motion?.flip_acceleration)}`;
     const home = homeAfterCup ? `Sequence home: ${speedText(proposal.home_speed ?? motion?.home_speed)}`
-      : "Automatic home off; arms remain at clearance poses";
+      : continuousBatch ? "Home only when the source workspace becomes empty, once per empty period; then watch for new cups and resume automatically until Stop"
+      : rightPark ? "Automatic home off; left arm clear and right arm waits at its camera-clear waiting position" : "Automatic home off; arms remain at clearance poses";
     const phases = proposal.phase_speeds;
     const phaseReview = phases && ["pick_lift", "handover", "flip", "placement"].every((key) => Number.isFinite(phases[key]))
       ? `Pick & lift: ${speedText(phases.pick_lift)}. Right handover: ${speedText(phases.handover)}. Cup flip: ${speedText(phases.flip)}, ${accelerationText(motion?.flip_acceleration)}. Place & clear: ${speedText(phases.placement)}.` : `${flip}.`;
@@ -692,8 +702,12 @@
     const handover = proposal.handover;
     hide("proposal-handover", !transfer);
     text("proposal-handover", transfer ? `Reviewed right receiving target: ${coordinatesText(handover?.receive_mm)}. Receiving approach: ${speedText(handover?.approach_speed)}.` : "");
-    text("proposal-context", `Selected from scan ${proposal.capture_id}. ${batch ? `Cups ${ids.join(", ")} run in this order. Check all highlighted cups and destinations.` : proposal.action === "hover" ? "Check the highlighted cup before continuing." : "Check the highlighted cup and destination before continuing."}`);
-    text("confirm-button", `${state.mode === "live" ? "Confirm" : "Preview"} ${batch ? cupCount : `cup ${proposal.cup_id}`}`);
+    const gridPolicy = proposal.action === "hover" ? "" : gridCheck ? " Placement occupancy also refreshes: camera-cleared cells can be reused; occupied or uncertain cells stay unavailable."
+      : workspaceCheck ? " Source cups refresh; placement evidence stays from the manual scan." : "";
+    const continuation = continuousBatch ? "until Stop. When the source workspace is empty, both arms go Home once and the camera keeps watching. New pickable cups resume automatically when a cell is available; a full grid with cups still waiting does not send the arms Home"
+      : gridCheck ? "until none are pickable. If the grid fills, it waits and refreshes automatically, then resumes when a cell is clear" : "until none are pickable or destinations are full";
+    text("proposal-context", `Selected from scan ${proposal.capture_id}. ${dynamicBatch ? `Initially ${cupCount}. A live run updates the remaining cups after every placement, including moved and newly added cups, ${continuation}.` : batch ? `Cups ${ids.join(", ")} run in this order. Check all highlighted cups and destinations.` : proposal.action === "hover" ? "Check the highlighted cup before continuing." : "Check the highlighted cup and destination before continuing."}${gridPolicy}`);
+    text("confirm-button", `${state.mode === "live" ? "Confirm" : "Preview"} ${dynamicBatch ? "Pick all" : batch ? cupCount : `cup ${proposal.cup_id}`}`);
     updateCountdown();
   }
 
@@ -961,6 +975,10 @@
   function renderActivity() {
     const busy = Boolean(state?.busy || posting || stopPosting);
     const progress = state?.progress;
+    const batch = state?.batch || progress?.batch;
+    const waitingForGrid = batch?.state === "waiting_for_grid";
+    const waitingForCups = batch?.state === "waiting_for_cups";
+    const homingWhenEmpty = batch?.state === "homing_when_empty";
     text("activity-status", !connected ? "Offline" : busy ? "Working" : state?.recovery_required ? "Check required" : "Idle");
     dom["activity-indicator"].classList.toggle("busy", connected && busy);
     let title = state?.message || "Ready for your next action";
@@ -968,17 +986,24 @@
     if (!state) title = "Waiting for the controller";
     else if (!connected) { title = "Controller disconnected"; description = "This display may be stale. Active motion may continue."; }
     else if (localStopInhibit || state.stop_requested) { title = state.stop?.state === "unconfirmed" ? "Software stop unconfirmed" : "Stop requested · new commands blocked"; description = state.stop?.message || "Waiting for the controller response. Nothing resumes automatically."; }
+    else if (waitingForGrid) { title = "Waiting for a clear grid cell"; description = "The batch is still active. Remove a cup from the placement grid and move your hand clear. The camera refreshes automatically; picking resumes when a cell is confirmed clear."; }
+    else if (homingWhenEmpty) { title = "Workspace empty · moving both arms Home"; description = "Both arms return Home once for this empty period. The camera will keep watching for new cups; Stop ends the run."; }
+    else if (waitingForCups) {
+      const unpickable = batch.completion_reason === "no_pickable_cups";
+      title = unpickable ? "Waiting for a pickable cup" : "Watching for cups";
+      description = `${unpickable ? "Cups are still detected, so the arms stay clear while the camera looks for a pickable cup." : "Pick all is still active."} The camera keeps refreshing; picking resumes automatically when a pickable source cup and a clear grid cell are available. Stop ends the run.`;
+    }
     else if (busy) { title = progress?.step ? humanize(progress.step) : humanize(state.operation || "Processing request"); description = state.mode === "live" ? "Follow the controller status. Use physical safety controls if needed." : "Processing locally. No physical movement is enabled."; }
     else if (state.recovery_required) { title = "Operator inspection required"; description = "Acknowledge recovery only after checking both arms and the cup."; }
     else if (state.robot_controls?.proposal) { title = "Review the robot control action"; description = "Inspect both arms and the held cup, then confirm the preview in Robot controls. Nothing has been sent to the robot yet."; }
-    else if (state.proposal) { title = "Waiting for your confirmation"; description = `Review the action for ${state.proposal.action === "goto_all" ? `cups ${(state.proposal.cup_ids || []).join(", ")}` : `cup ${state.proposal.cup_id}`}. No movement has been requested yet.`; }
+    else if (state.proposal) { title = "Waiting for your confirmation"; description = `Review the action for ${state.proposal.action === "goto_all" ? state.proposal.dynamic_batch ? "all current workspace cups, including changes during the run" : `cups ${(state.proposal.cup_ids || []).join(", ")}` : `cup ${state.proposal.cup_id}`}. No movement has been requested yet.`; }
     else if (state.error) { title = "Request blocked or interrupted"; description = asMessage(state.error); }
     else if (state.inventory && !state.scan_usable) description = "Capture a fresh scan before selecting another cup.";
     else if (state.inventory) description = "Choose a detected cup to see its available actions.";
     text("operation-title", asMessage(title));
     text("operation-description", description);
     text("operation-symbol", !connected ? "○" : state?.error || state?.recovery_required || localStopInhibit ? "!" : busy ? "↻" : state?.proposal ? "◇" : "✓");
-    const showProgress = progress && Number.isFinite(progress.total) && progress.total > 0;
+    const showProgress = !waitingForGrid && !waitingForCups && !homingWhenEmpty && progress && Number.isFinite(progress.total) && progress.total > 0;
     hide("progress-section", !showProgress);
     if (showProgress) {
       const completed = Math.max(0, Math.min(progress.total, Number(progress.completed) || 0));
@@ -988,9 +1013,20 @@
       text("progress-step", humanize(progress.step || progress.state || "Sequence"));
       text("progress-count", `${completed} / ${progress.total}`);
     }
-    const batch = state?.batch || progress?.batch;
     hide("batch-progress", !batch);
-    if (batch) text("batch-progress", `Cup ${batch.current} of ${batch.total}${batch.cup_id != null ? ` · selected ID ${batch.cup_id}` : ""} · ${Array.isArray(batch.completed_cups) ? batch.completed_cups.length : Number(batch.completed_cups) || 0} completed`);
+    if (batch) {
+      const count = Array.isArray(batch.completed_cups) ? batch.completed_cups.length : Number(batch.completed_cups) || 0;
+      const pending = Array.isArray(batch.pending_cups) ? batch.pending_cups.length : Math.max(0, batch.total - count);
+      const queued = Array.isArray(batch.waiting_cup_ids) ? batch.waiting_cup_ids.length : 0;
+      const reason = { workspace_empty: "Source workspace empty", no_pickable_cups: "No pickable source cups remain", grid_full: "No available placement locations remain" }[batch.completion_reason];
+      text("batch-progress", waitingForGrid
+        ? `Waiting for a clear grid cell · ${count} completed · ${queued} cup${queued === 1 ? "" : "s"} queued · refreshes automatically`
+        : homingWhenEmpty ? `${count} completed · workspace empty · moving both arms Home once`
+        : waitingForCups ? `${count} completed · watching for cups · resumes automatically · Stop ends the run`
+        : batch.dynamic_batch
+        ? `${count} completed · ${pending} pending${batch.cup_id != null && batch.state === "running" && (!Array.isArray(batch.pending_cups) || batch.pending_cups.includes(batch.cup_id)) ? ` · picking cup ${batch.cup_id}` : ""}${reason ? ` · ${reason}` : " · follows current workspace"}`
+        : `Cup ${batch.current} of ${batch.total}${batch.cup_id != null ? ` · selected ID ${batch.cup_id}` : ""} · ${count} completed`);
+    }
     const events = Array.isArray(state?.events) ? state.events.slice(-7).reverse() : [];
     const key = JSON.stringify(events);
     if (key === eventsKey) return;
@@ -1024,7 +1060,7 @@
     dom["stop-button"].disabled = !canStop();
     dom["status-button"].disabled = !connected || quickPosting;
     dom["help-button"].disabled = !connected || quickPosting;
-    dom["scan-button"].disabled = !canAct || Boolean(state?.recovery_required);
+    dom["scan-button"].disabled = !canAct;
     text("scan-button-label", state?.busy && state.operation === "scan" ? "Scanning…" : "Scan workspace");
     const command = dom["command-input"].value.trim();
     const readOnly = ["status", "help"].includes(command.toLowerCase());
@@ -1036,7 +1072,7 @@
     const capacity = availableLocations().length;
     hide("batch-tools", !pickable.length);
     text("batch-summary", `${pickable.length} cup${pickable.length === 1 ? "" : "s"} available for picking`);
-    text("batch-hint", !safeScan() ? "Scan again before selecting a batch." : !gridReady() ? "Load a valid placement grid before picking." : !capacity ? "No available placement locations remain." : capacity < pickable.length ? `Room for ${capacity} of ${pickable.length} cups. The preview selects the highest confidence cups that fit.` : "Review every cup and destination before confirming.");
+    text("batch-hint", !safeScan() ? "Scan again before selecting a batch." : !gridReady() ? "Load a valid placement grid before picking." : !capacity ? "No available placement locations remain." : state?.motion?.dynamic_batch ? `Pick all follows the current workspace after every placement, including moved and new cups. ${capacity} destination${capacity === 1 ? "" : "s"} available.${state?.motion?.between_cup_grid_check ? " Grid occupancy also refreshes; camera-cleared cells can be reused." : ""}${state?.motion?.continuous_batch ? " When the workspace is empty, both arms go Home once; the camera keeps watching for new cups until Stop." : ""} Single-cup actions still pick only one cup.` : capacity < pickable.length ? `Room for ${capacity} of ${pickable.length} cups. The preview selects the highest confidence cups that fit.` : "Review every cup and destination before confirming.");
     dom["batch-button"].disabled = !canAct || pending || !safeScan() || !pickable.length || !gridReady() || !capacity;
     dom["cancel-button"].disabled = !canAct || !pending;
     dom["recovery-button"].disabled = !idle() || !dom["recovery-ack"].checked || !state?.recovery_required;

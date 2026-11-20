@@ -238,6 +238,11 @@ class WebController:
         motion = {"speed": session.speed, "home_speed": session.home_speed,
                   "home_after_cup": settings["home_after_cup"],
                   "workflow": settings.get("workflow", "v4_snapshot"),
+                  "between_cup_check": settings.get("between_cup_check", False),
+                  "dynamic_batch": settings.get("dynamic_batch", False),
+                  "continuous_batch": settings.get("continuous_batch", False),
+                  "right_park_pose": copy.deepcopy(settings.get("right_park_pose")),
+                  "between_cup_grid_check": settings.get("between_cup_grid_check", False),
                   "handover_motion": settings["handover_motion"],
                   "handover_plan": settings["handover_plan"],
                   "camera_z": session.camera_z,
@@ -294,34 +299,59 @@ class WebController:
                 completed_cups = batch.get("completed_cups", [])
                 public_batch = {"current": ids.index(current_id) + 1 if current_id in ids else 0,
                                 "total": len(ids), "cup_id": current_id,
-                                "completed_cups": list(completed_cups), "state": batch["state"]}
+                                "completed_cups": list(completed_cups), "state": batch["state"],
+                                "dynamic_batch": settings.get("dynamic_batch", False),
+                                "continuous_batch": settings.get("continuous_batch", False),
+                                "between_cup_grid_check": settings.get("between_cup_grid_check", False),
+                                "pending_cups": list(batch.get("pending_cups", [cup_id for cup_id in ids
+                                                                             if cup_id not in completed_cups])),
+                                "waiting_cup_ids": list(batch.get("waiting_cup_ids", [])),
+                                "arms_home": batch.get("arms_home", False),
+                                "home_cycles": batch.get("home_cycles", 0),
+                                "idle_home": {key: copy.deepcopy(batch["idle_home"][key]) for key in
+                                              ("state", "completed_steps", "pending_job", "total_steps")
+                                              if key in (batch.get("idle_home") or {})},
+                                "revision": batch.get("revision", 0),
+                                "completion_reason": batch.get("completion_reason")}
                 by_id = {cup["id"]: cup for cup in inventory["cups"]}
+                planned_steps = batch.get("planned_steps", {})
                 total = completed = 0
                 for cup_id in ids:
-                    cup = by_id[cup_id]
+                    cup = by_id.get(cup_id, {})
                     execution = cup.get("execution", {})
                     verified_jobs = cup.get("last_verification", {}).get("jobs", [])
-                    planned = (self._execution_totals.get(cup_id, 0)
-                               if self._execution_capture == inventory["capture"] else 0)
-                    total += execution.get("total_steps", planned or len(verified_jobs))
-                    completed += (len(verified_jobs) if session.robot.dry_run and cup_id in completed_cups
+                    planned = planned_steps.get(cup_id, planned_steps.get(str(cup_id)))
+                    if planned is None:
+                        planned = (self._execution_totals.get(cup_id, 0)
+                                   if self._execution_capture == inventory["capture"] else 0)
+                        planned = execution.get("total_steps", planned or len(verified_jobs))
+                    total += planned
+                    completed += (planned if cup_id in completed_cups
                                   else len(execution.get("completed_steps", [])))
                 current_execution = by_id.get(current_id, {}).get("execution", {})
                 pending = self._pending_steps(current_execution)
                 step = " + ".join(pending) or current_execution.get("last_completed_step")
+                if batch["state"] in ("waiting_for_grid", "waiting_for_cups", "homing_when_empty"):
+                    step = batch["state"]
                 progress = {"step": step or ("preview_complete" if batch["state"] == "previewed" else "checking_cup"),
                             "pending_steps": pending,
                             "completed": completed, "total": total, "state": batch["state"],
                             "batch": public_batch}
             image = inventory.get("images", {}).get("annotated")
+            image_capture = inventory.get("image_capture", inventory["capture"])
             if image:
-                images[inventory["capture"]] = image
+                images[image_capture] = image
             public_inventory = {key: inventory.get(key) for key in ("capture", "saved_at", "id_scope")}
+            public_inventory["image_capture"] = image_capture
+            if "workspace_check" in inventory:
+                public_inventory["workspace_check"] = copy.deepcopy(inventory["workspace_check"])
+                if inventory["workspace_check"].get("state") == "capturing":
+                    progress = dict(progress or {}, state="checking_workspace", step="checking_workspace")
             if "placement_observation" in inventory:
                 observation = inventory["placement_observation"]
                 public_inventory["placement_observation"] = {key: copy.deepcopy(observation[key]) for key in
                     ("frame_count", "applied", "message", "released_ids", "slots", "cup_summary") if key in observation}
-            public_inventory.update(cups=cups, image_url=(f"/api/image/{inventory['capture']}" if image else None))
+            public_inventory.update(cups=cups, image_url=(f"/api/image/{image_capture}" if image else None))
         proposal = None
         deadline = None
         if self.language is not None and self.language.pending:
@@ -335,6 +365,11 @@ class WebController:
                         "placements": [{key: copy.deepcopy(place[key]) for key in ("id", "x", "y", "z")}
                                        for place in (record.get("placement") or {}).get("locations", [])],
                         "excluded_cup_ids": list(record.get("excluded_cup_ids", [])),
+                        "dynamic_batch": record.get("dynamic_batch", False),
+                        "continuous_batch": record.get("continuous_batch", False),
+                        "between_cup_check": record.get("motion_settings", {}).get("between_cup_check", False),
+                        "between_cup_grid_check": record.get("motion_settings", {}).get("between_cup_grid_check", False),
+                        "right_park_pose": copy.deepcopy(record.get("motion_settings", {}).get("right_park_pose")),
                         "speed": record.get("speed", session.speed),
                         "home_speed": record.get("home_speed", session.home_speed),
                         "home_after_cup": record.get("motion_settings", {}).get("home_after_cup", session.home_after_cup),
@@ -415,7 +450,8 @@ class WebController:
                       tag_offset=self.session.tag_offset, speed=self.session.speed,
                       home_speed=self.session.home_speed, handover_offset=self.session.handover_offset,
                       camera_z=self.session.camera_z, phase_speeds=self.session.phase_speeds,
-                      home_after_cup=self.session.home_after_cup))
+                      home_after_cup=self.session.home_after_cup,
+                      right_park_pose=getattr(self.session, "right_park_pose", None)))
                       for cup_id, place in zip(ids, places)}
         self._execution_capture = record["capture_id"]
         self._execution_totals = totals
@@ -772,6 +808,9 @@ class WebController:
             self._closed = True
             self._update(ready=False)
         # Do not pretend closing a UI/server is a physical emergency stop.
+        finish_batch = getattr(self.session, "finish_batch_when_parked", None)
+        if callable(finish_batch):
+            finish_batch()
         self._worker.shutdown(wait=True, cancel_futures=False)
         self._stop_worker.shutdown(wait=True, cancel_futures=False)
         for resource in reversed(self._resources):

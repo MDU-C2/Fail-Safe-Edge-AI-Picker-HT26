@@ -207,7 +207,8 @@ class RobotAssistant:
                 "Never claim a new scan, motion, home, grip, stop, or recovery was executed."}
 
     def _image(self, state):
-        capture = (state.get("inventory") or {}).get("capture")
+        inventory = state.get("inventory") or {}
+        capture = inventory.get("image_capture", inventory.get("capture"))
         if not capture or state.get("mode") == "demo":
             return None
         remote = getattr(self.controller, "image_bytes", None)

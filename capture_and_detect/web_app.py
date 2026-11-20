@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 from pathlib import Path
+import platform
 import re
 import tempfile
 import time
@@ -371,6 +372,12 @@ def hardware_factory(args):
         def save(inventory):
             store.save(inventory)
             controller.publish_session()
+        between_cup_check = getattr(args, "between_cup_check", platform.system() == "Darwin")
+        right_park_pose = None
+        if between_cup_check:
+            from camera_parking import load_right_park_pose
+            right_park_pose = load_right_park_pose(Path(args.placing_grid).with_suffix(".right-park.json"),
+                                                  args.gateway)
         session = CupSession(capture, save, create_robot(args, api, headers),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
@@ -378,7 +385,9 @@ def hardware_factory(args):
                      verification_frames=getattr(args, "verification_frames", 1),
                      strict_single_verification=getattr(args, "strict_single_verification",
                                                         getattr(args, "verification_frames", 1) == 1),
-                     camera_z=getattr(args, "camera_z", False))
+                     camera_z=getattr(args, "camera_z", False),
+                     between_cup_check=between_cup_check, right_park_pose=right_park_pose,
+                     between_cup_grid_check=between_cup_check)
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
         return session, LanguageController(session, NoLanguage(), audit_dir=store.folder / "language",
                                            named_cups=library)

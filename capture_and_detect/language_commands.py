@@ -359,6 +359,7 @@ class LanguageController:
             if motion_settings != self.session.motion_settings():
                 raise SelectionError("Movement settings changed. Request a new preview.")
             finish = ("return both arms home" if motion_settings["home_after_cup"] else
+                      "leave the left arm clear and move the right arm to its camera-clear waiting position" if motion_settings.get("right_park_pose") else
                       "finish with both arms at clearance poses")
             description = (f"pick with the left arm, hand to the right, place, and {finish}"
                            if action in ("goto", "goto_all") else "move the left arm above it without gripping")
@@ -367,16 +368,42 @@ class LanguageController:
                           "leave the left arm lifted clear above the cup")
                 description = f"pick, lift and replace at the original position, then {finish}"
             placement = preview["placement"]
+            dynamic_batch = action == "goto_all" and motion_settings.get("dynamic_batch", False)
+            continuous_batch = dynamic_batch and motion_settings.get("continuous_batch", False)
             destinations = ""
             if placement:
-                destinations = " Destinations: " + ", ".join(
+                destinations = (" Initial destinations: " if dynamic_batch else " Destinations: ") + ", ".join(
                     f"cup {cup_id} → location {place['id']} ({place['x']:g}, {place['y']:g}, {place['z']:g} mm)"
                     for cup_id, place in zip(cup_ids, placement["locations"])) + "."
             excluded = preview.get("excluded_cup_ids", [])
             capacity = (f" No free location for cups {', '.join(map(str, excluded))}; they are excluded."
                         if excluded else "")
+            if dynamic_batch:
+                capacity = (f" Initially, no free location for cups {', '.join(map(str, excluded))}."
+                            if excluded else "")
+                description += (". Confirming Pick all lets a live run follow the current workspace: "
+                                "after each placement, refresh moved cups, remove missing cups, and include new pickable cups")
+                description += (". Keep this Pick all run active until Stop. When the source workspace becomes empty, "
+                                "send both arms Home once, then keep watching the camera. "
+                                "New pickable cups resume automatically when a grid cell is available; "
+                                "while cups remain and the grid is full, wait and refresh automatically without going Home"
+                                if continuous_batch else
+                                ". Continue until no pickable source cups remain; when the grid fills, "
+                                "wait and refresh automatically until a cell is clear, then resume"
+                                if motion_settings.get("between_cup_grid_check", False) else
+                                ". Continue until no pickable source cups or available destinations remain")
+            if action in ("goto", "goto_all") and motion_settings.get("between_cup_check", False):
+                if motion_settings.get("between_cup_grid_check", False):
+                    description += (". After each live placement, refresh source cups and placement-grid occupancy. "
+                                    "Camera-cleared locations become available again; occupied or uncertain locations remain unavailable. "
+                                    "Changed occupancy updates the next destinations without interrupting the completed placement")
+                else:
+                    description += (". The after-placement check refreshes source cups only; "
+                                    "destination evidence stays from the manual scan")
             record.update(state="proposed", action=action, cup_id=target["id"] if target else None,
                           cup_ids=cup_ids, placement=placement, excluded_cup_ids=excluded,
+                          dynamic_batch=dynamic_batch,
+                          continuous_batch=continuous_batch,
                           speed=self.session.speed, flip_speed=motion_settings["effective_phase_speeds"]["flip"],
                           phase_speeds=motion_settings["effective_phase_speeds"],
                           home_speed=self.session.home_speed, home_after_cup=motion_settings["home_after_cup"],
@@ -401,9 +428,14 @@ class LanguageController:
                           "Compare the reference photo with the highlighted cup before confirming.\n"
                           if "saved_cup" in record else "")
             clearance = "the left arm remains lifted clear above the cup" if self.session.left_only else "arms remain at clearance poses"
+            if motion_settings.get("right_park_pose"):
+                clearance = "the left arm remains clear and the right arm waits at its camera-clear waiting position"
             home_text = ((f"Automatic home: {record['home_speed']:g} mm/s.\n" if record["home_after_cup"] else
                           f"Automatic home disabled; {clearance}.\n")
                          if action in ("goto", "goto_all") else "")
+            if continuous_batch:
+                home_text = (f"No Home while source cups remain; {clearance}. When the source workspace is empty, "
+                             "both arms go Home once, then camera watching continues until Stop.\n")
             phases = record["phase_speeds"]
             phase_text = (f"Pick/lift and left transfer: {phases['pick_lift']:g} mm/s; "
                           f"right handover travel: {phases['handover']:g} mm/s; "
@@ -425,6 +457,18 @@ class LanguageController:
         finally:
             self._lock.release()
 
+    def _batch_result(self, record):
+        batch = self.session.batch_progress or {}
+        result = {"completed_cups": list(batch.get("completed_cups", [])),
+                  "completion_reason": batch.get("completion_reason"),
+                  "pending_cups": list(batch.get("pending_cups", [])),
+                  "waiting_cup_ids": list(batch.get("waiting_cup_ids", [])),
+                  "home_cycles": batch.get("home_cycles", 0),
+                  "arms_home": batch.get("arms_home", False),
+                  "batch_revision": batch.get("revision", 0)}
+        record.update(result)
+        return result
+
     def confirm(self, token):
         if not self._lock.acquire(blocking=False):
             raise SelectionError("A language request is already running; no movement was queued.")
@@ -435,6 +479,7 @@ class LanguageController:
             if pending is None:
                 raise SelectionError("No pending language proposal. Make a new request first.")
             record = pending["record"]
+            previous_batch = self.session.batch_progress
             try:
                 age = self.clock() - pending["created"]
                 if token != pending["token"]:
@@ -460,19 +505,34 @@ class LanguageController:
                         capture_id=record["capture_id"], cup_id=record["cup_id"],
                         expected_motion=record["motion_settings"], **options)
                 record["state"] = "previewed" if self.session.robot.dry_run else "completed"
+                batch_result = self._batch_result(record) if record["action"] == "goto_all" else {}
                 self._save(record)
                 if self.session.left_only:
                     finish = "the left arm home" if record["home_after_cup"] else "the left arm lifted clear"
                     completed = f"Robot reported the cup replaced and {finish}. Select another available cup or scan again."
                 else:
                     finish = "home poses checked" if record["home_after_cup"] else "both arms at clearance poses"
+                    if record["motion_settings"].get("right_park_pose"):
+                        finish = "left arm clear and right arm at its camera-clear waiting position"
                     completed = f"Robot reported pick, handover and placement complete; {finish}. Select another available cup or scan again."
-                return {"kind": "result", "action": record["action"], "jobs": jobs,
+                if record["action"] == "goto_all":
+                    count = len(batch_result["completed_cups"])
+                    if batch_result["arms_home"]:
+                        finish = "both arms at Home"
+                    reason = {"workspace_empty": "The source workspace is empty.",
+                              "no_pickable_cups": "No pickable source cups remain.",
+                              "grid_full": "No available placement locations remain.",
+                              "session_closed": "The session closed before any further picks."}.get(
+                                  batch_result["completion_reason"], "Batch complete.")
+                    completed = f"Robot reported {count} cup{'s' if count != 1 else ''} completed; {finish}. {reason}"
+                return {"kind": "result", "action": record["action"], "jobs": jobs, **batch_result,
                         "message": "Preview complete; no robot commands sent." if self.session.robot.dry_run else
                         (completed if record["action"] in ("goto", "goto_all") else
                          "Robot reported hover complete. Scan again.")}
             except BaseException as error:
                 record.update(state="blocked_or_interrupted", error=str(error))
+                if record["action"] == "goto_all" and self.session.batch_progress is not previous_batch:
+                    self._batch_result(record)
                 try:
                     self._save(record)
                 except OSError:

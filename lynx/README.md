@@ -20,14 +20,27 @@ Ultralytics, FastAPI or Ollama. Native OpenCV **core and imgproc** are still lin
 into the C++ worker. The Mac dashboard stays on the Mac; do not operate two live
 controllers against the robot concurrently.
 
-**Release status:** **0.2.9 is installed and the Lynx service is ready** with the
-V4 snapshot workflow, smooth handover and no automatic Home. Installed hashes and
-preservation of calibration, placement state and recovery were verified. Offline replay passed;
-no live scan or physical picking was performed for this update. See the
-[2026-11-17 workflow update](deploy/WORKFLOW_UPDATE_2026-11-17.md) for package
-identity and validation scope. The
+**Installed package: 0.2.10, restored from 0.2.11.** The rollback restores the
+V4 saved-scan workflow and complete normal `smooth_dual_arm_v1` handover, with
+no automatic Home. Its service is online in standby, waiting for device selection;
+its controller is inactive. See the
+[2026-11-19 rollback report](deploy/CAMERA_ROLLBACK_2026-11-19.md) for installation,
+verification and preserved-state details.
+
+The historical **0.2.10** update installed the complete smooth handover plan. It
+buffers all dual-arm movements as paths, uses straight-line motion near the cup,
+and overlaps arm movements at the pick, handover approach and separation stages.
+The earlier 0.2.9 package blended only some movements; its
+`handover_motion=blended_path` status did not identify the complete plan. See the
+[2026-11-19 smooth handover update](deploy/SMOOTH_HANDOVER_UPDATE_2026-11-19.md)
+for package identity and validation scope. Its installed files passed offline
+checks on Lynx. No live capture or robot movement was performed for that update;
+that historical report does not establish the current installed runtime.
+
+The [2026-11-17 workflow update](deploy/WORKFLOW_UPDATE_2026-11-17.md) records the
+historical 0.2.9 installation and state-preservation checks. The
 [2026-11-13 CLI validation report](deploy/CLI_CHECK_2026-11-13.md) records historical
-0.2.5 camera and memory checks; it does not validate physical picking or 0.2.9.
+0.2.5 camera and memory checks; it does not validate physical picking or 0.2.10.
 The older combined
 Python gateway/dashboard profile remains available as `--profile combined`;
 its [2026-11-06 measurements](deploy/LIVE_CHECK_2026-11-06.md) concern that older
@@ -94,7 +107,7 @@ container filesystem.
 
 ## Start and use the picker
 
-Installed package 0.2.9 uses the snapshot defaults described below. Do not
+The current source supplies the saved-scan defaults described below. Do not
 replace or restart an application while an operator is using its live CLI.
 
 Connect to the configured Lynx application:
@@ -174,23 +187,32 @@ stop an already active RAPID movement.
 
 ## Preserved motion and camera checks
 
-The CLI uses the shared controller and plans, including their smooth handover
-paths, overlapping arm movements, completion checks, reservations and recovery
-journal. Each completed pick ends above the destination; Home remains a separate
-operator command. Defaults are:
+The CLI uses the shared controller and the normal `smooth_dual_arm_v1` plan.
+Each cup uses 19 jobs, including 11 buffered paths. Left approach/grip overlaps
+right preparation; left handover approach overlaps right positioning beside it.
+After confirmed right grip and left release, the arms separate together before
+the right turns the cup over. Each cup finishes placement before the next starts;
+the smooth branch's simulation-only inter-cup overlap is not used. Both grippers
+start and finish open. The left arm stays above the handover and the right stays
+80 mm above its placement destination. Home remains a separate operator command,
+including after the last cup. Defaults are:
 
 | Setting | Value |
 | --- | --- |
-| Travel TCP height | 250 mm; the 159 mm gripper offset makes the flange target 409 mm |
+| Dual-arm travel TCP height | 175 mm; the 159 mm gripper offset makes the flange target 334 mm |
+| Left-only travel TCP height | 250 mm; flange target 409 mm |
 | Fixed picking TCP height | 70 mm |
 | Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
 | Ordinary travel speed | 250 mm/s |
+| Path acceleration / ramp | 60% / 40%; turnover acceleration 30% |
+| Carrying acceleration limit | 1.5 m/s² |
+| Intermediate path blends | 10 mm; receiving corner 3 mm; final targets stop exactly |
 | Home speed when requested | 200 mm/s, subject to an explicitly selected lower speed cap |
 | Camera-derived picking height | Off; `--camera-z` explicitly selects the existing measured-height policy |
 | Object-depth samples | Up to five distinct frames; `--depth-frames` accepts 1..9 |
 | Normal scan | One full YOLO/perception pass |
 | Placement evidence | The saved scan; no capture before or between picks |
-| Observation expiry | None in the snapshot workflow; `--max-result-age` is retained for argument compatibility |
+| Observation expiry | None in the snapshot workflow; `--max-result-age` remains an accepted compatibility argument |
 
 `--speed` selects a different travel speed through the existing plan limits. An
 explicit setting previously used in the Mac UI is not automatically imported.
@@ -200,17 +222,24 @@ samples; the removed core/spread rejection does not block cup selection.
 Placement evidence and saved depth use the **latest raw aligned frame**.
 **Five raw depth samples do not mean five inference passes.** A scan performs
 one observation. If no new camera sequence arrives, available samples may be
-used. The initial saved destination evidence must be clear, and its reservation
-must still be valid before motion.
+used. The saved destination evidence must be clear; placement reservations and
+recovery remain part of execution.
 
 There is no automatic recapture, cup rematching or observation-age deadline
 before or between picks. Completed cups become unavailable; untouched cups stay
 selectable from the same scan. Scan again when the physical scene changes.
 Confirmation expiry, Stop, control-lease checks, placement reservations and the
-recovery journal remain. These settings are verified in the running 0.2.9
-service. The 0.2.5 report records earlier deployed behavior.
+recovery journal remain. A fresh live scan reconciles grid occupancy and removes
+old reservation markers, including after a failed handover. Unknown visibility
+keeps a location unavailable. Scanning does not acknowledge robot recovery, and
+grid bookkeeping changes do not interrupt an active handover.
 
-Native grid assessment preserves cup-to-cell ownership, connected depth groups,
+The V4 `capture_and_detect.py` and standalone desktop `picker_workflow.py`
+terminal retain their existing capture workflows. The
+[rollback report](deploy/CAMERA_ROLLBACK_2026-11-19.md) records verification of the
+restored installed package; the earlier deployment reports remain historical.
+
+Full-scan native grid assessment preserves cup-to-cell ownership, connected depth groups,
 cup-edge uncertainty, visibility and other-object checks. Oversized cup masks or
 group crops above 262,144 pixels, or aggregate decoded cup masks above 8,388,608
 pixels, fail the assessment before unbounded geometry allocation. They never

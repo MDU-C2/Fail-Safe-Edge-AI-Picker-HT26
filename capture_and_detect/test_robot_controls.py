@@ -116,9 +116,11 @@ class RobotControlSessionTests(OfflineControlFixture):
                                  ["right_home_start", "left_home", "right_home"])
                 self.assertEqual([job["body"]["speed"] for job in home_jobs], [home_speed] * 3)
                 normal_jobs = [job for job in jobs if job["name"] in
-                               ("left_ready", "left_home_lateral", "right_place")]
+                               ("approach_cup", "left_home_lateral", "right_place")]
                 self.assertEqual(len(normal_jobs), 3)
                 self.assertTrue(all(job["body"]["speed"] == normal_speed for job in normal_jobs))
+                approach = next(job["body"] for job in jobs if job["name"] == "approach_cup")
+                self.assertEqual(approach["points"][0]["speed"], normal_speed)
                 flip = next(job["body"] for job in jobs if job["name"] == "right_retreat")
                 self.assertEqual([point["speed"] for point in flip["points"]], [min(normal_speed, 100)] * 2)
 

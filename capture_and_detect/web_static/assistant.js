@@ -189,15 +189,27 @@
     const proposal = state.proposal;
     record.proposal = proposal; record.fingerprint = reviewKey(state); record.deadline = Date.now() + proposal.expires_in * 1000;
     const ids = proposal.action === "goto_all" ? proposal.cup_ids : [proposal.cup_id];
-    const heading = document.createElement("h4"); setText(heading, ids.length === 1 ? `Pick Cup ${ids[0]}` : `Pick ${ids.length} cups`);
+    const dynamicBatch = proposal.action === "goto_all" && proposal.dynamic_batch;
+    const continuousBatch = dynamicBatch && (proposal.continuous_batch ?? state.motion?.continuous_batch ?? false);
+    const heading = document.createElement("h4"); setText(heading, dynamicBatch ? "Pick all workspace cups" : ids.length === 1 ? `Pick Cup ${ids[0]}` : `Pick ${ids.length} cups`);
     const mode = document.createElement("p"); mode.className = "assistant-pick-mode";
     setText(mode, state.mode === "live" ? "LIVE · confirmation will move the robot" : state.mode === "demo" ? "DEMO · no robot movement" : "DRY RUN · no robot movement");
     const homeAfterCup = proposal.home_after_cup ?? state.motion?.home_after_cup ?? false;
+    const rightPark = proposal.right_park_pose ?? state.motion?.right_park_pose;
     const description = document.createElement("p"); setText(description, string(proposal.description)
-      || (homeAfterCup ? "Pick, hand over, place and return home." : "Pick, hand over, place and finish at clearance poses."));
+      || (homeAfterCup ? "Pick, hand over, place and return home." : rightPark ? "Pick, hand over, place, leave the left arm clear and move the right arm to its camera-clear waiting position." : "Pick, hand over, place and finish at clearance poses."));
     const destinations = document.createElement("p"); destinations.className = "assistant-pick-destinations";
-    setText(destinations, proposal.placements.map((place, index) => `Cup ${ids[index]} → P${place.id}`).join(" · "));
+    setText(destinations, `${dynamicBatch ? "Initial destinations: " : ""}${proposal.placements.map((place, index) => `Cup ${ids[index]} → P${place.id}`).join(" · ")}`);
     record.details.append(heading, mode, description, destinations);
+    const gridCheck = proposal.between_cup_grid_check ?? state.motion?.between_cup_grid_check ?? false;
+    const workspaceCheck = proposal.between_cup_check ?? state.motion?.between_cup_check ?? false;
+    if (gridCheck || workspaceCheck) {
+      const policy = document.createElement("p"); policy.className = "assistant-pick-grid-policy";
+      setText(policy, gridCheck
+        ? "After both arms finish each live placement, source cups and placement occupancy refresh. Camera-cleared cells can be reused; occupied or uncertain cells stay unavailable."
+        : "The after-placement check refreshes source cups only. Placement evidence stays from the manual scan.");
+      record.details.append(policy);
+    }
     const saved = proposal.saved_cup;
     if (saved) {
       const reference = document.createElement("div"); reference.className = "assistant-pick-reference";
@@ -223,7 +235,9 @@
     const movement = document.createElement("details"); movement.className = "assistant-pick-motion";
     const summary = document.createElement("summary"); setText(summary, "Movement settings");
     const speeds = document.createElement("p"); const speed = (value) => Number.isFinite(value) ? `${value} mm/s` : "unavailable";
-    const home = homeAfterCup ? `Return home: ${speed(proposal.home_speed)}` : "Automatic home off; arms remain at clearance poses";
+    const home = homeAfterCup ? `Return home: ${speed(proposal.home_speed)}` : continuousBatch
+      ? "Home only when the source workspace becomes empty, once per empty period; then watch for new cups and resume automatically until Stop"
+      : rightPark ? "Automatic home off; left arm clear and right arm waits at its camera-clear waiting position" : "Automatic home off; arms remain at clearance poses";
     setText(speeds, `Normal: ${speed(proposal.speed)} · Cup flip: ${speed(proposal.flip_speed)} · ${home}.`);
     movement.append(summary, speeds);
     const phases = proposal.phase_speeds;
@@ -243,9 +257,9 @@
     record.details.append(movement);
     if (Array.isArray(proposal.excluded_cup_ids) && proposal.excluded_cup_ids.length) {
       const excluded = document.createElement("p"); excluded.className = "assistant-helper";
-      setText(excluded, `Not included: cups ${proposal.excluded_cup_ids.filter(positiveId).join(", ")}.`); record.details.append(excluded);
+      setText(excluded, `${dynamicBatch ? "Initially no destination for" : "Not included"}: cups ${proposal.excluded_cup_ids.filter(positiveId).join(", ")}.`); record.details.append(excluded);
     }
-    setText(record.confirm, ids.length === 1 ? "Confirm pick" : `Confirm ${ids.length} cups`);
+    setText(record.confirm, dynamicBatch ? "Confirm Pick all" : ids.length === 1 ? "Confirm pick" : `Confirm ${ids.length} cups`);
     record.confirm.hidden = false; record.review.hidden = false; scrollChat();
   }
   function updateOperation(state, { fresh = false, cached = false } = {}) {
@@ -287,7 +301,18 @@
     if (["running", "cancelling"].includes(record.phase)) {
       if (state.busy) {
         const progress = state.progress;
-        setText(record.progress, [string(state.message) || "Controller is working…", progress && Number.isFinite(progress.completed) && Number.isFinite(progress.total) ? `${progress.completed} / ${progress.total} steps` : ""].filter(Boolean).join(" · "));
+        const batch = state.batch || progress?.batch;
+        if (batch?.state === "waiting_for_grid") {
+          const queued = Array.isArray(batch.waiting_cup_ids) ? batch.waiting_cup_ids.length : 0;
+          setText(record.progress, `Waiting for a clear grid cell · ${queued} cup${queued === 1 ? "" : "s"} queued. Camera refreshes automatically; the batch resumes when a cell is clear.`);
+        } else if (batch?.state === "homing_when_empty") {
+          setText(record.progress, "Workspace empty · moving both arms Home once. Then the camera keeps watching for new cups; Stop ends the run.");
+        } else if (batch?.state === "waiting_for_cups") {
+          const presence = batch.completion_reason === "no_pickable_cups"
+            ? "Cups are still detected, so the arms stay clear while the camera looks for a pickable cup."
+            : "Watching for cups.";
+          setText(record.progress, `${presence} Pick all is still active and resumes automatically when a pickable source cup and a clear grid cell are available. Stop ends the run.`);
+        } else setText(record.progress, [string(state.message) || "Controller is working…", progress && Number.isFinite(progress.completed) && Number.isFinite(progress.total) ? `${progress.completed} / ${progress.total} steps` : ""].filter(Boolean).join(" · "));
       } else finishOperation(record, string(state.error) || string(state.message) || (record.phase === "cancelling" ? "Preview cancelled. No movement requested." : "Controller finished. Check the result in the workspace."), Boolean(state.error || state.recovery_required || state.stop_requested));
       scheduleWatch(); return;
     }
@@ -305,9 +330,15 @@
     }
     if (record.phase === "review") {
       record.deadline = Math.min(record.deadline || Infinity, Date.now() + state.proposal.expires_in * 1000);
-      setText(record.progress, "Review the cups and destinations, then confirm once to continue.");
+      const dynamicBatch = record.proposal.action === "goto_all" && record.proposal.dynamic_batch;
+      const gridCheck = record.proposal.between_cup_grid_check ?? state.motion?.between_cup_grid_check ?? false;
+      const continuousBatch = dynamicBatch && (record.proposal.continuous_batch ?? state.motion?.continuous_batch ?? false);
+      setText(record.progress, dynamicBatch
+        ? continuousBatch ? "Confirm once to follow the current workspace until Stop. When no source cups remain, both arms go Home once and the camera keeps watching. New pickable cups resume automatically when a grid cell is clear; a full grid with cups still waiting does not send the arms Home."
+        : `Confirm once to follow the current workspace, including moved and newly added cups, until none are pickable${gridCheck ? ". If the grid fills, wait and refresh automatically, then resume when a cell is clear" : " or destinations are full"}.`
+        : "Review the cups and destinations, then confirm once to continue.");
       const ids = record.proposal.action === "goto_all" ? record.proposal.cup_ids : [record.proposal.cup_id];
-      const destinations = record.proposal.placements.map((place, index) => `Cup ${ids[index]} → P${place.id}`).join(" · ");
+      const destinations = `${dynamicBatch ? "Initial destinations: " : ""}${record.proposal.placements.map((place, index) => `Cup ${ids[index]} → P${place.id}`).join(" · ")}`;
       const mode = state.mode === "live" ? "LIVE · moves the robot" : state.mode === "demo" ? "DEMO · no movement" : "DRY RUN · no movement";
       setText(record.expiry, `${destinations}. ${mode}. Preview expires in ${Math.max(0, Math.ceil((record.deadline - Date.now()) / 1000))}s.`);
       record.confirm.disabled = !connected || !controllerOnline || Boolean(busy) || !assistantAvailable(); record.cancel.disabled = !connected || !controllerOnline;

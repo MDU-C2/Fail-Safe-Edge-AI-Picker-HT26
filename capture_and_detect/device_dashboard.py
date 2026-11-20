@@ -509,7 +509,8 @@ class DeviceDashboard:
     def image_bytes(self, capture_id):
         with self._lock:
             state = self.state()
-            if capture_id != (state.get("inventory") or {}).get("capture"):
+            inventory = state.get("inventory") or {}
+            if capture_id != inventory.get("image_capture", inventory.get("capture")):
                 return None
             device, epoch = self.record["device_id"], self._epoch
         image = self.clients[device].image(capture_id)

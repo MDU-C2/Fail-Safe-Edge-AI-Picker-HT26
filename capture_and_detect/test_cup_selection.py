@@ -119,7 +119,7 @@ class CupSelectionTests(unittest.TestCase):
         jobs = self.select(session, action="goto")
         bodies = {job["name"]: job["body"] for job in jobs}
         self.assertEqual(bodies["left_open"]["position"], 22.5)
-        pick_points = bodies["approach_cup"]["points"] + bodies["left_handover"]["points"][:1]
+        pick_points = bodies["approach_cup"]["points"][1:] + bodies["left_handover"]["points"][:1]
         self.assertEqual([point["rz"] for point in pick_points], [90, 90, 90])
         self.assertEqual(bodies["left_handover"]["points"][-1]["rz"], 180)
         self.assertEqual(capture.call_count, 1)
@@ -327,7 +327,7 @@ class CupSelectionTests(unittest.TestCase):
         handle_terminal(session, "scan")
         handle_terminal(session, "goto 2")
         jobs = {job["name"]: job for job in robot.jobs}
-        pick_points = (jobs["approach_cup"]["body"]["points"] +
+        pick_points = (jobs["approach_cup"]["body"]["points"][1:] +
                        jobs["left_handover"]["body"]["points"][:1])
         self.assertEqual([(p["x"], p["y"], p["z"]) for p in pick_points],
                          [(485, 100, 334), (485, 100, 229), (485, 100, 334)])

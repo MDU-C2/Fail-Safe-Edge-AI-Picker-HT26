@@ -50,11 +50,11 @@ class NoHomeSessionTests(unittest.TestCase):
         self.assertEqual(boundaries, [("completed", "right_clear")])
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in jobs))
         self.assertEqual([job["name"] for job in jobs[TRANSFER_JOB_COUNT:TRANSFER_JOB_COUNT + 3]],
-                         ["right_open_start", "left_open_start", "left_ready"])
+                         ["right_open_start", "left_open", "approach_cup"])
         for offset in (0, TRANSFER_JOB_COUNT):
             planned = {job["name"]: job for job in jobs[offset:offset + TRANSFER_JOB_COUNT]}
-            for opening in ("right_open_start", "left_open_start"):
-                self.assertEqual(planned[opening]["body"]["action"], "open")
+            self.assertEqual(planned["right_open_start"]["body"]["action"], "open")
+            self.assertIn(planned["left_open"]["body"]["action"], ("open", "move"))
             self.assertEqual([name for name, job in planned.items()
                               if job["body"].get("action") == "grip"], ["grip_cup", "right_grip"])
             for before, after in (("grip_cup", "right_beside"), ("left_handover", "right_open"),

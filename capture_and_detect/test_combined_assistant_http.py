@@ -149,6 +149,32 @@ class CombinedAssistantHTTPTests(unittest.TestCase):
         self.assertEqual(self.fixtures["pi"].robot.jobs, [])
         self.assertEqual(self.fixtures["lynx"].robot.jobs, [])
 
+    def test_dashboard_assistant_fetches_image_capture_but_previews_selection_capture(self):
+        original_capture = self.ask("Take a photo")["capture_id"]
+        fixture = self.fixtures["mac"]
+        fresh, _ = fixture.capture("between_cups")
+        fixture.session.inventory.update(image_capture=fresh["capture"],
+            images=fresh["images"], frame=fresh["frame"])
+        self.agents["mac"].controller.publish_session()
+        deadline = time.monotonic() + 5
+        while self.state()["inventory"].get("image_capture") != fresh["capture"]:
+            if time.monotonic() > deadline:
+                self.fail("Refreshed workspace image did not reach the dashboard")
+            time.sleep(.005)
+        self.assertIsNone(self.dashboard.image_bytes(original_capture))
+
+        draft = self.ask("Pick the white cup")
+        scene = self.provider.interpret.call_args.args[1]
+        self.assertTrue(scene["image_attached"])
+        self.assertEqual(self.provider.interpret.call_args.kwargs["image"],
+                         (Path(fresh["images"]["annotated"]).read_bytes(), "image/jpeg"))
+        self.assertEqual(scene["capture_id"], original_capture)
+        self.assertFalse(draft["camera_refreshed"])
+        state, _ = self.prepare(draft)
+        self.assertEqual(state["proposal"]["capture_id"], original_capture)
+        self.assertEqual(fixture.captures, ["scan", "between_cups"])
+        self.assertTrue(all(not item.robot.jobs for item in self.fixtures.values()))
+
     def test_switching_disables_pi_assistant_and_restores_mac_library_client_and_fresh_scan(self):
         first = self.ask("Take a photo")
         self.assertEqual(first["mode"], "camera_command")

@@ -34,12 +34,12 @@ class UnifiedMotionTests(unittest.TestCase):
 
     def test_handle_yaw_is_used_until_lift_then_fixed_handover_orientation(self):
         jobs = {job["name"]: job["body"] for job in self.transfer()}
-        cup_points = [*jobs["approach_cup"]["points"], jobs["left_handover"]["points"][0]]
+        cup_points = [*jobs["approach_cup"]["points"][1:], jobs["left_handover"]["points"][0]]
         self.assertEqual(len(cup_points), 3)
         for point in cup_points:
             self.assertEqual(tuple(point[axis] for axis in ("rx", "ry", "rz")), (180, 0, 135))
         self.assertEqual(jobs["left_handover"]["points"][-1]["rz"], 180)
-        self.assertEqual(jobs["left_ready"]["points"][0]["rz"], 180)
+        self.assertEqual(jobs["approach_cup"]["points"][0]["rz"], 180)
         self.assertEqual(jobs["left_open"], {"arm": "left", "wait": True, "action": "move", "position": 10})
 
     def test_unknown_aperture_opens_fully_and_known_apertures_are_clamped(self):

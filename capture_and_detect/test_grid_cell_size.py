@@ -146,7 +146,7 @@ class GridCellSizeTests(unittest.TestCase):
                 result, _ = service.capture("verification")
                 self.assert_floor_width(result, expected)
 
-    def test_size_change_invalidates_old_observation_and_reservation_preview(self):
+    def test_scan_updates_occupancy_without_rejecting_or_overwriting_changed_cell_size(self):
         self.document["cell_size_mm"] = 100
         self.write()
         snapshot, preview = self.grid.snapshot(), self.grid.preview(1)
@@ -154,13 +154,13 @@ class GridCellSizeTests(unittest.TestCase):
         self.write()
         before = self.path.read_bytes()
         self.assertNotEqual(self.grid.snapshot()["fingerprint"], snapshot["fingerprint"])
-        with self.assertRaisesRegex(SelectionError, "changed"):
-            self.grid.reconcile_observation(snapshot, {2: "clear"})
+        result = self.grid.reconcile_observation(snapshot, {2: "clear"})
+        self.assertEqual(result["cell_size_mm"], 90)
         with self.assertRaisesRegex(SelectionError, "changed"):
             self.grid.reserve(preview)
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_forged_snapshot_size_is_rejected_despite_matching_fingerprint(self):
+    def test_scan_uses_current_cell_size_without_comparing_snapshot_size(self):
         for current, claimed in ((90, 100), (90, None), (None, 90)):
             with self.subTest(current=current, claimed=claimed):
                 if current is None:
@@ -174,8 +174,8 @@ class GridCellSizeTests(unittest.TestCase):
                 else:
                     snapshot["cell_size_mm"] = claimed
                 before = self.path.read_bytes()
-                with self.assertRaisesRegex(SelectionError, "cell size"):
-                    self.grid.reconcile_observation(snapshot, {2: "clear"})
+                result = self.grid.reconcile_observation(snapshot, {2: "clear"})
+                self.assertEqual(result.get("cell_size_mm"), current)
                 self.assertEqual(self.path.read_bytes(), before)
 
 
