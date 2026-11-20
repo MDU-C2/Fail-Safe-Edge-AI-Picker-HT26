@@ -53,6 +53,20 @@ Usage:
     py capture_and_detect.py --gateway http://169.254.125.202:8000 --conf 0.6
     py capture_and_detect.py --left-only
 
+NEW: --standby (the fail-over tier, e.g. on the Raspberry Pi):
+    python capture_and_detect.py --gateway http://192.168.125.20:8000 --standby
+    Waits while another client holds the control lease and tries to take it every
+    --poll seconds. When it gets control (the other client stopped, or its lease ran
+    out 5 s after it died) it keeps the lease for the whole run and:
+        1. waits until neither arm is busy (a job the other client started finishes)
+        2. reads both grippers: neither open nor closed empty means it may hold a cup,
+           then it waits for a person to check and press Enter
+        3. homes both arms from where they really are (up first, as go_home does)
+        4. captures, detects and moves cups without Enter; when no cup was moved it
+           captures again after --idle seconds
+    After a failed cup it waits for a person. If it loses control (a client with a
+    higher priority took over) it goes back to waiting. Ctrl+C quits and releases control.
+
 NEW: the gateway's motion queue (C++ gateway 0.6.0+, POST /robot/rws/queue):
     The whole hand-over of one cup is sent to the gateway in ONE request; the gateway runs it to
     the end even if this client dies or loses its network half way (the lease does not stop it).
@@ -63,6 +77,8 @@ NEW: the gateway's motion queue (C++ gateway 0.6.0+, POST /robot/rws/queue):
     A failed or cancelled queue blocks the next one until it is cleared (DELETE /robot/rws/queue,
     or --clear-queue at startup) after a person has checked the arms.
     --per-step uses the old way (one request per step from this script).
+    With --standby, the takeover first waits for a queue that is still running (the cup of the
+    client that died is finished by the gateway); a failed or cancelled one needs a person.
 """
 
 import argparse
@@ -106,7 +122,7 @@ HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster th
 HOME_UP_Z = 600            # before going home each arm first goes straight up to this flange z
 LEFT_HOME_Y = 400          # then the left arm goes sideways to the left (+y) up to here (gateway max 500)
 FLIP_SPEED = 100           # mm/s: slower while the right arm turns the (heavy) cup over
-PICK_SPEED = 500           # mm/s: left arm down to the cup, up with it, and to the hand-over
+PICK_SPEED = 400           # mm/s: left arm down to the cup, up with it, and to the hand-over
 
 LEFT_DOWN = (180, 0, 180)  # rx, ry, rz (deg): left gripper straight down (as in the calibration)
 
@@ -134,6 +150,15 @@ Y_MIN, Y_MAX = -230, 420
 LEFT_READY = (400, 100, 450)
 GATEWAY_Z_MAX = 700        # flange z limit set on the Pi (GATEWAY_RWS_SAFE_ZONE_MAX)
 PLACE_FILE = HERE / "placing_grid.json"   # where the cups go: id, x, y, z (flange), occupied
+
+# ---------------- NEW: standby / takeover (--standby) ----------------
+STANDBY_POLL = 1.0         # s between tries to take control while another client holds it (--poll)
+AUTO_IDLE = 5.0            # s before capturing again when no cup was moved (--idle)
+GRIP_EMPTY_MAX = 1.0       # gripper position (mm) at or below this: closed on nothing
+#GRIP_OPEN_MIN = 24.0      # (right gripper reads 23.3 when fully open)
+GRIP_OPEN_MIN = 23.0       # at or above this: fully open; anything in between may hold a cup
+SAFE_ZONE_X_MIN = 180      # gateway safe zone starts at x 180 (GATEWAY_RWS_SAFE_ZONE_MIN); home is outside it,
+                           # so an arm with x below this is at/near home: home it directly, no "up first"
 
 # ---------------- NEW: gateway motion queue ----------------
 USE_QUEUE = True           # send the whole hand-over as one queue; --per-step sets False
@@ -172,6 +197,9 @@ class Gateway:
     def __init__(self, url, token):
         self.api = url.rstrip("/") + "/api/v1"
         self.headers = {"Authorization": f"Bearer {token}"}
+        self.holding = False                       # NEW: standby holds the lease for the whole run
+        self.lost = threading.Event()              # NEW: set when a renew is refused (control lost)
+        self._renew_stop = None                    # NEW: stops the whole-run renew thread
 
     def get(self, path):
         """GET; stop with a clear message on auth/connection errors."""
@@ -209,6 +237,9 @@ class Gateway:
     def control(self):
         """Hold robot control for the with-block: the lease lasts 5 s, so a thread
         renews it every 2 s; it is released at once at the end."""
+        if self.holding:                           # NEW: standby already holds it for the whole run,
+            yield                                  # so neither acquire again (409) nor release per cup
+            return
         r = self.post("/control/acquire", timeout=10)
         if r.status_code != 200:
             raise SystemExit(f"Cannot take robot control ({r.status_code}): {r.text}")
@@ -230,6 +261,65 @@ class Gateway:
                 self.post("/control/release", timeout=5)
             except requests.RequestException:
                 pass                               # the lease runs out by itself after 5 s
+
+    # ---------------- NEW: standby ----------------
+
+    def try_acquire(self):
+        """One try to take control. (True, lease) if we got it, (False, why) if not:
+        another client holds it (409), or the gateway cannot be reached."""
+        try:
+            r = self.post("/control/acquire", timeout=10)
+        except requests.RequestException as e:
+            return False, f"gateway unreachable ({type(e).__name__})"
+        if r.status_code in (401, 403):
+            raise SystemExit(f"Gateway refused the token ({r.status_code}): {r.text}")
+        if r.status_code == 200:
+            return True, r.json().get("lease", {})
+        try:
+            return False, r.json().get("detail", r.text)
+        except ValueError:
+            return False, f"HTTP {r.status_code}"
+
+    def hold(self):
+        """Keep the lease we just acquired until drop(): renew every 2 s. A refused renew
+        (another client took control) sets `lost`; a network error is retried."""
+        self.lost.clear()
+        self.holding = True
+        stop = self._renew_stop = threading.Event()
+
+        def renew():
+            while not stop.wait(2):
+                try:
+                    r = self.post("/control/renew", timeout=5)
+                except requests.RequestException as e:
+                    log(f"  lease renew failed: {e}")
+                    continue
+                if r.status_code != 200:
+                    log(f"  CONTROL LOST: renew refused ({r.status_code}): {r.text}")
+                    self.lost.set()
+                    return
+
+        threading.Thread(target=renew, daemon=True).start()
+
+    def drop(self):
+        """Stop renewing and release the lease (if we still have it)."""
+        if self._renew_stop:
+            self._renew_stop.set()
+        self.holding = False
+        if not self.lost.is_set():
+            try:
+                self.post("/control/release", timeout=5)
+            except requests.RequestException:
+                pass                               # it runs out by itself after 5 s
+
+    def arm_busy(self, arm):
+        """True while the arm works on a job, also one another client started."""
+        return self.get(f"/robot/rws/status?arm={arm}").json().get("message") == "BUSY"
+
+    def arm_pose(self, arm):
+        """tool0 in wobj0: ((x, y, z), (rx, ry, rz)), the same frame Arm.move uses."""
+        p = self.get(f"/robot/arms/{arm}/pose?tool=tool0&wobj=wobj0").json()
+        return (p["x"], p["y"], p["z"]), zyx_angles(p)
 
     # ---------------- NEW: motion queue ----------------
 
@@ -278,6 +368,16 @@ def frame_array(r, dtype, planes=1):
     """Raw frame bytes -> (planes, H, W) array, sized from the X-Frame-* headers."""
     w, h = int(r.headers["X-Frame-Width"]), int(r.headers["X-Frame-Height"])
     return np.frombuffer(r.content, dtype).reshape(planes, h, w)
+
+
+def zyx_angles(pose):
+    """NEW (copied from gateway/scripts/rws_move.py): (rx, ry, rz) in degrees of the pose's
+    quaternion, the inverse of RAPID's OrientZYX(rz, ry, rx)."""
+    w, x, y, z = (pose[name] for name in ("q1", "q2", "q3", "q4"))
+    rx = np.arctan2(2 * (y * z + w * x), 1 - 2 * (x * x + y * y))
+    ry = np.arcsin(max(-1.0, min(1.0, 2 * (w * y - x * z))))
+    rz = np.arctan2(2 * (x * y + w * z), 1 - 2 * (y * y + z * z))
+    return tuple(round(float(np.degrees(a)), 3) + 0.0 for a in (rx, ry, rz))
 
 
 def plan_to_queue_steps(plan):
@@ -973,6 +1073,153 @@ class Picker:
         out_of_reach = sum(c["status"] == "out of reach" for c in cups)
         if out_of_reach:
             log(f"  {out_of_reach} cup(s) not moved: out of reach (X_MIN..X_MAX, Y_MIN..Y_MAX)")
+        return cups                                # NEW: standby's auto loop looks at what happened
+
+    # ---------------- NEW: standby (--standby) ----------------
+
+    def standby(self, poll=STANDBY_POLL, idle=AUTO_IDLE):
+        """Wait until control is free, take it, make the robot safe, then pick on our own."""
+        log(f"Standby: waiting for control (trying every {poll:g} s, Ctrl+C to quit).")
+        last_reason = None
+        try:
+            while True:
+                ok, info = self.gateway.try_acquire()
+                if not ok:
+                    if info != last_reason:        # print only when the reason changes
+                        log(f"  not yet: {info}")
+                        last_reason = info
+                    time.sleep(poll)
+                    continue
+                last_reason = None
+                log(f"\nCONTROL TAKEN as {info.get('client_id')} (priority {info.get('priority')}): taking over.")
+                self.gateway.hold()
+                try:
+                    if not self.takeover():
+                        return                     # the person chose to quit
+                    if not self.auto_run(idle):
+                        return
+                finally:
+                    self.gateway.drop()
+                log("\nStandby: control lost, waiting for it again.")
+        except KeyboardInterrupt:
+            log("\nStopped (Ctrl+C).")
+        finally:
+            if self.gateway.holding:
+                self.gateway.drop()
+            log(f"Done. {self.captures} captures saved.")
+
+    def takeover(self):
+        """Robot to a known state before our first move. False: the person chose to quit."""
+        while True:
+            if not self.wait_for_queue():          # NEW: a queued cup must end first (see wait_for_queue)
+                return False
+            log("  Takeover: waiting until both arms are idle ...")
+            deadline = time.monotonic() + JOB_TIMEOUT
+            while any(self.gateway.arm_busy(a) for a in ("left", "right")):
+                if time.monotonic() > deadline:
+                    log("  an arm is still busy after the job timeout")
+                    break
+                time.sleep(0.2)
+
+            levels = {arm.name: arm.grip_level() for arm in (self.handover.left, self.handover.right)}
+            unsure = [name for name, level in levels.items()
+                      if level is None or GRIP_EMPTY_MAX < level < GRIP_OPEN_MIN]
+            if unsure:
+                log(f"  {', '.join(unsure)} gripper neither open nor closed empty {levels}: it may hold a cup.")
+                if not self.ask_person("Remove any cup from the grippers"):
+                    return False
+
+            if self.gateway.lost.is_set():
+                return True                        # auto_run sees it and we go back to waiting
+            log("  Takeover: both arms home (up from where they are, then home).")
+            self.handover.abort.clear()
+            try:
+                for arm in (self.handover.left, self.handover.right):
+                    #arm.last = self.gateway.arm_pose(arm.name)   # real pose: up from here, not a guess
+                    pose = self.gateway.arm_pose(arm.name)        # real pose: up from here, not a guess
+                    if pose[0][0] < SAFE_ZONE_X_MIN:              # at/near home, outside the safe zone:
+                        log(f"    {arm.name}: at x {pose[0][0]:.0f} (near home), homing directly")
+                        arm.last = None                           # no "up first" (the gateway refuses it there)
+                    else:
+                        arm.last = pose
+                    arm.home()
+                return True
+            except RobotError as e:
+                log(f"  STOP: going home failed: {e}")
+                if not self.ask_person("Move the arms clear (e.g. rws_move.py --home)"):
+                    return False
+
+    def wait_for_queue(self):
+        """NEW: before the takeover moves anything, look at the gateway's motion queue.
+        running            -> wait: the gateway is finishing the cup of the client that died
+                              (single jobs, homing included, are refused until it ends)
+        failed / cancelled -> the arms stopped part way through a cup: a person checks, then the
+                              queue is cleared so new cups can be queued
+        done / idle        -> nothing to wait for
+        False: the person chose to quit."""
+        if not USE_QUEUE:
+            return True
+        shown = None
+        while True:
+            try:
+                q = self.gateway.queue_status()
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    return True                    # a gateway without the queue (older than 0.6.0)
+                raise
+            except requests.RequestException as e:
+                log(f"  queue state unknown ({type(e).__name__}), trying again")
+                time.sleep(1)
+                continue
+            state = q.get("state")
+            if state == "running":
+                step = (q.get("step"), q.get("owner"))
+                if step != shown:
+                    log(f"  Takeover: a queue of {q.get('owner')} is still running (step {q.get('step')}): "
+                        f"waiting for the gateway to finish that cup")
+                    shown = step
+                time.sleep(QUEUE_POLL)
+                continue
+            if state in ("failed", "cancelled"):
+                log(f"  Takeover: the last queue {state}" +
+                    (f" ({q['message']})" if q.get("message") else "") +
+                    ": the arms stopped part way through a cup.")
+                if not self.ask_person("Check both arms and the cup (remove it from the grippers)"):
+                    return False
+                log(f"  Clearing the queue: {self.gateway.queue_clear()}")
+                continue                           # read it again: should be idle now
+            if state == "done":
+                log("  Takeover: the last queued cup was finished by the gateway.")
+            return True
+
+    def auto_run(self, idle):
+        """Capture and pick without Enter while we hold control. False: the person chose to quit;
+        True: control was lost (back to standby)."""
+        while not self.gateway.lost.is_set():
+            cups = self.capture_once()
+            if self.gateway.lost.is_set():
+                break
+            if any(c["status"] == "failed" for c in cups):
+                log("  A cup failed: the arms stay where they stopped.")
+                if not self.ask_person("Check both arms and the cup"):
+                    return False
+                if not self.takeover():
+                    return False
+                continue
+            if not any(c["status"] == "placed" for c in cups):
+                log(f"  No cup moved, capturing again in {idle:g} s.")
+                if self.gateway.lost.wait(idle):
+                    break
+        return True
+
+    def ask_person(self, what):
+        """Wait for Enter (keeping control meanwhile). False on q, Ctrl+D or no terminal."""
+        try:
+            answer = input(f"  >>> {what}, then press Enter to go on (q + Enter to quit): ")
+        except EOFError:
+            log("  no terminal to ask: quitting")
+            return False
+        return answer.strip().lower() != "q"
 
     def go_home(self):
         """Both arms home after the last cup: the left first (up, sideways, home), then the
@@ -1043,6 +1290,12 @@ def main():
                         help=f"TEST: grip height from each cup's camera z + {CAMERA_Z_OFFSET} instead of PICK_Z {PICK_Z}")
     parser.add_argument("--depth-frames", type=int, default=DEPTH_FRAMES,
                         help=f"camera frames whose depth is averaged (default {DEPTH_FRAMES}, 1 = off)")
+    parser.add_argument("--standby", action="store_true",            # NEW
+                        help="wait until control is free, then take over: home both arms and pick without Enter")
+    parser.add_argument("--poll", type=float, default=STANDBY_POLL,  # NEW
+                        help=f"--standby: seconds between tries to take control (default {STANDBY_POLL:g})")
+    parser.add_argument("--idle", type=float, default=AUTO_IDLE,     # NEW
+                        help=f"--standby: seconds before capturing again when no cup was moved (default {AUTO_IDLE:g})")
     parser.add_argument("--per-step", action="store_true",          # NEW
                         help="old way: send the hand-over one step at a time instead of as one gateway queue")
     parser.add_argument("--clear-queue", action="store_true",       # NEW
@@ -1067,11 +1320,17 @@ def main():
         with gateway.control():
             log(f"Clearing the gateway queue: {gateway.queue_clear()}")
 
+
     abort = threading.Event()
     left = Arm(gateway, "left", abort, calibration.offset)
     right = Arm(gateway, "right", abort)
-    Picker(gateway, Detector(model, calibration, K, args.conf),
-           Handover(left, right, abort), store, args.left_only).run()
+    picker = Picker(gateway, Detector(model, calibration, K, args.conf),
+                    Handover(left, right, abort), store, args.left_only)
+    #picker.run()
+    if args.standby:                               # NEW: fail-over tier
+        picker.standby(args.poll, args.idle)
+    else:
+        picker.run()                               # as before: one capture per Enter
 
 
 if __name__ == "__main__":
