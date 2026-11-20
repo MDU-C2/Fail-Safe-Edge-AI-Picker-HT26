@@ -37,9 +37,9 @@ function dashboard() {
   vm.runInContext(helpers + script.slice(start, end) + "\nglobalThis.render = renderPlacements;", context);
   return {
     dom,
-    render(observation, locations = [2, 3, 9].map((id) => ({ id, occupied: true }))) {
+    render(observation, locations = [2, 3, 9].map((id) => ({ id, occupied: true })), motion = {}) {
       context.state = { mode: "live", inventory: { capture: "saved-scan", placement_observation: observation },
-        placement_grid: { fingerprint: "unchanged", locations } };
+        placement_grid: { fingerprint: "unchanged", locations }, motion };
       context.render();
     },
     slot(id) { return dom["placement-grid"].children.find((item) => item.children[0].textContent === String(id)); },
@@ -69,6 +69,19 @@ test("two assigned cup groups are distinct from a third depth-only block", () =>
   assert.match(page.slot(9).title, /Raised depth remains outside assigned cup masks/);
   assert.match(page.slot(9).attributes["aria-label"], /Camera: depth check/);
   assert.equal(page.dom["placement-summary"].textContent, "0 available · 3 occupied · 0 reserved · 0 unknown / blocked");
+});
+
+test("placement refresh guidance follows the controller policy and current availability", () => {
+  const page = dashboard();
+  page.render(observation(), [{ id: 2, occupied: true }], { between_cup_check: true, between_cup_grid_check: false });
+  assert.match(page.dom["placement-snapshot"].textContent, /Last scan only/);
+  page.render(observation({ released_ids: [2], slots: [{ id: 2, state: "clear", evidence: [] }] }),
+    [{ id: 2, occupied: false }], { between_cup_check: true, between_cup_grid_check: true });
+  assert.match(page.dom["placement-snapshot"].textContent, /refreshes after each live placement, once both arms finish/);
+  assert.match(page.dom["placement-snapshot"].textContent, /Camera-cleared cells can be reused/);
+  assert.doesNotMatch(page.dom["placement-snapshot"].textContent, /Last scan only|Scan again after removing/);
+  assert.match(page.dom["placement-summary"].textContent, /^1 available/);
+  assert.equal(page.slot(2).children[1].textContent, "Available");
 });
 
 test("changed per-cell assignments retain earlier evidence even with equal total counts", () => {

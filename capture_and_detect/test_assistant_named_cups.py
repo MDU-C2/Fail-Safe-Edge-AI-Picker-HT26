@@ -136,6 +136,33 @@ class AssistantNamedCupHttpTests(unittest.TestCase):
         self.assertEqual(state["proposal"]["saved_cup"]["id"], saved["id"])
         self.assertEqual(self.fixture.robot.jobs, [])
 
+    def test_direct_assistant_uses_refreshed_photo_and_keeps_original_selection_capture(self):
+        state = self.command("scan")
+        original_capture = state["inventory"]["capture"]
+        fresh, _ = self.fixture.capture("between_cups")
+        self.fixture.session.inventory.update(image_capture=fresh["capture"],
+            images=fresh["images"], frame=fresh["frame"])
+        self.controller.publish_session()
+        self.assertIsNone(self.controller.image(original_capture))
+        self.assertEqual(self.controller.image(fresh["capture"]), fresh["images"]["annotated"])
+        self.assistant.settings.update({"api_key": "sk-fake-no-network"})
+        self.provider.interpret.side_effect = None
+        self.provider.interpret.return_value = dict(message="Cup 1 is available.", action="select",
+            cup_ids=[1], groups=[], cup_name=None, saved_cup_id=None)
+
+        draft = self.ask("Pick the white cup")
+        scene = self.provider.interpret.call_args.args[1]
+        self.assertTrue(scene["image_attached"])
+        self.assertEqual(self.provider.interpret.call_args.kwargs["image"],
+                         (Path(fresh["images"]["annotated"]).read_bytes(), "image/jpeg"))
+        self.assertEqual(scene["capture_id"], original_capture)
+        self.assertFalse(draft["camera_refreshed"])
+        state = self.prepare(draft)
+        self.assertIsNone(state["error"])
+        self.assertEqual(state["proposal"]["capture_id"], original_capture)
+        self.assertEqual(self.fixture.captures, ["scan", "between_cups"])
+        self.assertEqual(self.fixture.robot.jobs, [])
+
 
 if __name__ == "__main__":
     unittest.main()

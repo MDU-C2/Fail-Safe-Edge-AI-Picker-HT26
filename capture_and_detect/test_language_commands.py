@@ -22,6 +22,11 @@ def intent(action="goto", selector="id", cup_id=1, message="Pick and transfer cu
     return {"action": action, "selector": selector, "cup_id": cup_id, "message": message}
 
 
+def workspace_scene(sequence, sources):
+    objects = [detection(kind, u, x=x) for u, x in sources for kind in ("CUP", "CUP BASE")]
+    return inventory(capture=f"frame-{sequence}", sequence=sequence, objects=objects)
+
+
 class LanguageCommandTests(unittest.TestCase):
     def setUp(self):
         output = redirect_stdout(io.StringIO())
@@ -33,13 +38,14 @@ class LanguageCommandTests(unittest.TestCase):
         self.now = [100.0]
 
     def controller(self, *, candidate=None, original=None, fresh=None,
-                   robot=None, scan=True, audit=True, home_after_cup=False):
+                   robot=None, scan=True, audit=True, home_after_cup=False, between_cup_check=False):
         original = original if original is not None else inventory()
         fresh = fresh if fresh is not None else inventory(capture="verification-1", sequence=11)
         capture = Mock(side_effect=[(original, 90), (fresh, 99)])
         robot = robot if robot is not None else RobotDouble()
         session = CupSession(capture, Mock(), robot, "cal-1", clock=lambda: self.now[0],
-                             placing_grid=temporary_grid(self), home_after_cup=home_after_cup)
+                             placing_grid=temporary_grid(self), home_after_cup=home_after_cup,
+                             between_cup_check=between_cup_check)
         if scan:
             session.scan()
         interpreter = Mock()
@@ -92,7 +98,7 @@ class LanguageCommandTests(unittest.TestCase):
         names = [job["name"] for job in robot.jobs]
         self.assertEqual(len(names), TRANSFER_JOB_COUNT)
         self.assertEqual(len(response["jobs"]), TRANSFER_JOB_COUNT)
-        self.assertEqual(names[:2], ["right_open_start", "left_open_start"])
+        self.assertEqual(names[:2], ["right_open_start", "left_open"])
         self.assertLess(names.index("right_grip"), names.index("left_release"))
         self.assertEqual(names[-1], "right_clear")
         self.assertFalse(any("home" in name for name in names))
@@ -159,6 +165,71 @@ class LanguageCommandTests(unittest.TestCase):
         self.assertEqual(robot.jobs, [])
         self.assertEqual(capture.call_count, 1)
         self.assertIsNone(controller.pending)
+
+    def test_dynamic_batch_review_and_result_describe_actual_workspace_cups(self):
+        controller, session, capture, robot, _ = self.controller(
+            original=workspace_scene(10, [(100, 450), (200, 500)]), between_cup_check=True)
+        proposal = controller.propose_batch(capture_id=session.inventory["capture"])
+        self.assertTrue(controller.pending["record"]["dynamic_batch"])
+        self.assertIn("include new pickable cups", proposal["message"])
+        self.assertIn("Initial destinations", proposal["message"])
+        capture.side_effect = [(workspace_scene(11, [(250, 590), (350, 650)]), 101),
+                               (workspace_scene(12, [(350, 650)]), 102), (workspace_scene(13, []), 103)]
+        result = controller.confirm(proposal["token"])
+        self.assertEqual(result["completed_cups"], [1, 3, 4])
+        self.assertEqual(result["completion_reason"], "workspace_empty")
+        self.assertEqual(result["pending_cups"], [])
+        self.assertEqual(result["batch_revision"], 3)
+        self.assertIn("3 cups completed", result["message"])
+        self.assertIn("source workspace is empty", result["message"])
+        self.assertIn("clearance poses", result["message"])
+        record = self.record(proposal["token"])
+        self.assertEqual(record["cup_ids"], [1, 2])  # Initial review remains auditable.
+        self.assertEqual(record["completed_cups"], [1, 3, 4])
+        self.assertEqual(record["completion_reason"], "workspace_empty")
+        self.assertEqual(len(robot.jobs), 3 * TRANSFER_JOB_COUNT)
+
+    def test_dynamic_single_cup_review_stays_single_and_interrupted_batch_records_completion(self):
+        controller, session, capture, robot, _ = self.controller(
+            original=workspace_scene(10, [(100, 450), (200, 500)]), between_cup_check=True)
+        single = controller.propose_selection(action="goto", capture_id="frame-10", cup_id=1)
+        self.assertFalse(controller.pending["record"]["dynamic_batch"])
+        self.assertNotIn("include new pickable cups", single["message"])
+        controller.cancel()
+        proposal = controller.propose_batch(capture_id="frame-10")
+        capture.side_effect = [(workspace_scene(10, [(200, 500)]), 101)]
+        with self.assertRaisesRegex(SelectionError, "Run scan again"):
+            controller.confirm(proposal["token"])
+        record = self.record(proposal["token"])
+        self.assertEqual(record["state"], "blocked_or_interrupted")
+        self.assertEqual(record["completed_cups"], [1])
+        self.assertEqual(record["pending_cups"], [2])
+        self.assertIsNone(record["completion_reason"])
+        self.assertEqual(len(robot.jobs), TRANSFER_JOB_COUNT)
+
+    def test_continuous_result_and_audit_report_actual_idle_home_on_session_shutdown(self):
+        controller, session, _, robot, _ = self.controller(between_cup_check=True)
+        session.between_cup_grid_check = True
+        proposal = controller.propose_batch(capture_id=session.inventory["capture"])
+        self.assertTrue(controller.pending["record"]["continuous_batch"])
+        self.assertIn("both arms go Home once", proposal["message"])
+        self.assertNotIn("Automatic home disabled", proposal["message"])
+        def finish_after_idle_home(**unused):
+            session.batch_progress = {"state": "completed", "completed_cups": [1],
+                "pending_cups": [], "waiting_cup_ids": [], "home_cycles": 1, "arms_home": True,
+                "completion_reason": "session_closed", "revision": 3}
+            return []
+        session.execute_batch = Mock(side_effect=finish_after_idle_home)
+        result = controller.confirm(proposal["token"])
+        self.assertIn("both arms at Home", result["message"])
+        self.assertIn("session closed", result["message"])
+        self.assertNotIn("clearance poses", result["message"])
+        self.assertEqual(result["home_cycles"], 1)
+        record = self.record(proposal["token"])
+        self.assertTrue(record["arms_home"])
+        self.assertEqual(record["completed_cups"], [1])
+        self.assertEqual(record["completion_reason"], "session_closed")
+        self.assertEqual(robot.jobs, [])
 
     def test_confirmation_token_is_one_use_even_after_success(self):
         controller, _, _, robot, _ = self.controller(candidate=intent("hover"))

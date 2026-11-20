@@ -43,6 +43,35 @@ class DepthSamplingTests(unittest.TestCase):
         self.assertEqual(frame["depth_sampling"]["sequences"], [1, 2, 3])
         self.assertEqual(len(samples), 3)
 
+    def test_between_cup_burst_waits_for_a_new_first_pair(self):
+        pairs = self.pairs((11, 12, 13))
+        camera = SimpleNamespace(capture_latest=Mock(side_effect=AssertionError("cached frame")),
+                                 capture=Mock(side_effect=pairs))
+        _, _, frame, samples = capture_fresh_samples(camera, 3, require_fresh=True)
+        camera.capture_latest.assert_not_called()
+        self.assertEqual(camera.capture.call_count, 3)
+        self.assertEqual(frame["depth_sampling"]["sequences"], [11, 12, 13])
+        self.assertEqual(len(samples), 3)
+
+    def test_single_between_cup_sample_also_waits_for_a_new_pair(self):
+        camera = SimpleNamespace(capture_latest=Mock(side_effect=AssertionError("cached frame")),
+                                 capture=Mock(return_value=self.pairs((11,))[0]))
+        _, _, frame, samples = capture_fresh_samples(camera, 1, timeout_s=4, require_fresh=True)
+        camera.capture.assert_called_once_with(timeout_s=4)
+        camera.capture_latest.assert_not_called()
+        self.assertEqual(frame["sequence"], 11)
+        self.assertEqual(len(samples), 1)
+
+    def test_between_cup_check_never_falls_back_to_cached_frame_when_no_new_frame_arrives(self):
+        for count in (1, 5):
+            with self.subTest(count=count):
+                camera = SimpleNamespace(capture_latest=Mock(return_value=self.pairs()[0]),
+                                         capture=Mock(side_effect=NoNewCameraFrame("no new first frame")))
+                with self.assertRaisesRegex(NoNewCameraFrame, "no new first frame"):
+                    capture_fresh_samples(camera, count, require_fresh=True)
+                camera.capture_latest.assert_not_called()
+                camera.capture.assert_called_once()
+
     def test_repeated_sequence_uses_available_samples_and_restart_accepts_new_sequence(self):
         camera = SimpleNamespace(capture=Mock(side_effect=self.pairs((2, 2))))
         _, _, frame, samples = capture_fresh_samples(camera, 2)

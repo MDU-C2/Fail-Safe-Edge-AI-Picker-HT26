@@ -136,10 +136,10 @@ class MultiFrameVerificationTests(unittest.TestCase):
 
     def test_stop_during_motion_prevents_later_steps_and_next_cup(self):
         session = self.batch_session()
-        self.robot.after_move = lambda _: session.latch_stop() if self.robot.jobs[-1]["name"] == "left_ready" else None
+        self.robot.after_move = lambda _: session.latch_stop() if self.robot.jobs[-1]["name"] == "approach_cup" else None
         with self.assertRaisesRegex(SelectionError, "Software stop"):
             session.execute_batch(capture_id=session.inventory["capture"])
-        self.assertEqual(self.robot.jobs[-1]["name"], "left_ready")
+        self.assertEqual(self.robot.jobs[-1]["name"], "approach_cup")
         self.assertEqual(session.batch_progress["completed_cups"], [])
         self.assertTrue(session.motion_uncertain)
         self.assertTrue(self.recovery.required())

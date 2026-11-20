@@ -59,8 +59,8 @@ def cup_targets(jobs):
     result = bodies(jobs)
     if "points" not in result["approach_cup"]:
         return {name: result[name] for name in ("approach_cup", "descend_to_cup", "lift_cup")}
-    return {"approach_cup": result["approach_cup"]["points"][0],
-            "descend_to_cup": result["approach_cup"]["points"][1],
+    return {"approach_cup": result["approach_cup"]["points"][-2],
+            "descend_to_cup": result["approach_cup"]["points"][-1],
             "lift_cup": result["left_handover"]["points"][0]}
 
 
@@ -121,7 +121,7 @@ class CameraZPlanTests(unittest.TestCase):
                     if left_only and expected["name"] in {"descend_to_cup", "replace_cup"}:
                         expected["body"]["z"] = 259
                     elif not left_only and expected["name"] == "approach_cup":
-                        expected["body"]["points"][1]["z"] = 259
+                        expected["body"]["points"][-1]["z"] = 259
                     self.assertEqual(actual, expected)
                 names = [job["name"] for job in changed]
                 self.assertFalse(any(job["endpoint"].endswith("/home") for job in changed))

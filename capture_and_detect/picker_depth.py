@@ -85,7 +85,7 @@ def mask_depth(depth, mask, edge_px=EDGE_PX):
     return float(np.median(vals)) if vals.size else None
 
 
-def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
+def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10, *, require_fresh=False):
     """Collect available distinct aligned pairs for V4 coordinate averaging.
 
     Return newest RGB and its RAW depth, metadata, and the individual depths.
@@ -94,13 +94,17 @@ def capture_fresh_samples(camera, count=DEFAULT_DEPTH_FRAMES, timeout_s=10):
     As in V4, a stopped frame stream ends the burst with the samples collected.
     Transport and malformed-frame failures still propagate. Placement vision
     keeps the latest raw aligned pair, independently of coordinate averaging.
+    A between-cup workspace check requires its first pair to be newer than the
+    camera status read at the start of this call, after movement has finished.
     """
     from camera_client import CameraError, NoNewCameraFrame
     if type(count) is not int or not 1 <= count <= 9:
         raise ValueError("Depth frame count must be an integer from 1 to 9")
-    initial_capture = getattr(camera, "capture_latest", camera.capture)
+    initial_capture = (camera.capture if require_fresh else
+                       getattr(camera, "capture_latest", camera.capture))
     if count == 1:
-        rgb, depth, frame = initial_capture()
+        rgb, depth, frame = (initial_capture(timeout_s=timeout_s) if require_fresh
+                             else initial_capture())
         return rgb, depth, frame, (depth,)
     deadline = time.monotonic() + timeout_s
     samples, metadata = [], []

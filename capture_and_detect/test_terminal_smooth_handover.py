@@ -67,6 +67,9 @@ class TerminalSmoothHandoverTests(unittest.TestCase):
     def setUp(self):
         self.terminal = load_v4_terminal()
         self.addCleanup(patch.stopall)
+        # Most fixtures compare the fixed-height plan explicitly; individual
+        # camera-height cases override this independently of launcher defaults.
+        patch.object(self.terminal, "USE_CAMERA_Z", False).start()
         patch.object(self.terminal, "log").start()
         patch.object(self.terminal.requests, "get",
                      side_effect=AssertionError("Unexpected network request")).start()
@@ -132,7 +135,7 @@ class TerminalSmoothHandoverTests(unittest.TestCase):
                 self.assertEqual(cup["grip_right_mm"], 3.1)
                 handover.left.grip_level.assert_called_once_with()
                 handover.right.grip_level.assert_called_once_with()
-                self.assertEqual(handover.left.last, ((350, -100, 690), (180, 0, 180)))
+                self.assertEqual(handover.left.last, ((350, 400, 690), (180, 0, 180)))
                 self.assertEqual(handover.right.last, ((420.0, -310.0, 260.0), (180, 0, 0)))
 
     def test_repeated_cups_never_home_or_add_legacy_moves(self):

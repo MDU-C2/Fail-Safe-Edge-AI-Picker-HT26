@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "gateway": "http://192.168.125.20:8000",
+  "robot_id": "mdu-yumi-lynx-9113c0",
+  "preset": "right_via",
+  "source": "existing smooth handover upright waiting position, selected for camera clearance",
+  "configured_at": "2026-11-20T08:57:22.520295+00:00"
+}

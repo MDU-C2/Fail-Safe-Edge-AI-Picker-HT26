@@ -14,17 +14,17 @@ class NoHomePlanTests(unittest.TestCase):
         self.place = {"id": 2, "x": 420, "y": -200, "z": 230, "occupied": False}
 
     def without_home(self, jobs):
-        """Removing the opt-in home actions must recover the default plan."""
+        """Compare common jobs after removing optional homes and idle parking."""
         expected = []
         for original in jobs:
             name = original["name"]
-            if "home" in name or name.endswith("_close_return"):
+            if "home" in name or name.endswith("_close_return") or name == "left_park":
                 continue
             job = copy.deepcopy(original)
             if "after" in job:
                 job["after"] = [parent for parent in job["after"]
                                 if "home" not in parent and not parent.endswith("_close_return")]
-                if name == "right_via":
+                if name == "right_via" and "right_home_start" in original["after"]:
                     # Its same-arm predecessor becomes the startup open when
                     # the optional initial right-home job is removed.
                     job["after"].insert(0, "right_open_start")
@@ -63,10 +63,10 @@ class NoHomePlanTests(unittest.TestCase):
             with self.subTest(cup=cup):
                 baseline = handover_jobs(cup, place=place, home_after_cup=True, **settings)
                 jobs = handover_jobs(cup, place=place, **settings)
-                self.assertEqual(jobs, self.without_home(baseline))
+                self.assertEqual(self.without_home(jobs), self.without_home(baseline))
                 self.check_dependency_closure(jobs)
                 names = {job["name"] for job in jobs}
-                self.assertTrue({"left_ready", "approach_cup", "grip_cup", "right_via",
+                self.assertTrue({"left_park", "approach_cup", "grip_cup", "right_via",
                                  "left_handover", "right_beside", "right_take",
                                  "left_release", "right_place"} <= names)
                 self.assertFalse(any("home" in name for name in names))
@@ -75,17 +75,18 @@ class NoHomePlanTests(unittest.TestCase):
     def test_normal_cycle_starts_open_and_finishes_both_open_at_clearance(self):
         jobs = handover_jobs(self.cup, place=self.place)
         by_name = {job["name"]: job for job in jobs}
-        self.assertEqual(by_name["left_open_start"]["after"], [])
+        self.assertEqual(by_name["left_open"]["after"], [])
         self.assertEqual(by_name["right_open_start"]["after"], [])
-        self.assertEqual(by_name["left_open_start"]["body"]["action"], "open")
+        self.assertEqual(by_name["left_open"]["body"],
+                         {"arm": "left", "wait": True, "action": "move", "position": 12.5})
         self.assertEqual(by_name["right_open_start"]["body"]["action"], "open")
         self.assertEqual([job["name"] for job in jobs if job["body"].get("action") == "grip"],
                          ["grip_cup", "right_grip"])
         left = [job for job in jobs if job["body"]["arm"] == "left"]
         right = [job for job in jobs if job["body"]["arm"] == "right"]
-        self.assertEqual(left[-1]["name"], "left_clear")
+        self.assertEqual(left[-1]["name"], "left_park")
         self.assertEqual(right[-1]["name"], "right_clear")
-        for lane, xyz, action in ((left, (350, -100, 690), "open"),
+        for lane, xyz, action in ((left, (350, 400, 690), "open"),
                                   (right, (420, -200, 310), "open")):
             last_path = [job for job in lane if job["endpoint"].endswith("/path")][-1]
             point = last_path["body"]["points"][-1]

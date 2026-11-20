@@ -182,19 +182,40 @@ class PlacingGridTests(unittest.TestCase):
         self.assertNotIn("vision_blocked", self.read()["locations"][1])
         self.assertEqual(self.grid.preview()["locations"][0]["id"], 2)
 
-    def test_reserved_slot_and_all_its_metadata_are_untouched_by_observation(self):
+    def test_fresh_observation_replaces_stale_reservation_preserving_other_metadata(self):
         self.data["locations"][0].update(
             reserved=True, reservation_id="unfinished", vision_blocked=True,
             operator_note={"message": "inspect this arm"})
         for state in ("clear", "occupied", "unknown"):
             self.write(self.data)
-            before = self.path.read_bytes()
-            with self.subTest(state=state), patch("placing_grid.atomic_json") as write:
+            with self.subTest(state=state), patch("placing_grid.atomic_json", wraps=atomic_json) as write:
                 result = self.grid.reconcile_observation(
                     self.grid.snapshot(), {1: state, 2: "clear", 3: "clear"})
-            write.assert_not_called()
-            self.assertEqual(result["locations"][0], self.data["locations"][0])
-            self.assertEqual(self.path.read_bytes(), before)
+                write.assert_called_once()
+                expected = copy.deepcopy(self.data)
+                slot = expected["locations"][0]
+                slot.pop("reserved")
+                slot.pop("reservation_id")
+                if state != "unknown":
+                    slot["occupied"] = state == "occupied"
+                    slot.pop("vision_blocked")
+                self.assertEqual(result["locations"][0], slot)
+                self.assertEqual(self.read(), expected)
+                self.assertEqual(len(self.grid.preview(3 if state == "clear" else 2)["locations"]),
+                                 3 if state == "clear" else 2)
+
+    def test_scan_invalidates_old_reservation_and_released_slot_can_be_reserved_again(self):
+        reservation = self.grid.reserve(self.grid.preview())
+        self.grid.reconcile_observation(self.grid.snapshot(), {1: "occupied", 2: "clear", 3: "clear"})
+        with self.assertRaisesRegex(SelectionError, "changed"):
+            self.grid.validate_reservation(reservation)
+        before = self.read()
+        self.assertFalse(self.grid.complete(reservation, 2)["occupied"])
+        self.assertEqual(self.read(), before)
+        replacement = self.grid.reserve(self.grid.preview())
+        self.assertEqual(replacement["locations"][0]["id"], 2)
+        self.assertNotEqual(replacement["reservation_id"], reservation["reservation_id"])
+        self.grid.validate_reservation(replacement)
 
     def test_unchanged_observation_does_not_rewrite_file(self):
         snapshot = self.grid.snapshot()
@@ -205,7 +226,7 @@ class PlacingGridTests(unittest.TestCase):
         self.assertEqual(result, snapshot)
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_stale_observation_rejected_for_any_document_change(self):
+    def test_observation_updates_occupancy_despite_changed_grid_preserving_metadata(self):
         for mutation in (lambda value: value.update(description="another operator edited this"),
                          lambda value: value["locations"][0].update(x=421),
                          lambda value: value["locations"][1].update(
@@ -215,12 +236,22 @@ class PlacingGridTests(unittest.TestCase):
             changed = copy.deepcopy(self.data)
             mutation(changed)
             self.write(changed)
-            before = self.path.read_bytes()
-            with self.subTest(changed=changed), patch("placing_grid.atomic_json") as write:
-                with self.assertRaisesRegex(SelectionError, "changed"):
-                    self.grid.reconcile_observation(snapshot, {1: "clear", 2: "clear", 3: "clear"})
-            write.assert_not_called()
-            self.assertEqual(self.path.read_bytes(), before)
+            with self.subTest(changed=changed):
+                result = self.grid.reconcile_observation(snapshot, {1: "clear", 2: "occupied", 3: "clear"})
+                expected = copy.deepcopy(changed)
+                for slot in expected["locations"]:
+                    slot["occupied"] = slot["id"] == 2
+                    slot.pop("reserved", None)
+                    slot.pop("reservation_id", None)
+                self.assertEqual(self.read(), expected)
+                self.assertEqual(result, self.grid.snapshot())
+
+    def test_observation_updates_existing_ids_without_restoring_removed_or_overwriting_new_cells(self):
+        snapshot = self.grid.snapshot()
+        changed = {**self.data, "locations": [location(1), location(4, occupied=True, label="new")]}
+        self.write(changed)
+        self.grid.reconcile_observation(snapshot, {1: "occupied", 2: "clear", 3: "clear"})
+        self.assertEqual(self.read()["locations"], [location(1, occupied=True), changed["locations"][1]])
 
     def test_invalid_observation_mapping_rejects_whole_update_before_write(self):
         invalid = [None, [], {}, {1: "clear", 2: "clear"},
@@ -296,8 +327,9 @@ class PlacingGridTests(unittest.TestCase):
         self.grid.complete(reservation, 3)
         self.assertEqual(self.read()["locations"], [location(1, occupied=True),
                          location(2, occupied=True), location(3, occupied=True)])
-        with self.assertRaises(SelectionError):
-            self.grid.complete(reservation, 2)
+        before = self.path.read_bytes()
+        self.assertEqual(self.grid.complete(reservation, 2), location(2, occupied=True))
+        self.assertEqual(self.path.read_bytes(), before)
 
     def test_completion_preserves_unrelated_changes(self):
         reservation = self.grid.reserve(self.grid.preview())
@@ -346,14 +378,30 @@ class PlacingGridTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertTrue(self.read()["locations"][1]["reserved"])
 
-    def test_changed_reserved_slot_cannot_be_completed(self):
+    def test_changed_reserved_slot_completes_without_overwriting_other_metadata(self):
         reservation = self.grid.reserve(self.grid.preview())
         value = self.read()
         value["locations"][1]["x"] += 1
         self.write(value)
-        with self.assertRaisesRegex(SelectionError, "changed"):
-            self.grid.complete(reservation, 2)
+        self.grid.complete(reservation, 2)
+        value["locations"][1].pop("reserved")
+        value["locations"][1].pop("reservation_id")
         self.assertEqual(self.read(), value)
+
+    def test_completion_preserves_replaced_reservation_or_removed_cell(self):
+        for replacement in ("new-reservation", None):
+            with self.subTest(replacement=replacement):
+                self.write(self.data)
+                reservation = self.grid.reserve(self.grid.preview())
+                value = self.read()
+                if replacement is None:
+                    value["locations"].pop(1)
+                else:
+                    value["locations"][1]["reservation_id"] = replacement
+                self.write(value)
+                before = self.path.read_bytes()
+                self.grid.complete(reservation, 2)
+                self.assertEqual(self.path.read_bytes(), before)
 
     def test_invalid_reservation_completion_is_rejected(self):
         reservation = self.grid.reserve(self.grid.preview())
@@ -408,7 +456,7 @@ class PlacingGridTests(unittest.TestCase):
         self.assertEqual(sum(item is not None for item in results), 1)
         self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
-    def test_observation_and_reservation_cannot_both_apply_same_snapshot(self):
+    def test_observation_applies_even_if_reservation_changes_while_capturing(self):
         snapshot = self.grid.snapshot()
         preview = self.grid.preview()
 
@@ -424,16 +472,12 @@ class PlacingGridTests(unittest.TestCase):
                        snapshot, {1: "clear", 2: "unknown", 3: "clear"})]
         with ThreadPoolExecutor(max_workers=2) as pool:
             reserved, observed = list(pool.map(apply, actions))
-        self.assertNotEqual(reserved, observed)
+        self.assertTrue(observed)
         current = self.read()["locations"]
-        if reserved:
-            self.assertTrue(current[0]["occupied"])
-            self.assertTrue(current[1]["reserved"])
-            self.assertNotIn("vision_blocked", current[1])
-        else:
-            self.assertFalse(current[0]["occupied"])
-            self.assertTrue(current[1]["vision_blocked"])
-            self.assertNotIn("reserved", current[1])
+        self.assertFalse(current[0]["occupied"])
+        self.assertEqual(current[1]["occupied"], reserved)
+        self.assertTrue(current[1]["vision_blocked"])
+        self.assertNotIn("reserved", current[1])
 
     def test_missing_full_or_insufficient_grid_never_creates_fallback_slots(self):
         with self.assertRaisesRegex(SelectionError, "2 free"):

@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import picker_workflow as picker
+from cup_commands import CupSession
 from device_agent import ExecutionLock
 from device_service import arguments, python_factory
 from placing_grid import PlacingGrid
@@ -130,9 +131,51 @@ def test_python_factory_maps_standard_state_and_single_pass_policy_only_when_act
     assert options.controller_profile == rig.root / "controller-status.json"
     assert options.scan_observations == options.verification_frames == 1
     assert options.strict_single_verification is True and options.max_result_age == 60
+    assert options.between_cup_check is True
     assert options.depth_frames == 5 and not options.llm and not options.live
     assert os.environ["GATEWAY_TOKEN"] == "offline-gateway-token"
     assert "offline-gateway-token" not in json.dumps(factory.metadata())
+    assert factory.metadata()["workflow"] == "workspace_between_cups"
+    assert factory.metadata()["per_cup_capture"] is True
+
+
+@pytest.mark.parametrize("host", ["Darwin", "Linux", "Windows"])
+def test_direct_ui_enables_workspace_check_only_on_mac_host(python_rig, monkeypatch, host):
+    rig = python_rig
+    monkeypatch.setattr("web_app.platform.system", lambda: host)
+    options = SimpleNamespace(gateway=rig.args.gateway, calibration=str(rig.root / "calibration.json"),
+        output=str(rig.store.folder), placing_grid=str(rig.grid.path), grid_table_z=0.0,
+        grid_cell_size=80.0, depth_frames=1, speed=None, max_result_age=15.0,
+        match_mm=20.0, match_px=40.0)
+    session, _ = hardware_factory(options)(rig.controller)
+    expected = host == "Darwin"
+    assert session.between_cup_check is expected
+    assert session.between_cup_grid_check is expected
+    assert session.motion_settings()["between_cup_check"] is expected
+    assert session.motion_settings()["workflow"] == ("workspace_between_cups" if expected else "v4_snapshot")
+    assert session.motion_settings()["between_cup_grid_check"] is expected
+    assert session.home_after_cup is False
+    assert not rig.camera.capture.called and not rig.detector.analyse.called
+
+
+@pytest.mark.parametrize("host", ["Darwin", "Linux", "Windows"])
+@pytest.mark.parametrize("device", ["mac", "pi"])
+def test_managed_device_policy_overrides_host_and_matches_metadata(python_rig, monkeypatch, host, device):
+    rig = python_rig
+    monkeypatch.setattr("web_app.platform.system", lambda: host)
+    rig.args.device_id = device
+    factory = python_factory(rig.args)
+    session, _ = factory(rig.controller)
+    expected = device == "mac"
+    workflow = "workspace_between_cups" if expected else "v4_snapshot"
+    assert session.between_cup_check is expected
+    assert session.between_cup_grid_check is expected
+    assert session.motion_settings()["workflow"] == workflow
+    assert factory.metadata()["workflow"] == workflow
+    assert factory.metadata()["per_cup_capture"] is expected
+    assert session.motion_settings()["between_cup_grid_check"] is expected
+    assert session.home_after_cup is False
+    assert not rig.camera.capture.called and not rig.detector.analyse.called
 
 
 def test_managed_factory_requests_discovery_even_when_profile_explicitly_none(python_rig):
@@ -180,6 +223,8 @@ def test_python_service_uses_one_yolo_pass_five_raw_samples_and_preserves_grid(p
     # Legacy context handles remain compatible without claiming OS ownership.
     with ExecutionLock(rig.root / ".placing-grid.json.controller.lock"):
         session, language = python_factory(rig.args)(rig.controller)
+        assert session.between_cup_check is True
+        assert session.between_cup_grid_check is True
         assert session.verification_frames == 1 and session.strict_single_verification
         assert session.max_result_age == 60 and session.robot.dry_run
         assert language.cup_matcher is None
@@ -220,12 +265,15 @@ def test_existing_web_factory_uses_one_snapshot_observation(python_rig, legacy_v
     options = SimpleNamespace(gateway=rig.args.gateway, calibration=str(rig.root / "calibration.json"),
         output=str(rig.store.folder), placing_grid=str(rig.grid.path), grid_table_z=0.0,
         grid_cell_size=80.0, depth_frames=1, speed=None, max_result_age=15.0,
-        match_mm=20.0, match_px=40.0, llm=False, llm_model="unused", ollama_url="http://127.0.0.1:11434")
+        match_mm=20.0, match_px=40.0, llm=False, llm_model="unused", ollama_url="http://127.0.0.1:11434",
+        between_cup_check=False)
     if legacy_verification_frames is not None:
         options.verification_frames = legacy_verification_frames
     before = rig.grid.path.read_bytes()
     session, _ = hardware_factory(options)(rig.controller)
     assert session.motion_settings()["workflow"] == "v4_snapshot"
+    assert session.between_cup_grid_check is False
+    assert session.motion_settings()["between_cup_grid_check"] is False
     assert session.require_placement_evidence is True
     assert session.max_result_age == 15
     inventory, _ = session.capture("scan")
@@ -234,6 +282,43 @@ def test_existing_web_factory_uses_one_snapshot_observation(python_rig, legacy_v
     assert inventory["placement_observation"]["frame_count"] == 1
     assert inventory["placement_observation"]["frame_sequences"] == [10]
     assert rig.grid.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("workspace_check", [False, True])
+def test_session_grid_refresh_remains_opt_in_for_legacy_and_source_only_callers(tmp_path, workspace_check):
+    capture, save = Mock(), Mock()
+    session = CupSession(capture, save, RobotClient("http://offline.invalid/api/v1", {}, dry_run=True),
+                         "offline-calibration", placing_grid=PlacingGrid(tmp_path / "grid.json"),
+                         between_cup_check=workspace_check)
+    assert session.between_cup_check is workspace_check
+    assert session.between_cup_grid_check is False
+    assert session.motion_settings()["between_cup_grid_check"] is False
+    capture.assert_not_called()
+    save.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("invalid", [None, 0, 1, "true", [], {}])
+def test_session_grid_refresh_requires_a_real_boolean(tmp_path, invalid):
+    capture, save = Mock(), Mock()
+    with pytest.raises(ValueError, match="between_cup_grid_check must be a boolean"):
+        CupSession(capture, save, Mock(), "offline-calibration", between_cup_check=True,
+                   placing_grid=PlacingGrid(tmp_path / "grid.json"), between_cup_grid_check=invalid)
+    capture.assert_not_called()
+    save.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("workspace_check,has_grid", [(False, False), (False, True), (True, False)])
+def test_session_grid_refresh_requires_workspace_refresh_and_a_grid(tmp_path, workspace_check, has_grid):
+    capture, save = Mock(), Mock()
+    grid = PlacingGrid(tmp_path / "grid.json") if has_grid else None
+    with pytest.raises(ValueError, match="require workspace checks and a placement grid"):
+        CupSession(capture, save, Mock(), "offline-calibration", between_cup_check=workspace_check,
+                   placing_grid=grid, between_cup_grid_check=True)
+    capture.assert_not_called()
+    save.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("invalid", [False, True, 0, 2, 4, 1.0, "1"])

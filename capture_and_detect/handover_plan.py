@@ -7,7 +7,7 @@ Source detection follows V4; the gateway and controller check motion targets.
 
 from cup_inventory import (
     GRIPPER_TCP_Z, LEFT_DOWN, LEFT_READY, TRAVEL_Z, SelectionError,
-    finite_number, normalize_offset, position_problem,
+    _motion_flange_problem, finite_number, normalize_offset, position_problem,
 )
 from placing_grid import validate_place
 
@@ -51,6 +51,35 @@ RECEIVING_BLEND_MM = 3
 SLIDE_SPEED = 150
 DEFAULT_PHASE_SPEEDS = {"pick_lift": PICK_SPEED, "handover": None,
                         "flip": FLIP_SPEED, "placement": None}
+
+
+def right_via_pose():
+    """The existing upright right-arm waiting target in tool0/wobj0.
+
+    Camera parking can select this same target before capturing, so it cannot
+    drift away from the normal next-cup preparation pose as the plan is tuned.
+    This returns coordinates only and never dispatches motion.
+    """
+    return dict(zip(("x", "y", "z", "rx", "ry", "rz"), (*R_VIA, *RIGHT_UP)))
+
+
+def normalize_right_park_pose(value=None):
+    """Copy an explicitly supplied flange pose, without offsets or inferred yaw.
+
+    These are the existing ordinary Cartesian endpoint limits, not a guarantee
+    of reachability or collision clearance. The controller checks the movement.
+    None keeps the normal workflow ending above the placement destination.
+    """
+    if value is None:
+        return None
+    axes = ("x", "y", "z", "rx", "ry", "rz")
+    if (not isinstance(value, dict) or set(value) != set(axes)
+            or any(not finite_number(value[axis]) for axis in axes)):
+        raise SelectionError("Right-arm parking pose must contain exactly six finite x/y/z/rx/ry/rz values.")
+    problem = _motion_flange_problem(tuple(value[axis] for axis in ("x", "y", "z")))
+    if problem:
+        raise SelectionError(f"Right-arm parking pose: {problem}.")
+    return {axis: value[axis] for axis in axes}
 
 
 def normalize_phase_speeds(value=None):
@@ -234,7 +263,7 @@ class _Plan:
 
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None,
-                  home_after_cup=False):
+                  home_after_cup=False, right_park_pose=None):
     """Adapt the smooth branch's normal per-cup plan without automatic homing.
 
     Source XY, detected yaw/aperture, optional camera height and the selected
@@ -260,10 +289,16 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     By default left parks open out of the camera's view (LEFT_PARK) and
     right stays open above placement; the grippers close only on a cup. No home command is issued,
     even for the last cup. Explicit ``home_after_cup=True`` retains the
-    initial right home and return-home sequences. There is no retry or fallback after an unconfirmed movement.
+    initial right home and return-home sequences. An explicit ``right_park_pose``
+    adds one empty-arm joint path after the normal placement clearance lift;
+    it cannot be combined with automatic homing. No pose is inferred or enabled
+    by default. There is no retry or fallback after an unconfirmed movement.
     """
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
+    right_park = normalize_right_park_pose(right_park_pose)
+    if home_after_cup and right_park is not None:
+        raise SelectionError("Right-arm parking cannot be combined with home_after_cup.")
     plan = _Plan(speed, home_speed, dependencies=True, phase_speeds=phase_speeds)
     normalize_handover_offset(handover_offset)
     take = R_TAKE
@@ -342,6 +377,11 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               move_speed=place_speed)
     if home_after_cup:
         plan.home("right_home", "right")
+    elif right_park is not None:
+        position = tuple(right_park[axis] for axis in ("x", "y", "z"))
+        rotation = tuple(right_park[axis] for axis in ("rx", "ry", "rz"))
+        plan.path("right_park", "right", [(position, rotation, place_speed, False)],
+                  move_speed=place_speed, zone=0)
     return plan.jobs
 
 
