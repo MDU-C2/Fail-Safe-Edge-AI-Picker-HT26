@@ -45,6 +45,9 @@ class WebController:
         self._lock = threading.RLock()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cup-controller")
         self._stop_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cup-stop")
+        self._pose_lock = threading.Lock()  # 3D view telemetry, separate from command state
+        self._telemetry = None
+        self._steps_capture, self._steps_seen = None, {}  # 3D view: when each step was first seen
         self._normal_busy = self._stop_busy = False
         self._normal_operation = None
         self._generation = 0
@@ -139,6 +142,38 @@ class WebController:
         result["source"] = "Cached application state; not a live robot status query."
         return result
 
+    def robot_pose(self):
+        """Read-only arm telemetry for the 3D view; never touches controller state.
+
+        Live readings come from one shared RobotTelemetry reader (one gateway
+        connection, one request at a time, see robot_telemetry.py). This call
+        never waits for the gateway. Demo/dry-run reports the home pose, marked
+        as simulated.
+        """
+        with self._lock:
+            robot = getattr(self.session, "robot", None)
+            closed = self._closed
+        if robot is None or closed:
+            return {"source": "unavailable", "arms": {"left": None, "right": None}}
+        if getattr(robot, "dry_run", False) is True:
+            from robot_client import RobotClient
+            joints = getattr(robot, "HOME_JOINTS", RobotClient.HOME_JOINTS)
+            angles = getattr(robot, "HOME_ARM_ANGLES", RobotClient.HOME_ARM_ANGLES)
+            home = lambda arm: {"joints": list(joints), "arm_angle": angles[arm], "gripper": None, "t": 0.0}
+            return {"source": "simulated", "arms": {"left": home("left"), "right": home("right")},
+                    "now": time.monotonic()}
+        api, headers = getattr(robot, "api", None), getattr(robot, "headers", None)
+        if not isinstance(api, str) or not isinstance(headers, dict):
+            return {"source": "unavailable", "arms": {"left": None, "right": None}}
+        with self._pose_lock:
+            if self._telemetry is None or self._telemetry.api != api.rstrip("/"):
+                if self._telemetry is not None:
+                    self._telemetry.close()
+                from robot_telemetry import RobotTelemetry
+                self._telemetry = RobotTelemetry(api, headers)
+            telemetry = self._telemetry
+        return {"source": "live", **telemetry.snapshot()}
+
     @staticmethod
     def help():
         return {"message": COMMAND_HELP}
@@ -215,6 +250,17 @@ class WebController:
             pass
         return None
 
+    def _public_motion(self, capture, cup_id, execution):
+        """Finished step names and when this dashboard first saw each one (time.monotonic,
+        the clock of the 3D view's joint readings), so the view can move a cup from
+        the table to a gripper at the right moment of its delayed arm playback."""
+        if capture != self._steps_capture:
+            self._steps_capture, self._steps_seen = capture, {}
+        names = [job.get("name") for job in execution.get("completed_steps", []) if isinstance(job, dict)]
+        now = time.monotonic()
+        done_at = {name: self._steps_seen.setdefault((cup_id, name), now) for name in names if isinstance(name, str)}
+        return {"state": execution.get("state"), "completed_steps": names, "done_at": done_at}
+
     def publish_session(self, session=None):
         """Called by the worker after state changes, including persisted job steps."""
         session = session or self.session
@@ -236,6 +282,8 @@ class WebController:
         settings = session.motion_settings()
         phases = settings["effective_phase_speeds"]
         motion = {"speed": session.speed, "home_speed": session.home_speed,
+                  # The plans grip a cup at its scanned x/y plus this offset (3D view).
+                  "tag_offset_mm": [float(value) for value in session.tag_offset],
                   "home_after_cup": settings["home_after_cup"],
                   "workflow": settings.get("workflow", "v4_snapshot"),
                   "between_cup_check": settings.get("between_cup_check", False),
@@ -275,7 +323,8 @@ class WebController:
                 if completed:
                     reason = "This cup has already been processed from this scan."
                 visible = {key: copy.deepcopy(cup.get(key)) for key in
-                           ("id", "confidence", "pixel", "bbox_xyxy", "selectable", "status")}
+                           ("id", "confidence", "pixel", "bbox_xyxy", "selectable", "status",
+                            "robot_mm", "diameter")}
                 visible.update(selectable=bool(cup.get("selectable")) and not completed,
                                pick_available=bool(cup.get("selectable")) and reason is None,
                                blocked_reason=reason,
@@ -285,6 +334,10 @@ class WebController:
                                                   in ("teal", "white", "orange")))))
                 cups.append(visible)
                 execution = cup.get("execution")
+                # 3D view: which gripper holds the cup follows from the
+                # finished step names (grip_cup, right_grip, left_release, ...).
+                visible["motion"] = (self._public_motion(inventory.get("capture"), cup.get("id"), execution)
+                                     if isinstance(execution, dict) else None)
                 if execution:
                     completed = len(execution.get("completed_steps", []))
                     pending = self._pending_steps(execution)
@@ -807,6 +860,10 @@ class WebController:
                 return
             self._closed = True
             self._update(ready=False)
+        with self._pose_lock:
+            telemetry, self._telemetry = self._telemetry, None
+        if telemetry is not None:
+            telemetry.close()
         # Do not pretend closing a UI/server is a physical emergency stop.
         finish_batch = getattr(self.session, "finish_batch_when_parked", None)
         if callable(finish_batch):

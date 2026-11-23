@@ -1202,6 +1202,64 @@ For a Pi Docker deployment see
 [`gateway/README_START.md`](../gateway/README_START.md#deploy-to-the-raspberry-pi).
 Do not update/restart either gateway or dashboard during robot movement.
 
+### 3D view
+
+The **3D view** tab shows the real YuMi model (RobotStudio IRB14000_0.5_0.5 and
+Smart_Gripper_Servo_Fingers) in the pose the controller reports, plus the cups
+from the latest scan and the placement grid. It is read-only: it only sends
+GET requests.
+
+- `GET /api/robot-pose` returns the latest readings and never waits for the
+  gateway. One shared reader (`robot_telemetry.py`) talks to the gateway, built
+  so it cannot crowd out control traffic. The C++ gateway runs every RWS call
+  through one lock and allows 64 connections, so requests that arrive too fast
+  queue inside it and can starve `/control/renew` ("503 Too many connections").
+  The reader:
+  - uses one keep-alive connection, with at most one request in flight;
+  - leaves the RWS lock free at least half the time;
+  - reads the joints of each arm in turn, and a gripper every 2 s;
+  - after any error, drops the connection and waits 12 s, then up to 30 s
+    (longer than the gateway's 10 s RWS timeout);
+  - stops and frees its connection 3 s after the last open 3D tab stops asking.
+
+  It sends only GETs, takes no lease and still runs after a software stop.
+  Demo/dry-run shows the home pose marked SIMULATED. Old or missing readings
+  are shown as NO LIVE DATA or PARTIAL. The view is never used for any decision.
+- The browser plays the timestamped readings back a little behind real time
+  (about two reading intervals, 0.2 to 1.2 s) and interpolates between them with
+  a monotone cubic (`web_static/3d/pose_interpolation.js`). The motion is smooth
+  and never overshoots a reading. Across a gap of more than 1 s it holds the
+  last reading and then jumps, rather than drawing motion nobody measured.
+- Cups are drawn as plain tapered cups, base up as they stand in the tray.
+  They are drawn where the plans grip them: the scanned x/y plus `tag_offset`, published as
+  `motion.tag_offset_mm`. A picked cup snaps between the fingers of the gripper
+  that holds it, centred on the gripper axis, so no scan or handover offset
+  carries over and a placed cup lands on its cell. The view knows the holder from the
+  finished step names the dashboard publishes per cup (`motion.completed_steps`):
+  - `grip_cup` attaches it to the left gripper;
+  - `right_grip` moves it to the right gripper (both arms are still at that
+    moment);
+  - `right_release`, or `left_release` without a handover, puts it back on the
+    table where it was let go.
+
+  Each change happens when the delayed arm playback reaches the time the
+  dashboard first saw that step (`motion.done_at`, same clock as the joint
+  readings), so the cup leaves the table when the drawn gripper is there. After
+  a stop the cup stays with the arm that last held it.
+- The joint chain is `rax_1, rax_2, eax_a, rax_3, rax_4, rax_5, rax_6`: the arm
+  angle is physically the third joint. The gripper value is each finger's travel
+  in mm, the same as `handover_plan` uses it.
+- The table top is drawn at z = 0 in the base frame, the same as `--grid-table-z`
+  (default 0 mm). The lowest 100 mm of the YuMi base sits below it.
+- Model assets live in `web_static/3d/`. To rebuild them from new RobotStudio
+  exports (each Link body of both arms + Base + gripper, all joints at 0, binary
+  STL in mm), run `python capture_and_detect/tools/build_yumi_model.py <stl-dir>`
+  (`pip install trimesh fast_simplification scipy`). The script finds which arm
+  each link belongs to from the geometry and refuses to write if a link is far
+  from its joint. `three-bundle.min.js` is three.js r187 (MIT) and can be rebuilt
+  with the command in `tools/three-bundle-entry.js`. The CSP forbids inline
+  import maps and the Pi has no internet, so it is bundled locally.
+
 ## Saved cups
 
 The direct MacBook dashboard uses the configured GPT-6 Astra client for language

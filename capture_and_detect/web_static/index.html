@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/assistant.js" defer></script>
+  <script type="module" src="/static/3d/viewer3d.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -30,6 +31,7 @@
         <button id="nav-pick" class="workspace-tab" type="button" role="tab" data-workspace-tab="pick" aria-controls="view-pick" aria-selected="true">Pick cups</button>
         <button id="nav-assistant" class="workspace-tab" type="button" role="tab" data-workspace-tab="assistant" aria-controls="view-assistant" aria-selected="false" tabindex="-1">Assistant</button>
         <button id="nav-robot" class="workspace-tab" type="button" role="tab" data-workspace-tab="robot" aria-controls="view-robot" aria-selected="false" tabindex="-1">Robot controls</button>
+        <button id="nav-scene" class="workspace-tab" type="button" role="tab" data-workspace-tab="scene" aria-controls="view-scene" aria-selected="false" tabindex="-1">3D view</button>
         <button id="nav-settings" class="workspace-tab" type="button" role="tab" data-workspace-tab="settings" aria-controls="view-settings" aria-selected="false" tabindex="-1">Settings</button>
       </nav><div class="utility-actions"><button id="status-button" class="button button-secondary" type="button" disabled>Status</button><button id="help-button" class="button button-secondary" type="button" disabled>Help</button></div></div>
       <section id="quick-panel" class="panel quick-panel" hidden aria-live="polite"><div><h2 id="quick-title"></h2><button id="quick-close" class="cancel-button" type="button">Close</button></div><pre id="quick-content"></pre></section>
@@ -77,6 +79,14 @@
           <dl class="robot-status-grid"><div><dt>RAPID program</dt><dd id="robot-rapid-state">Not read</dd></div><div><dt>Controller</dt><dd id="robot-controller-state">Not read</dd></div><div><dt>Operating mode</dt><dd id="robot-operation-mode">Not read</dd></div></dl>
           <p id="robot-control-inhibit" class="robot-control-attention" role="status" hidden></p>
           </div></details></section><section class="robot-recovery-tools" aria-labelledby="robot-reset-heading"><div><p class="eyebrow">INSPECT → ACKNOWLEDGE → RECOVER</p><h3 id="robot-reset-heading">App recovery</h3><p>After a stop or interrupted action, inspect both arms and the cup. Resolve robot controller faults on the FlexPendant before continuing. App recovery clears the local block. Use Home only when the controller and path are ready.</p></div><div class="robot-recovery-actions"><button id="robot-local-recovery-button" class="button button-secondary" type="button" disabled>Acknowledge app recovery</button></div><p class="robot-tool-copy">App recovery sends no robot command and does not resume an interrupted pick. Resetting the robot program and acknowledging controller faults are handled outside this dashboard.</p></section>
+      </section>
+      <section id="view-scene" class="workspace-view" role="tabpanel" aria-labelledby="nav-scene" tabindex="0" hidden>
+        <section class="panel scene-panel" aria-labelledby="scene-heading">
+          <div class="scene-heading"><div><p class="eyebrow">LIVE CELL VIEW</p><h2 id="scene-heading">3D view</h2><p>The YuMi as the controller reports it, with the cups from the latest scan and the placement locations. Read-only: nothing here moves the robot.</p></div><span id="scene-badge" class="scene-badge" data-tone="info">NOT LOADED</span></div>
+          <div id="scene-canvas-host" class="scene-canvas-host"></div>
+          <div class="scene-footer"><p id="scene-status" class="scene-status" role="status" aria-live="polite">Open this tab to load the model.</p><div class="scene-controls"><label class="scene-toggle"><input id="scene-show-cups" type="checkbox" checked><span>Cups</span></label><label class="scene-toggle"><input id="scene-show-grid" type="checkbox" checked><span>Placement grid</span></label><button id="scene-reset-view" class="button button-secondary" type="button">Reset view</button></div></div>
+          <p class="fine-print">Drag to orbit, scroll or pinch to zoom, right-drag or two fingers to pan. The pose can lag the real arm by a fraction of a second; always watch the robot itself.</p>
+        </section>
       </section>
       <section id="view-assistant" class="workspace-view" role="tabpanel" aria-labelledby="nav-assistant" tabindex="0" hidden>
         <section class="panel assistant-chat" aria-labelledby="assistant-heading">

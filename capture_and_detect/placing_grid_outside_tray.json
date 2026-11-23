@@ -41,14 +41,14 @@
       "x": 450,
       "y": -380,
       "z": 230,
-      "occupied": true
+      "occupied": false
     },
     {
       "id": 10,
       "x": 550,
       "y": -380,
       "z": 230,
-      "occupied": true
+      "occupied": false
     }
   ],
   "cell_size_mm": 90

@@ -84,7 +84,7 @@
   }
 
   // Workspace navigation changes only the local view, never controller state.
-  const workspaceTabs = ["pick", "assistant", "robot", "settings"];
+  const workspaceTabs = ["pick", "assistant", "robot", "scene", "settings"];
   let activeWorkspaceTab = "pick";
   const navigationProposalKeys = { pick: null, robot: null };
 
