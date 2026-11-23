@@ -263,6 +263,20 @@ class Gateway:
                 pass                               # the lease runs out by itself after 5 s
 
     # ---------------- NEW: standby ----------------
+    def robot_moving(self):
+        """What /health says is moving: 'queue' while a motion queue runs, 'job' while a
+        single job (move/home/gripper) runs, None when still. /health needs no token.
+        None also when it cannot be read (then try_acquire reports the network problem)."""
+        try:
+            r = requests.get(self.api + "/health", timeout=5)
+            robot = r.json().get("robot_controller", {})
+        except (requests.RequestException, ValueError):
+            return None
+        if robot.get("queue_state") == "running":
+            return "queue"
+        if robot.get("move_in_progress"):
+            return "job"
+        return None
 
     def try_acquire(self):
         """One try to take control. (True, lease) if we got it, (False, why) if not:
@@ -1083,6 +1097,21 @@ class Picker:
         last_reason = None
         try:
             while True:
+                # Never take control while the robot moves. With a higher priority the
+                # gateway would hand it over at once, in the middle of the other client's cup or
+                # homing; its single jobs would then be refused (409) and the arms stop half way.
+                # So wait until the cup (queue) and any single job have finished.
+                
+                moving = self.gateway.robot_moving()
+                if moving:
+                    reason = ("waiting: the robot is busy with a cup (queue running)" if moving == "queue"
+                              else "waiting: the robot is moving (single job)")
+                    if reason != last_reason:
+                        log(f"  not yet: {reason}")
+                        last_reason = reason
+                    time.sleep(poll)
+                    continue
+
                 ok, info = self.gateway.try_acquire()
                 if not ok:
                     if info != last_reason:        # print only when the reason changes
@@ -1200,11 +1229,18 @@ class Picker:
             if self.gateway.lost.is_set():
                 break
             if any(c["status"] == "failed" for c in cups):
+                # A cup refused because another client just took control is not a robot
+                # failure: the renew (every 2 s) notices it within 3 s, then back to standby
+                if self.gateway.lost.wait(3):
+                    break
                 log("  A cup failed: the arms stay where they stopped.")
+
                 if not self.ask_person("Check both arms and the cup"):
                     return False
+                
                 if not self.takeover():
                     return False
+                
                 continue
             if not any(c["status"] == "placed" for c in cups):
                 log(f"  No cup moved, capturing again in {idle:g} s.")
