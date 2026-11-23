@@ -84,6 +84,20 @@ App::App(
           }
       ),
       queue(motion),
+      heartbeat(
+          rws,
+          settings.rws_heartbeat_timeout,
+          [this](rws::Arm arm) {
+              events.publish(
+                  "robot.status",
+                  http::Json{
+                      {"connected", true},
+                      {"state", "auto_home"},
+                      {"arm", rws::arm_name(arm)},
+                  }
+              );
+          }
+      ),
       started(std::chrono::steady_clock::now()) {
     add_routes();
 }
@@ -93,10 +107,13 @@ App::~App() {
 }
 
 void App::start() {
+    heartbeat.start();
     camera_producer->start();
 }
 
 void App::stop() {
+    heartbeat.stop();
+
     if (camera_producer) {
         camera_producer->stop();
     }

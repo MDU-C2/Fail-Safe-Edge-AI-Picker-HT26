@@ -134,6 +134,7 @@ environment GATEWAY_CAMERA_IP 169.254.1.223
 environment GATEWAY_CALIBRATION_FILE /state/calibration.json
 environment GATEWAY_RWS_SAFE_ZONE_MIN [180,-400,50]
 environment GATEWAY_RWS_SAFE_ZONE_MAX [800,500,700]
+environment GATEWAY_RWS_HEARTBEAT_TIMEOUT 5
 enable
 no autostart
 leave

@@ -9,6 +9,7 @@ add_executable(
     test_oak_reconnect.cpp
     test_router.cpp
     test_rws_errors.cpp
+    test_rws_heartbeat.cpp
     test_rws_motion.cpp
     test_rws_queue.cpp
     test_validate.cpp

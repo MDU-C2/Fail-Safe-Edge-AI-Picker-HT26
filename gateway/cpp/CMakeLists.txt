@@ -69,6 +69,7 @@ add_library(
     src/rws/arms_routes.cpp
     src/rws/client.cpp
     src/rws/errors.cpp
+    src/rws/heartbeat.cpp
     src/rws/motion.cpp
     src/rws/motion_routes.cpp
     src/rws/queue.cpp

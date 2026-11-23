@@ -43,5 +43,19 @@ MODULE SharedVars
   PERS num path_speed_right{8} := [50,50,50,50,50,50,50,50];
   PERS num path_zone_right{8} := [10,10,10,10,10,10,10,10];
   PERS num path_acc_right := 0;
-       
+
+  ! Gateway watchdog. The C++ gateway writes these over RWS: gw_timeout
+  ! and gw_heartbeat (+1) every second, and a new gw_session each time
+  ! it starts. An idle arm goes home on its own when the heartbeat stops
+  ! for gw_timeout seconds or the session changes (gateway restarted),
+  ! unless both arms hold something. 0 = off, and nothing happens until
+  ! the heartbeat has changed once since RAPID started.
+  PERS num gw_heartbeat := 0;
+  PERS num gw_session := 0;
+  PERS num gw_timeout := 0;
+  PERS bool holding_left := FALSE;            ! TRUE after GRIP, FALSE after OPEN or MOVE
+  PERS bool holding_right := FALSE;
+  PERS bool auto_home_left := FALSE;          ! TRUE: the arm went home on its own; cleared by the next job
+  PERS bool auto_home_right := FALSE;
+
 ENDMODULE

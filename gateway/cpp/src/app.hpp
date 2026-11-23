@@ -10,6 +10,7 @@
 #include "http/router.hpp"
 #include "robot/service.hpp"
 #include "rws/client.hpp"
+#include "rws/heartbeat.hpp"
 #include "rws/motion.hpp"
 #include "rws/queue.hpp"
 #include "security/auth.hpp"
@@ -37,12 +38,14 @@ public:
     ~App();
 
     //
-    // Starts the camera producer.
+    // Starts the RWS heartbeat, then the camera producer (which can
+    // block while it connects).
     //
     void start();
 
     //
-    // Stops the camera producer and releases the camera.
+    // Stops the heartbeat and the camera producer and releases the
+    // camera.
     //
     void stop();
 
@@ -76,6 +79,11 @@ public:
     // RWS jobs run in sequence by the gateway (rws/queue.hpp).
     //
     rws::MotionQueue queue;
+
+    //
+    // Feeds the arm tasks' gateway watchdog (rws/heartbeat.hpp).
+    //
+    rws::RwsHeartbeat heartbeat;
 
     SteadyTime started;
 

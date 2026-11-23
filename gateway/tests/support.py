@@ -314,6 +314,11 @@ class Gateway:
             "GATEWAY_CONTROL_LEASE_SECONDS": str(LEASE_SECONDS),
             "GATEWAY_CONTROL_CONTENTION_SECONDS": str(CONTENTION_SECONDS),
             "GATEWAY_CONTROL_STARTUP_GRACE_SECONDS": "0",
+            #
+            # C++ only: no heartbeat, so the arms in RobotStudio do
+            # not go home on their own between tests.
+            #
+            "GATEWAY_RWS_HEARTBEAT_TIMEOUT": "0",
             **settings,
         }
 

@@ -108,7 +108,7 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/camera/` | `camera/` |
 | `src/calibration/` | `calibration/` (same file format, so either reads the other's file) |
 | `src/robot/` | `robot/` (only `GET /robot/status`; no `/robot/command`) |
-| `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes; `queue.*` (C++ only, see "Motion queue") |
+| `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes; `queue.*` and `heartbeat.*` (C++ only, see "Motion queue" and "Gateway watchdog") |
 | `src/http/validate.*` | Pydantic's coercions and FastAPI's 422 for request bodies, query and path |
 | `src/health.cpp` | `health.py` |
 | `openapi/openapi.json` | FastAPI's schema, exported by `tools/export_openapi.py` and served as is |
@@ -205,6 +205,45 @@ clears them; single jobs are allowed meanwhile, for recovery. Events
 `robot_controller.queue_state`, and `move_in_progress` is true while
 a queue runs. The queue lives in memory: a gateway restart loses it
 (the job RAPID is running finishes).
+
+## Gateway watchdog (C++ only)
+
+If the gateway (or the Lynx, or the network to the robot) goes
+away, the RAPID arm tasks send the arms home themselves. Gateway
+side `src/rws/heartbeat.*`, RAPID side the idle loop of
+`rapid/LeftArmInstructions.mod` / `RightArmInstructions.mod` and
+the `gw_*`, `holding_*`, `auto_home_*` PERS in `rapid/SharedVars.mod`.
+
+- `GATEWAY_RWS_HEARTBEAT_TIMEOUT` (seconds, default 0 = off; the
+  Lynx deployment sets 5). When on, a thread writes
+  `gw_timeout` and `gw_heartbeat` + 1 every second over RWS, and a
+  random `gw_session` once per gateway start. It starts before the
+  camera, which can block startup.
+- RAPID checks only while an arm is idle, so a job always finishes
+  first. An arm goes home when the heartbeat has not changed for
+  `gw_timeout` s (only once it changed since RAPID started, so
+  RobotStudio tests and `rapidctl.py` are unaffected) or at once
+  when `gw_session` changes, i.e. on every gateway start.
+- The home is an ordinary job of the arm's own: RAPID writes v50,
+  `AccSet 100, 100` and `go_home`, sets `auto_home_<arm>` and then
+  `move_request_<arm>`, so the gateway (409, `/status` `BUSY`) and
+  CommServer (`ERR busy`) see the arm busy meanwhile. The gripper is
+  not touched.
+- Not while both arms hold something (`holding_<arm>`: TRUE after
+  `GRIP`, FALSE after `OPEN` or `MOVE`), as in a handover; one arm
+  holding goes home with what it holds.
+- Once: `auto_home_<arm>` stays TRUE, and the arm does not go home
+  again, until the next job from outside clears it. A connection
+  that comes and goes therefore homes the arm at most once, and the
+  gateway takes jobs again as soon as it is back.
+- `/health` `robot_controller.watchdog`: `enabled`,
+  `timeout_seconds`, `connected` (the last heartbeat was written),
+  `auto_home` (`left`/`right`, as last read; `null` until read) and
+  `error`. A `robot.status` event with `state: "auto_home"` and `arm`
+  is published when an arm's `auto_home` turns TRUE.
+- Edge: a gateway started while RAPID is stopped writes its session
+  before RAPID starts, so that start does not home the arms.
+  `rapidctl.py reset` sets `holding_*` back to FALSE.
 
 ## Migration status
 
