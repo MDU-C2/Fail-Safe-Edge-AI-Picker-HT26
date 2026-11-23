@@ -20,7 +20,8 @@ HERE = Path(__file__).resolve().parent
 
 
 def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
-               assistant=None, assistant_settings=None, access=None, tls=False, extra_origins=()):
+               assistant=None, assistant_settings=None, access=None, tls=False, extra_origins=(),
+               device_monitor=None):
     # Optional web dependencies are never needed by terminal mode.
     from fastapi import FastAPI, Request
     from fastapi.responses import FileResponse, JSONResponse, Response
@@ -49,11 +50,17 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
 
     @asynccontextmanager
     async def lifespan(app):
-        controller.start()
         try:
+            if device_monitor is not None:
+                device_monitor.start()
+            controller.start()
             yield
         finally:
-            await asyncio.to_thread(controller.close)
+            try:
+                await asyncio.to_thread(controller.close)
+            finally:
+                if device_monitor is not None:
+                    await asyncio.to_thread(device_monitor.close)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -103,6 +110,11 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
     @app.get("/api/state")
     def state():
         return controller.state()
+
+    @app.get("/api/active_device")
+    def active_device():
+        from active_device_status import empty_status
+        return device_monitor.snapshot() if device_monitor is not None else empty_status()
 
     @app.get("/api/status")
     def operator_status():
@@ -366,15 +378,25 @@ def hardware_factory(args):
                                   depth_frames=getattr(args, "depth_frames", 5),
                                   scan_observations=getattr(args, "scan_observations", 1))
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
+        failover = bool(getattr(args, "live", False) and getattr(args, "coordinator_url", None))
         def capture(purpose):
             controller.event("Capturing and detecting cups…" if purpose == "scan" else "Capturing a requested workspace observation…")
-            return captures.capture(purpose)
+            executing = failover and getattr(getattr(session, "failover", None), "executing", False)
+            if executing:
+                session.robot.check_lease()
+            result = captures.capture(purpose)
+            if executing:
+                session.robot.check_lease()
+            return result
         def save(inventory):
             store.save(inventory)
             controller.publish_session()
-        between_cup_check = getattr(args, "between_cup_check", platform.system() == "Darwin")
+        between_cup_check = failover or getattr(args, "between_cup_check", platform.system() == "Darwin")
         right_park_pose = None
-        if between_cup_check:
+        if failover:
+            from handover_plan import right_via_pose
+            right_park_pose = right_via_pose()
+        elif between_cup_check:
             from camera_parking import load_right_park_pose
             right_park_pose = load_right_park_pose(Path(args.placing_grid).with_suffix(".right-park.json"),
                                                   args.gateway)
@@ -387,7 +409,16 @@ def hardware_factory(args):
                                                         getattr(args, "verification_frames", 1) == 1),
                      camera_z=getattr(args, "camera_z", False),
                      between_cup_check=between_cup_check, right_park_pose=right_park_pose,
-                     between_cup_grid_check=between_cup_check)
+                     between_cup_grid_check=between_cup_check,
+                     continuous_batch=None)
+        if failover:
+            from device_service import read_gateway_token
+            from failover_coordinator import CoordinatorClient
+            from failover_workflow import FailoverRunner
+            coordinator = CoordinatorClient(args.coordinator_url,
+                                            read_gateway_token(args.coordinator_token_file), "primary")
+            session.failover = FailoverRunner(session, coordinator, role="primary", state_dir=args.state_dir,
+                                              output=controller.event)
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
         return session, LanguageController(session, NoLanguage(), audit_dir=store.folder / "language",
                                            named_cups=library)
@@ -510,7 +541,7 @@ def main(argv=None):
     mode = "demo" if not args.gateway and not args.device_config else ("live" if args.live else "dry_run")
     temporary = tempfile.TemporaryDirectory(prefix="cup-dashboard-") if mode == "demo" else None
     directory = Path(temporary.name if temporary else args.output).resolve()
-    controller = None
+    controller = device_monitor = None
     try:
         if args.device_config:
             from device_dashboard import DeviceDashboard
@@ -519,9 +550,12 @@ def main(argv=None):
             factory = demo_factory(directory, speed=args.speed, camera_z=args.camera_z) if mode == "demo" else hardware_factory(args)
             controller = WebController(factory, mode=mode, model="Scripted demo" if mode == "demo" else "gpt-6-astra",
                                        llm_enabled=mode == "demo")
+        from active_device_status import monitor_from_options
+        device_monitor = monitor_from_options(args, mode=mode)
         app = create_app(controller, port=args.port, image_root=directory,
                          allowed_origin=args.allowed_origin, assistant_settings=args.assistant_settings,
-                         access=access, tls=tls, extra_origins=local_origins)
+                         access=access, tls=tls, extra_origins=local_origins,
+                         device_monitor=device_monitor)
         with ProcessLock(directory):
             print(f"\nCup dashboard: {scheme}://localhost:{args.port}", flush=True)
             if args.allowed_origin:
@@ -558,8 +592,12 @@ def main(argv=None):
             if controller is not None:
                 controller.close()
         finally:
-            if temporary:
-                temporary.cleanup()
+            try:
+                if device_monitor is not None:
+                    device_monitor.close()
+            finally:
+                if temporary:
+                    temporary.cleanup()
     return 0
 
 

@@ -390,6 +390,19 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     return plan.jobs
 
 
+def right_camera_park_jobs(*, speed=None, phase_speeds=None):
+    """Finish an inherited, fully placed cup at the same right camera target.
+
+    The caller must confirm the previous queue completed placement and left
+    parking. This is the normal right_clear-to-right_park transition, never Home.
+    """
+    plan = _Plan(speed, None, phase_speeds=phase_speeds)
+    place_speed = plan.phase_speeds["placement"]
+    plan.path("right_park", "right", [(R_VIA, RIGHT_UP, place_speed, False)],
+              move_speed=place_speed, zone=0)
+    return plan.jobs
+
+
 def left_only_jobs(cup, *, tag_offset=(0, 0, 0), speed=None, home_speed=None, camera_z=False,
                    phase_speeds=None, home_after_cup=False):
     """Pick, lift and replace, ending open above the cup unless home is requested."""

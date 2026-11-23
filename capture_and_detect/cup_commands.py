@@ -22,7 +22,8 @@ class CupSession:
                  clock=time.monotonic, recovery=None, placing_grid=None, handover_offset=(0, 0, 0),
                  left_only=False, verification_frames=1, camera_z=False,
                  strict_single_verification=False, phase_speeds=None, home_after_cup=False,
-                 between_cup_check=False, right_park_pose=None, between_cup_grid_check=False):
+                 between_cup_check=False, right_park_pose=None, between_cup_grid_check=False,
+                 continuous_batch=None):
         if type(home_after_cup) is not bool:
             raise ValueError("home_after_cup must be a boolean")
         if type(left_only) is not bool:
@@ -37,11 +38,15 @@ class CupSession:
             raise ValueError("between_cup_grid_check must be a boolean")
         if between_cup_grid_check and (not between_cup_check or placing_grid is None):
             raise ValueError("Between-cup grid checks require workspace checks and a placement grid")
+        if continuous_batch is not None and (type(continuous_batch) is not bool
+                                             or (continuous_batch and not between_cup_grid_check)):
+            raise ValueError("Continuous batches require between-cup grid checks")
         self._right_park_pose = normalize_right_park_pose(right_park_pose)
         if self._right_park_pose is not None and (left_only or home_after_cup):
             raise ValueError("Right-arm parking requires the dual-arm workflow without automatic Home")
         self.between_cup_check = between_cup_check
         self.between_cup_grid_check = between_cup_grid_check
+        self._continuous_batch = continuous_batch
         self._workspace_destinations = []
         if type(verification_frames) is not int or verification_frames not in (1, 3):
             raise ValueError("verification_frames must be 1 or 3")
@@ -79,6 +84,7 @@ class CupSession:
         self.batch_progress = None
         self.motion_uncertain = recovery.required() if recovery is not None else False
         self._stop_event = threading.Event()
+        self._stop_epoch = object()
         self._finish_batch_event = threading.Event()
         self._stop_pending = threading.Event()
         self._stop_call_lock = threading.Lock()
@@ -127,6 +133,7 @@ class CupSession:
 
     def latch_stop(self):
         """Immediately inhibit selection and dispatch without network or disk I/O."""
+        self._stop_epoch = object()
         self._stop_pending.set()
         self._stop_event.set()
         hook = getattr(self.robot, "latch_stop", None)
@@ -348,6 +355,24 @@ class CupSession:
         return self._execute_many("goto", capture_id, preview["cup_ids"], placement or preview["placement"], batch=True,
                                   expected_motion=expected_motion)
 
+    @property
+    def continuous_batch(self):
+        # Unspecified retains the Mac's existing coupling to the grid-refresh
+        # setting, including callers that adjust that setting before a preview.
+        return self.between_cup_grid_check if self._continuous_batch is None else self._continuous_batch
+
+    def execute_observed_batch(self, *, capture_id):
+        """Start an authorized finite takeover from the current full camera scan.
+
+        Unlike a selection preview, this may start with a full grid or an empty
+        source workspace. The usual batch loop waits for a clear cell, or homes
+        once and finishes, using exactly the same observation and recovery rules.
+        """
+        self._check_selection(capture_id)
+        if not self.between_cup_grid_check or self.continuous_batch or self.robot.dry_run:
+            raise SelectionError("Observed takeover batches require live finite grid-refresh mode.")
+        return self._execute_many("goto", capture_id, [], None, batch=True)
+
     def _execute_many(self, action, capture_id, cup_ids, placement, *, batch, expected_motion=None,
                       identity_check=None):
         if not self._activity_lock.acquire(blocking=False):
@@ -356,32 +381,40 @@ class CupSession:
             self._check_stop()
             if expected_motion is not None and expected_motion != self.motion_settings():
                 raise SelectionError("Movement settings changed. Request a new preview before moving.")
+            failover = getattr(self, "failover", None)
+            if batch and failover is not None and not failover.executing:
+                return failover.execute_primary(action, capture_id, cup_ids, placement)
             return self._execute_many_active(action, capture_id, cup_ids, placement, batch=batch,
                                              identity_check=identity_check)
         finally:
             self._activity_lock.release()
 
-    def _execute_many_active(self, action, capture_id, cup_ids, placement, *, batch, identity_check=None):
+    def _execute_many_active(self, action, capture_id, cup_ids, placement, *, batch, identity_check=None,
+                             at_home=False):
         context = {"placement": copy.deepcopy(placement), "reservation": None, "index": 0,
-                   "identity_check": identity_check, "completed_places": [], "at_home": False}
+                   "identity_check": identity_check, "completed_places": [], "at_home": at_home}
         dynamic = batch and self.between_cup_check and not self.robot.dry_run
-        continuous = dynamic and self.between_cup_grid_check
+        grid_batch = dynamic and self.between_cup_grid_check
+        continuous = grid_batch and self.continuous_batch
         if placement is not None:
             self.placing_grid.validate_preview(placement)
         jobs = []
         self.batch_progress = ({"state": "running", "cup_ids": list(cup_ids), "completed_cups": [],
-                                "current_cup_id": cup_ids[0], "total": len(cup_ids),
+                                "current_cup_id": cup_ids[0] if cup_ids else None, "total": len(cup_ids),
                                 "pending_cups": list(cup_ids), "revision": 0} if batch else None)
         if batch:
-            if continuous:
-                self.batch_progress.update(continuous=True, arms_home=False, home_cycles=0)
+            if grid_batch:
+                self.batch_progress.update(continuous=continuous, arms_home=at_home, home_cycles=0)
             self.inventory["batch_execution"] = self.batch_progress
         succeeded = False
         completed_motion_cleared = False
         pending = list(cup_ids)
         index = 0
         try:
-            while pending or continuous:
+            if grid_batch and not pending:
+                self._refresh_batch(context)
+                pending = list(self.batch_progress["pending_cups"])
+            while pending or grid_batch:
                 self._check_stop()
                 if dynamic and self._finish_batch_event.is_set():
                     self.batch_progress["completion_reason"] = "session_closed"
@@ -400,6 +433,8 @@ class CupSession:
                         jobs.extend(home_jobs)
                         context["at_home"] = True
                         completed_motion_cleared = True
+                    if not continuous and reason != "grid_full":
+                        break
                     self.batch_progress.update(
                         state="waiting_for_grid" if reason == "grid_full" else "waiting_for_cups",
                         current_cup_id=None, arms_home=context["at_home"])
@@ -421,7 +456,7 @@ class CupSession:
                 if batch:
                     self.batch_progress["state"] = "running"
                     self.batch_progress["current_cup_id"] = cup_id
-                    if continuous:
+                    if grid_batch:
                         context["at_home"] = False
                         self.batch_progress["arms_home"] = False
                 # A live Mac batch follows the latest source observation. Each
@@ -480,8 +515,8 @@ class CupSession:
             self._check_stop()
             self.motion_uncertain = False
 
-    def _home_when_workspace_empty(self):
-        """Home once between continuous batches, using the existing Home jobs.
+    def _home_when_workspace_empty(self, *, skip_arms=()):
+        """Home once after an empty source observation, using existing Home jobs.
 
         The caller holds the activity lock and has finished every cup job and
         the fresh empty-workspace capture. Keep this separate from operator
@@ -492,9 +527,21 @@ class CupSession:
             pass
 
         self._check_stop()
+        failover = getattr(self, "failover", None)
+        if failover is not None:
+            failover.before_home()
+        if any(arm not in ("left", "right") for arm in skip_arms):
+            raise SelectionError("Invalid confirmed Home progress.")
         jobs = control_plan("home", "both", self.speed)["jobs"]
+        jobs = [job for job in jobs if job["body"]["arm"] not in skip_arms]
         for job in jobs:
             job["name"] = f"workspace_{job['body']['arm']}_home"
+        if not jobs:
+            self.batch_progress.update(arms_home=True, home_cycles=1)
+            self._finish_confirmed_motion()
+            if failover is not None:
+                failover.after_home()
+            return []
         execution = {"state": "pending", "completed_steps": [],
                      "pending_job": None, "total_steps": len(jobs)}
         self.batch_progress.update(state="homing_when_empty", current_cup_id=None,
@@ -510,10 +557,13 @@ class CupSession:
         def persist():
             if self.recovery is not None:
                 with self._state_lock:
-                    self.recovery.begin({"action": "workspace_empty_home",
+                    context = {"action": "workspace_empty_home",
                                          "batch": copy.deepcopy(self.batch_progress),
                                          "execution": copy.deepcopy(execution),
-                                         "stop_requested": self.stop_requested})
+                                         "stop_requested": self.stop_requested}
+                    if failover is not None:
+                        failover.stamp_context(context)
+                    self.recovery.begin(context)
             self.save(self.inventory)
 
         def before_job(_index, job):
@@ -527,6 +577,8 @@ class CupSession:
 
         def after_job(_index, job):
             self._check_stop()
+            if failover is not None:
+                failover.home_done(job)
             execution["completed_steps"].append(copy.deepcopy(job))
             execution["pending_job"] = None
             persist()
@@ -567,6 +619,8 @@ class CupSession:
                 except OSError:
                     pass
             raise
+        if failover is not None:
+            failover.after_home()
         return jobs
 
     def _refresh_batch(self, context):
@@ -612,7 +666,8 @@ class CupSession:
         self.batch_progress["planned_steps"] = planned
         if not pending_ids:
             sources = [cup for cup in self.inventory["cups"]
-                       if cup.get("status") not in ("placed", "replaced")]
+                       if cup.get("status") not in ("placed", "replaced")
+                       and not cup.get("placement_location_ids")]
             # A visible cup without a detected base is not pickable, but it
             # still means the workspace is occupied. Capture excludes grid
             # cups before reporting this independent presence count.
@@ -919,31 +974,36 @@ class CupSession:
         def journal_execution():
             if self.recovery is not None:
                 with self._state_lock:
-                    self.recovery.begin({"capture": capture_id, "cup_id": cup_id, "action": action,
+                    record = {"capture": capture_id, "cup_id": cup_id, "action": action,
                                          "placement": copy.deepcopy(place),
                                          "batch": copy.deepcopy(self.batch_progress),
                                          "stop_requested": self.stop_requested,
-                                         "execution": copy.deepcopy(execution)})
+                                         "execution": copy.deepcopy(execution)}
+                    failover = getattr(self, "failover", None)
+                    if failover is not None:
+                        failover.stamp_context(record)
+                    self.recovery.begin(record)
 
         def persist_execution():
             journal_execution()
             self.save(self.inventory)
 
-        def before_job(index, job):
+        def before_job(index, job, *, persist=True):
             self._check_stop()
             job = jobs[index]
             with self._state_lock:
                 execution["state"] = "running"
                 execution["pending_jobs"][job["name"]] = copy.deepcopy(job)
                 pending_changed()
-            persist_execution()
+            if persist:
+                persist_execution()
             # Execute the accepted plan. Grid bookkeeping changes do not
             # interrupt an active handover or request additional validation.
             print(f"Step {index + 1}/{len(jobs)}: {job['name'].replace('_', ' ')}", flush=True)
             self._check_stop()
             return job
 
-        def after_job(index, job):
+        def after_job(index, job, *, persist=True):
             self._check_stop()
             arm = {"grip_cup": "left", "right_grip": "right"}.get(job["name"])
             read_position = getattr(self.robot, "read_gripper_position", None)
@@ -960,7 +1020,20 @@ class CupSession:
                 execution["last_completed_step"] = job["name"]
                 execution["pending_jobs"].pop(job["name"], None)
                 pending_changed()
+            if persist:
+                persist_execution()
+
+        def before_queue(items):
+            accepted = [before_job(index, job, persist=False) for index, job in items]
             persist_execution()
+            self._check_stop()
+            return accepted
+
+        def after_queue(items):
+            for index, job in items:
+                after_job(index, job, persist=False)
+            persist_execution()
+            self._check_stop()
 
         try:
             self.save(self.inventory)  # If persistence fails, do not dispatch motion.
@@ -971,7 +1044,9 @@ class CupSession:
             if place is not None and context["reservation"] is None:
                 context["reservation"] = self.placing_grid.reserve(context["placement"])
             self._check_stop()
-            self.robot.execute_jobs(jobs, before_send=before_job, after_done=after_job)
+            queue_callbacks = ({"before_queue": before_queue, "after_queue": after_queue}
+                               if getattr(self.robot, "supports_queue_callbacks", False) is True else {})
+            self.robot.execute_jobs(jobs, before_send=before_job, after_done=after_job, **queue_callbacks)
             self._check_stop()
             if (execution["pending_jobs"] or len(execution["completed_steps"]) != len(jobs)
                     or {job["name"] for job in execution["completed_steps"]} != {job["name"] for job in jobs}):
@@ -1018,7 +1093,7 @@ class CupSession:
                 "dynamic_batch": self.between_cup_check,
                 "right_park_pose": self.right_park_pose,
                 "between_cup_grid_check": self.between_cup_grid_check,
-                "continuous_batch": self.between_cup_grid_check,
+                "continuous_batch": self.continuous_batch,
                 "phase_speeds": normalize_phase_speeds(self.phase_speeds),
                 "effective_phase_speeds": phases,
                 "handover": handover_settings(self.handover_offset, phases["handover"])}
@@ -1145,9 +1220,20 @@ class CupSession:
 
     def acknowledge_recovery(self):
         """Operator acknowledgement only; does not stop, home, or otherwise move hardware."""
+        result = None
         if not self._activity_lock.acquire(blocking=False):
             raise SelectionError("Wait for the active operation to finish before acknowledging recovery.")
         try:
+            stop_epoch = self._stop_epoch
+            recover_queue = getattr(getattr(self, "failover", None), "recover_after_inspection", None)
+
+            def check_new_stop():
+                if self._stop_pending.is_set() or self._stop_epoch is not stop_epoch:
+                    self.latch_stop()
+                    if self.recovery is not None and not self.robot.dry_run:
+                        self.recovery.begin({"action": "software_stop", "stopped": False})
+                    raise SelectionError("A new software stop was requested; recovery remains blocked.")
+
             if not self._stop_call_lock.acquire(blocking=False):
                 raise SelectionError("Wait for the software stop request to finish before recovery.")
             try:
@@ -1157,24 +1243,40 @@ class CupSession:
                     hook = getattr(self.robot, "clear_stop", None)
                     if callable(hook):
                         hook()
+                    if callable(recover_queue):
+                        # Keep the local block until inspected gateway recovery
+                        # succeeds. A failed request must not silently unlock
+                        # the next pick or overwrite its original journal.
+                        self.motion_uncertain = True
+                        self.scan_usable = False
+                        if self.recovery is not None and not self.recovery.required():
+                            self.recovery.begin({"action": "gateway_recovery"})
+                    check_new_stop()
+            finally:
+                self._stop_call_lock.release()
+
+            # Gateway/coordinator I/O must not hold either lock needed by
+            # request_stop(). A Stop can finish during this call, so compare
+            # its epoch too; the transient pending flag alone is insufficient.
+            if callable(recover_queue):
+                result = recover_queue()
+
+            if not self._stop_call_lock.acquire(blocking=False):
+                raise SelectionError("Wait for the software stop request to finish before recovery.")
+            try:
+                with self._state_lock:
+                    check_new_stop()
                     if self.recovery is not None and not self.robot.dry_run:
                         self.recovery.clear()
-                    if self._stop_pending.is_set():
-                        self.latch_stop()
-                        if self.recovery is not None and not self.robot.dry_run:
-                            self.recovery.begin({"action": "software_stop", "stopped": False})
-                        raise SelectionError("A new software stop was requested; recovery remains blocked.")
+                    check_new_stop()
                     self._stop_event.clear()
                     self.motion_uncertain = False
                     self.scan_usable = False
                     # latch_stop is deliberately lock-free. Restore its state
                     # if a new request arrived during the clearing operations.
-                    if self._stop_pending.is_set():
-                        self.latch_stop()
-                        if self.recovery is not None and not self.robot.dry_run:
-                            self.recovery.begin({"action": "software_stop", "stopped": False})
-                        raise SelectionError("A new software stop was requested; recovery remains blocked.")
+                    check_new_stop()
             finally:
                 self._stop_call_lock.release()
         finally:
             self._activity_lock.release()
+        return result

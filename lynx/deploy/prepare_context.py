@@ -56,10 +56,12 @@ def stage(repo: Path, model: Path, output: Path, *, profile="combined") -> dict[
             "controller_status", "gateway_capabilities", "terminal_controller",
             "terminal_commands", "operator_commands", "language_commands", "local_llm",
             "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
+            "workspace_check", "queued_robot_client", "failover_coordinator", "failover_workflow", "failover_worker",
         ):
             add(repo / "capture_and_detect" / (name + ".py"), "app/capture_and_detect/" + name + ".py")
         for name in ("__init__", "picker", "capture", "raw_images", "model", "resources",
-                     "placement_records", "native_transport", "native_perception", "runtime"):
+                     "placement_records", "native_transport", "native_perception", "runtime",
+                     "runtime_lock", "standby", "armed_service"):
             add(repo / "lynx" / (name + ".py"), "app/lynx/" + name + ".py")
     else:
         gateway = repo / "gateway"

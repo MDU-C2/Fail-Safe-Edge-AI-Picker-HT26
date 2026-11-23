@@ -36,7 +36,7 @@ class PhasePlanTests(unittest.TestCase):
                 "right_via": (speed, [speed]),
                 "right_beside": (speed, [speed]),
                 "right_take": (speed, [min(speed, 150), speed]),
-                "left_clear": (speed, [speed]),
+                "left_clear": (min(speed, 100), [min(speed, 100)]),
                 "left_park": (speed, [speed]),
                 "right_lower": (speed, [speed]),
                 "right_retreat": (min(speed, 100), [min(speed, 100)] * 2),
@@ -57,6 +57,7 @@ class PhasePlanTests(unittest.TestCase):
         expected = {
             "approach_cup": (250, [250, 250, 180]),
             "left_handover": (180, [180, 180]),
+            "left_clear": (180, [180]),
             "right_via": (220, [220]),
             "right_beside": (220, [220]),
             "right_take": (220, [150, 220]),

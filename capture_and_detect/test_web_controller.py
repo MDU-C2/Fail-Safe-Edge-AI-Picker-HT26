@@ -692,7 +692,7 @@ class WebControllerTests(unittest.TestCase):
         self.assertFalse(state["recovery_required"])
         self.assertFalse(state["scan_usable"])
         self.assertEqual(self.fixture.robot.jobs, [])
-        self.assertIn("No robot command", state["message"])
+        self.assertIn("No robot movement", state["message"])
 
     def test_reserved_commands_cannot_home_recover_or_bypass_confirmation(self):
         self.scan()

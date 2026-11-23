@@ -54,10 +54,11 @@ class ContextTests(unittest.TestCase):
             "controller_status", "gateway_capabilities", "terminal_controller",
             "terminal_commands", "operator_commands", "language_commands", "local_llm",
             "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
+            "workspace_check", "queued_robot_client", "failover_coordinator", "failover_workflow", "failover_worker",
         }
         self.cli_runtime = {
             "__init__", "picker", "capture", "raw_images", "model", "resources",
-            "placement_records", "native_transport", "native_perception", "runtime",
+            "placement_records", "native_transport", "native_perception", "runtime", "runtime_lock", "standby", "armed_service",
         }
         files.update({"capture_and_detect/" + name + ".py": "# shared control\n"
                       for name in self.cli_control})

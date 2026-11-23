@@ -44,7 +44,7 @@ function dashboard() {
   const requests = [];
   const context = vm.createContext({
     dom, state: snapshot(), connected: true, posting: false, stopPosting: false, localStopInhibit: false,
-    speedDirty: false, phaseSpeedDirty: false, controlDeadline: 60000, releaseReview: null, quickGeneration: 0, transientError: "",
+    speedDirty: false, deviceSpeedDirty: false, phaseSpeedDirty: false, controlDeadline: 60000, releaseReview: null, quickGeneration: 0, transientError: "",
     document: { activeElement: null, querySelectorAll(selector) { assert.equal(selector, "[data-robot-action]"); return buttons; } },
     text(id, value) { assert.ok(dom[id], `Missing element ${id}`); dom[id].textContent = String(value ?? ""); },
     hide(id, value) { assert.ok(dom[id], `Missing element ${id}`); dom[id].hidden = value; },

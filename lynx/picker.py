@@ -6,6 +6,7 @@ from pathlib import Path
 import signal
 import stat
 import sys
+import threading
 
 from camera_client import CameraClient
 from cup_commands import CupSession
@@ -15,12 +16,16 @@ from local_llm import DisabledIntentClient
 from placing_grid import PlacingGrid
 from recovery_journal import RecoveryJournal
 from robot_client import RobotClient
+from queued_robot_client import QueueRobotClient
+from handover_plan import right_via_pose
 from robot_controls import RobotControls
 from terminal_commands import handle_input, positive, print_cups
 from terminal_controller import TerminalController
 from .capture import Calibration, CaptureService, CaptureStore
 from .model import Model
 from .native_perception import NativePerception
+from .runtime_lock import NativeRuntimeLock
+from .standby import run_standby
 from .resources import (advise_capture_cache, advise_loaded_python_cache, advise_packaged_native_cache,
                         trim_unused_heap, wait_for_model_headroom)
 
@@ -40,7 +45,9 @@ HELP = """Commands:
   reset                Acknowledge inspection after recovery; sends no motion.
   help / quit          Show commands or exit.
 Default mode is DRY RUN. --live is required for robot commands.
-Picks finish above the destination. Home is a separate operator command.
+Picks clear the camera and refresh cups and placement cells. A batch waits when
+the grid is full, goes Home when the workspace is empty, then finishes.
+Single selections remain one cup. Home is also an operator command.
 Close the Mac controller before operating this picker live. After a failure,
 inspect both arms, grippers and the paths before reset or confirming Home.
 Software Stop depends on the gateway; physical emergency stop remains available.
@@ -65,6 +72,15 @@ def arguments(argv=None):
     parser.add_argument("--gateway", default="http://127.0.0.1:8000")
     parser.add_argument("--live", action="store_true", help="Enable explicit operator motion commands")
     parser.add_argument("--scan-once", action="store_true", help="Save one camera-only scan and exit; never moves")
+    parser.add_argument("--standby", action="store_true",
+                        help="Wait for tertiary control, run one finite camera-refreshed batch, then exit; requires --live")
+    parser.add_argument("--armed", action="store_true",
+                        help="Wait for explicitly started failover batches; requires --live and a coordinator")
+    parser.add_argument("--coordinator-url", help="Shared failover coordinator base URL")
+    parser.add_argument("--coordinator-token-file", type=Path,
+                        help="Private coordinator credential file, separate from the gateway token")
+    parser.add_argument("--token-file", type=Path,
+                        help="Credential file (standby/armed default to state-dir/tertiary-token; other modes use gateway-token)")
     parser.add_argument("--max-result-age", type=positive, default=60.0,
                         help="Legacy compatibility option; snapshot picking has no image-age limit")
     parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=5)
@@ -79,6 +95,13 @@ def arguments(argv=None):
         parser.error("confidence must be below 1; speed must be 1..1500 mm/s")
     if args.scan_once and args.live:
         parser.error("--scan-once is camera-only; omit --live")
+    if args.standby and (not args.live or args.scan_once):
+        parser.error("--standby requires --live and cannot be combined with --scan-once")
+    if args.armed and (not args.live or args.scan_once or args.standby
+                       or not args.coordinator_url or args.coordinator_token_file is None):
+        parser.error("--armed requires --live, --coordinator-url and --coordinator-token-file; it cannot use --scan-once or --standby")
+    if not args.armed and (args.coordinator_url or args.coordinator_token_file is not None):
+        parser.error("Coordinator options require --armed")
     return args
 
 
@@ -134,11 +157,12 @@ class CommandHandler:
 
 def main(argv=None):
     args = arguments(argv)
-    worker = terminal = None
+    worker = terminal = native_lock = robot = None
     interrupted = False
     shutting_down = False
     previous_sigterm = None
     signal_installed = False
+    stop_event = threading.Event()
 
     def request_shutdown(_signum, _frame):
         nonlocal shutting_down
@@ -146,16 +170,28 @@ def main(argv=None):
         # path as Ctrl-C. Repeated SIGTERM must not interrupt that cleanup.
         if not shutting_down:
             shutting_down = True
+            if args.armed:
+                stop_event.set()
+                if robot is not None:
+                    robot.cancel_wait()
+                return
             raise KeyboardInterrupt
 
     try:
         previous_sigterm = signal.signal(signal.SIGTERM, request_shutdown)
         signal_installed = True
         state = args.state_dir.resolve(strict=True)
+        native_lock = NativeRuntimeLock(state).acquire()
         model = Model.load(args.model)
         calibration = Calibration(state / "calibration.json")
         grid = PlacingGrid(state / "placing-grid.json")
-        headers = {"Authorization": "Bearer " + read_token(state / "gateway-token")}
+        token_path = args.token_file or state / ("tertiary-token" if args.standby or args.armed else "gateway-token")
+        headers = {"Authorization": "Bearer " + read_token(token_path)}
+        coordinator = None
+        if args.armed:
+            from failover_coordinator import CoordinatorClient
+            coordinator = CoordinatorClient(args.coordinator_url,
+                                            read_token(args.coordinator_token_file), "tertiary")
         api = args.gateway.rstrip("/")
         if not api.endswith("/api/v1"):
             api += "/api/v1"
@@ -175,12 +211,17 @@ def main(argv=None):
         worker = NativePerception(args.worker, model, confidence=args.conf, timeout=args.inference_timeout)
         captures = CaptureService(camera, worker, calibration, grid, store,
                                   depth_frames=args.depth_frames, confidence=args.conf)
-        robot = RobotClient(api, headers, dry_run=not args.live)
+        robot = (QueueRobotClient if args.standby or args.armed else RobotClient)(api, headers, dry_run=not args.live)
         robot.configure_operator_controls(args.controller_profile)
         recovery = RecoveryJournal(store.folder / "robot_recovery.json",
                                    legacy_inventory_path=store.folder / "cups.json")
         def capture(purpose):
+            check_lease = args.standby or (args.armed and getattr(getattr(session, "failover", None), "executing", False))
+            if check_lease:
+                robot.check_lease()
             inventory, started = captures.capture(purpose)
+            if check_lease:
+                robot.check_lease()
             advise_capture_cache(store.folder, paths=tuple(
                 inventory["images"][kind] for kind in ("rgb", "depth")))
             return inventory, started
@@ -189,20 +230,31 @@ def main(argv=None):
                              tag_offset=calibration.offset, speed=args.speed,
                              recovery=recovery, placing_grid=grid, verification_frames=1,
                              strict_single_verification=True, max_result_age=args.max_result_age,
-                             camera_z=args.camera_z)
+                             camera_z=args.camera_z, between_cup_check=True,
+                             between_cup_grid_check=True, continuous_batch=False,
+                             right_park_pose=right_via_pose())
         if args.scan_once:
             # Do not call session.scan(): a dry camera check must not reconcile
             # or release the deployment's existing occupied/reserved records.
             inventory, _ = capture("scan")
             print_cups(inventory)
             return 0
+        if args.standby:
+            run_standby(session, output=terminal_output)
+            return 0
+        if args.armed:
+            from failover_workflow import FailoverRunner
+            if not stop_event.is_set():
+                FailoverRunner(session, coordinator, role="tertiary", state_dir=state,
+                               output=terminal_output).serve(stop_event=stop_event)
+            return 0
         language = LanguageController(session, DisabledIntentClient(), audit_dir=store.folder / "language")
         controls = RobotControls(session)
         terminal = TerminalController(session, language, CommandHandler(session, language, controls),
                                       output=terminal_output)
         terminal_output(f"{'LIVE' if args.live else 'DRY RUN'} · native {model.precision} · {model.input_size}px · {api}")
-        terminal_output(f"Snapshot picking: one observation per scan; {args.depth_frames} raw depth samples. "
-                        "Picks reuse the saved snapshot without further captures or an image-age limit.")
+        terminal_output(f"Camera refresh after each cup; {args.depth_frames} raw depth samples. "
+                        "Batches finish after an empty workspace observation and Home.")
         terminal_output(HELP)
         if session.motion_uncertain:
             terminal_output("Recovery inspection is required before motion; scan is available.")
@@ -214,15 +266,23 @@ def main(argv=None):
         return 0
     except (KeyboardInterrupt, EOFError):
         interrupted = True
-        terminal_output("Exiting; active work receives a software stop request. No automatic home or resume.")
+        terminal_output("Exiting standby; an accepted gateway queue may finish. No further commands will be submitted."
+                        if args.standby or args.armed else
+                        "Exiting; active work receives a software stop request. No automatic home or resume.")
         return 0
     except Exception as error:
         interrupted = True
+        if args.armed and stop_event.is_set():
+            return 0
         terminal_output(f"Picker stopped: {error}", file=sys.stderr)
         return 1
     finally:
         shutting_down = True
         try:
+            if args.armed and robot is not None:
+                stop_event.set()
+                robot.cancel_wait()
+                robot.end_standby()
             if terminal is not None:
                 terminal.close(interrupt=interrupted)
         finally:
@@ -230,6 +290,8 @@ def main(argv=None):
                 if worker is not None:
                     worker.close()
             finally:
+                if native_lock is not None:
+                    native_lock.close()
                 if signal_installed:
                     signal.signal(signal.SIGTERM, previous_sigterm)
 

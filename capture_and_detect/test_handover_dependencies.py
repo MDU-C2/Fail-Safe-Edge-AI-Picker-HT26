@@ -67,16 +67,17 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertEqual(self.ready(released), {"left_clear", "right_lower"})
         # Turning must wait for BOTH separation movements to report DONE; an
         # early completion by either arm must never release the turn barrier.
-        self.assertEqual(self.ready(released | {"left_clear"}), {"left_park", "right_lower"})
+        self.assertEqual(self.ready(released | {"left_clear"}), {"right_lower"})
         self.assertEqual(self.ready(released | {"right_lower"}), {"left_clear"})
         self.assertEqual(self.ready(released | {"left_clear", "right_lower"}),
-                         {"left_park", "right_retreat"})
+                         {"right_retreat"})
 
-    def test_left_parks_after_clearance_without_delaying_right_turnover(self):
+    def test_left_parks_only_after_turnover_and_can_overlap_placement(self):
         left = [job for job in self.jobs if job["body"]["arm"] == "left"]
         self.assertEqual(left[-1]["name"], "left_park")
-        self.assertEqual(self.by_name["left_park"]["after"], ["left_clear"])
+        self.assertEqual(self.by_name["left_park"]["after"], ["left_clear", "right_retreat"])
         self.assertNotIn("left_park", self.ancestors("right_retreat"))
+        self.assertNotIn("left_park", self.ready(self.ancestors("right_retreat")))
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
         self.assertEqual(self.ready(retreated), {"left_park", "right_place"})
         self.assertIn("right_place", self.ancestors("right_release"))

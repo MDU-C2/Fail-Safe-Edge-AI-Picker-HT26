@@ -33,6 +33,7 @@ class HandoverPlanTests(unittest.TestCase):
                               ("right_grip", "left_release"),
                               ("left_release", "left_clear"), ("left_release", "right_lower"),
                               ("left_clear", "left_park"),
+                              ("right_retreat", "left_park"),
                               ("left_clear", "right_retreat"), ("right_lower", "right_retreat"),
                               ("right_retreat", "right_place"), ("right_place", "right_release"),
                               ("right_release", "right_clear")):

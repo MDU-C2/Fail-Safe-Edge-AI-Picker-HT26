@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from robot_client import RobotClient, RobotCommandError
+from robot_client import RobotClient, RobotCommandError, GatewayReadUnavailable, GatewayControlUnavailable
 from test_gateway_capabilities import schema_fixture
 
 
@@ -693,6 +693,102 @@ class RobotClientTests(unittest.TestCase):
                 self.client.execute_jobs([job("invalid opening", "/robot/rws/gripper", body)])
         self.post.assert_not_called()
         self.get.assert_not_called()
+
+
+class GatewayTransportTests(unittest.TestCase):
+    def setUp(self):
+        self.client = RobotClient("http://offline.invalid/api/v1", {"Authorization": "Bearer test"})
+
+    def test_temporary_status_reads_are_typed_without_retry(self):
+        for endpoint in ("/control", "/robot/rws/queue", "/robot/rws/status?arm=left"):
+            for code in (408, 429, 500, 503, 504):
+                with self.subTest(endpoint=endpoint, code=code):
+                    reply = response({"detail": "temporarily unavailable"}, status=code)
+                    with patch("robot_client.requests.get", return_value=reply) as get:
+                        with self.assertRaises(GatewayReadUnavailable) as caught:
+                            self.client._get_object(endpoint)
+                    get.assert_called_once()
+                    reply.close.assert_called_once()
+                    self.assertIsInstance(caught.exception.__cause__, requests.HTTPError)
+                    self.assertEqual(get.call_args.kwargs["headers"]["Connection"], "close")
+
+    def test_read_transport_failures_are_typed_without_retry(self):
+        for fault in (requests.ConnectionError("offline"), requests.Timeout("timeout"),
+                      requests.exceptions.ChunkedEncodingError("truncated"),
+                      requests.exceptions.ContentDecodingError("invalid encoding")):
+            with self.subTest(fault=type(fault).__name__):
+                with patch("robot_client.requests.get", side_effect=fault) as get:
+                    with self.assertRaises(GatewayReadUnavailable) as caught:
+                        self.client._get_object("/control")
+                get.assert_called_once()
+                self.assertIs(caught.exception.__cause__, fault)
+
+    def test_auth_and_malformed_status_reads_remain_fatal(self):
+        malformed = response(None)
+        malformed.json.side_effect = ValueError("invalid JSON")
+        replies = [response({}, status=code) for code in (400, 401, 403, 404, 409)]
+        replies += [malformed, response([])]
+        for reply in replies:
+            with self.subTest(reply=reply):
+                with patch("robot_client.requests.get", return_value=reply) as get:
+                    with self.assertRaises(RobotCommandError) as caught:
+                        self.client._get_object("/control")
+                self.assertNotIsInstance(caught.exception, GatewayReadUnavailable)
+                get.assert_called_once()
+                reply.close.assert_called_once()
+
+    def test_temporary_lease_posts_are_typed_without_retry(self):
+        for endpoint in ("/control/acquire", "/control/renew", "/control/release"):
+            for code in (408, 429, 500, 503, 504):
+                with self.subTest(endpoint=endpoint, code=code):
+                    reply = response({}, status=code)
+                    with patch("robot_client.requests.post", return_value=reply) as post:
+                        with self.assertRaises(GatewayControlUnavailable):
+                            self.client._post(endpoint)
+                    post.assert_called_once()
+                    reply.close.assert_called_once()
+                    self.assertEqual(post.call_args.kwargs["headers"]["Connection"], "close")
+
+    def test_lease_auth_and_invalid_data_are_not_retryable(self):
+        malformed = response(None)
+        malformed.json.side_effect = ValueError("invalid JSON")
+        for reply in (response({}, status=401), response({}, status=403), malformed, response([])):
+            with self.subTest(reply=reply):
+                with patch("robot_client.requests.post", return_value=reply) as post:
+                    with self.assertRaises(RobotCommandError) as caught:
+                        self.client._post("/control/acquire")
+                self.assertNotIsInstance(caught.exception, GatewayControlUnavailable)
+                post.assert_called_once()
+                reply.close.assert_called_once()
+
+    def test_physical_posts_remain_ambiguous_and_are_not_retried(self):
+        for endpoint in ("/robot/rws/move", "/robot/rws/path", "/robot/rws/home",
+                         "/robot/rws/gripper", "/robot/rws/queue", "/robot/rapid/stop"):
+            for code in (408, 429, 500, 503):
+                with self.subTest(endpoint=endpoint, code=code):
+                    reply = response({}, status=code)
+                    with patch("robot_client.requests.post", return_value=reply) as post:
+                        with self.assertRaisesRegex(RobotCommandError, "completion is unknown") as caught:
+                            self.client._post(endpoint, move={"test": "body"})
+                    self.assertNotIsInstance(caught.exception, (GatewayReadUnavailable, GatewayControlUnavailable))
+                    post.assert_called_once()
+                    reply.close.assert_called_once()
+
+    def test_home_measurement_failure_is_read_only_and_keeps_completion_unconfirmed(self):
+        reply = response({}, status=503)
+        with patch("robot_client.requests.get", return_value=reply) as get, \
+                patch("robot_client.requests.post") as post:
+            with self.assertRaisesRegex(GatewayReadUnavailable, "home pose is unconfirmed"):
+                self.client._verify_home("right")
+        get.assert_called_once()
+        post.assert_not_called()
+        reply.close.assert_called_once()
+
+    def test_gateway_connection_policy_overrides_keep_alive_without_mutating_headers(self):
+        headers = {"Authorization": "Bearer test", "connection": "keep-alive"}
+        client = RobotClient("http://offline.invalid", headers)
+        self.assertEqual(headers["connection"], "keep-alive")
+        self.assertEqual(client.headers, {"Authorization": "Bearer test", "Connection": "close"})
 
 
 if __name__ == "__main__":

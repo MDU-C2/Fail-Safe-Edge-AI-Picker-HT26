@@ -35,7 +35,8 @@ function page() {
     renderSelectedActions() {}, renderRobotControls() {}, renderSavedCups() {},
     document: { querySelectorAll() { return []; } },
   });
-  vm.runInContext(section("  function renderProposal()", "  function renderSavedCups()")
+  vm.runInContext(section("  const gatewayRecovery =", "  const actionable =")
+    + section("  function renderProposal()", "  function renderSavedCups()")
     + section("  function renderActivity()", "  function renderControls()")
     + section("  function renderControls()", "  function render()")
     + "\nglobalThis.proposal = renderProposal; globalThis.activity = renderActivity; globalThis.controls = renderControls;", context);

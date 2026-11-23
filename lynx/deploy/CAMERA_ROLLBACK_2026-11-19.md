@@ -69,6 +69,10 @@ it was not restarted. No gateway or RAPID changes were made.
 WeOS confirms that `lynxcli` selects the valid 0.2.10 image. The running
 configuration was saved with `copy run start`.
 
+WeOS confirmed the valid `lynx-picker-0.2.10` image carries the `lynxcli` label,
+and the running configuration was saved successfully with `copy run start`.
+Reboot persistence has not been physically tested.
+
 Select Lynx in the dashboard to activate its controller when ready to use it.
 These checks verify the installed files and offline behavior. No physical pick
 or device reboot was used to validate this rollback.

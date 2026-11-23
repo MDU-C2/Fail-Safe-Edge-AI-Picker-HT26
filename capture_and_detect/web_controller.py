@@ -182,6 +182,32 @@ class WebController:
             with self._lock:
                 self._normal_busy, self._normal_operation = False, None
                 self._publish_busy()
+        runner = getattr(self.session, "failover", None)
+        if runner is not None and self._state["ready"] and not self._closed:
+            try:
+                runner.start_monitor(self.resume_failover)
+            except Exception as error:
+                self._update(ready=False, error=str(error), message="Failover monitoring could not start.")
+                self.event("Failover monitoring could not start.", "error")
+
+    def resume_failover(self, run_id):
+        """Schedule a coordinator-authorized continuation on the sole worker.
+
+        This internal callback is not exposed as a browser operation. Busy,
+        stopped or closed controllers reject it so monitoring can try later.
+        """
+        with self._lock:
+            if (not isinstance(run_id, str) or not 1 <= len(run_id) <= 128
+                    or self._closed or self.mode != "live" or not self._state["ready"]
+                    or self._state["busy"] or self._state["stop_requested"]
+                    or getattr(self.session, "failover", None) is None):
+                return False
+            self._normal_busy, self._normal_operation = True, "failover_resume"
+            self._clear_assistant_source()
+            self._update(error=None, proposal=None, message="Continuing the active batch on this computer…")
+            self._publish_busy()
+            self._worker.submit(self._run, "failover_resume", {"run_id": run_id}, self._generation)
+            return True
 
     def state(self):
         with self._lock:
@@ -255,6 +281,10 @@ class WebController:
                   "carry_max_acceleration": None if session.left_only else CARRY_MAX_ACC,
                   "flip_acceleration": FLIP_ACCELERATION,
                   "handover": settings["handover"]}
+        runner = getattr(session, "failover", None)
+        if getattr(runner, "supports_device_speeds", False) is True:
+            motion.update(device_speeds_supported=True,
+                          device_speeds=runner.device_speed_settings())
         grid = None
         if session.placing_grid is not None:
             try:
@@ -463,6 +493,7 @@ class WebController:
                   "confirm": {"capture_id", "cup_id", "action", "token"},
                   "cancel": set(), "recovery": {"acknowledged"}, "robot_status": set(), "speed": {"speed"},
                   "phase_speeds": {"pick_lift", "handover", "flip", "placement"},
+                  "device_speeds": {"primary", "secondary", "tertiary"},
                   "control_preview": {"action", "arm"}, "control_confirm": {"token", "acknowledged"},
                   "control_cancel": set(),
                   "release_locations": {"fingerprint", "acknowledged"},
@@ -523,6 +554,12 @@ class WebController:
         if operation == "phase_speeds":
             try:
                 normalize_phase_speeds({key: payload[key] for key in ("pick_lift", "handover", "flip", "placement")})
+            except (ValueError, TypeError, OverflowError) as error:
+                raise WebError(str(error), 422) from error
+        if operation == "device_speeds":
+            try:
+                for role in ("primary", "secondary", "tertiary"):
+                    valid_speed(payload[role])
             except (ValueError, TypeError, OverflowError) as error:
                 raise WebError(str(error), 422) from error
         if operation == "control_confirm" and (payload["acknowledged"] is not True
@@ -605,6 +642,7 @@ class WebController:
                                   "cancel": "Cancelling the proposal…", "recovery": "Recording your acknowledgement…",
                                   "robot_status": "Reading controller status…", "speed": "Updating future movement speed…",
                                   "phase_speeds": "Updating future movement phase speeds…",
+                                  "device_speeds": "Saving speeds for the next batch…",
                                   "release_locations": "Releasing inspected placement locations…",
                                   "save_cup": "Saving a local cup reference…",
                                   "pick_saved": "Comparing the saved cup with the workspace snapshot…",
@@ -620,8 +658,34 @@ class WebController:
 
     def _run_stop(self):
         """Independent of the movement/model worker and its language lock."""
+        shared_done = threading.Event()
+        shared_failed = []
+        shared_stop_error = "The shared failover stop was not confirmed; other workers may still be armed."
+        runner = getattr(self.session, "failover", None)
+        if runner is not None:
+            def stop_shared():
+                try:
+                    runner.stop_batch()
+                except BaseException:
+                    shared_failed.append(True)
+                finally:
+                    shared_done.set()
+            try:
+                threading.Thread(target=stop_shared, name="cup-shared-stop", daemon=True).start()
+            except RuntimeError:
+                shared_failed.append(True)
+                shared_done.set()
+
+        def shared_failure():
+            # Physical Stop has already been dispatched before this bounded
+            # wait. A disconnected auxiliary service must not delay it.
+            if runner is not None and (not shared_done.wait(timeout=1.0) or shared_failed):
+                return shared_stop_error
+            return None
+
         try:
             result = self.session.request_stop()
+            shared_stop_error = shared_failure()
             dry_run = result.get("dry_run") is True
             stopped = result.get("stopped") is True
             state = "previewed" if dry_run else "confirmed" if stopped else "unconfirmed"
@@ -629,16 +693,21 @@ class WebController:
                 "Software stop previewed; no robot request sent. New commands remain blocked." if dry_run else
                 "The controller confirmed its software stop. Inspect the robot before recovery." if stopped else
                 "Software stop is unconfirmed. Use the robot's physical emergency stop if needed.")
+            if shared_stop_error:
+                message += " " + shared_stop_error
             with self._lock:
                 fields = {"stop": {"state": state, "dry_run": dry_run, "stopped": stopped, "message": message},
                           "message": message, "proposal": None, "scan_usable": False,
                           "recovery_required": True, "stop_requested": True}
-                if state == "unconfirmed":
+                if state == "unconfirmed" or shared_stop_error:
                     fields["error"] = message
                 self._update(**fields)
-                self.event(message, "warning" if state != "unconfirmed" else "error")
+                self.event(message, "warning" if state != "unconfirmed" and not shared_stop_error else "error")
         except BaseException as error:
+            shared_stop_error = shared_failure()
             message = f"Software stop is unconfirmed: {error}. Use the robot's physical emergency stop if needed."
+            if shared_stop_error:
+                message += " " + shared_stop_error
             self._update(stop={"state": "unconfirmed", "dry_run": self.mode != "live", "stopped": False, "message": message},
                          error=message, message=message, proposal=None, scan_usable=False,
                          recovery_required=True, stop_requested=True)
@@ -682,10 +751,15 @@ class WebController:
             result = None
             if operation not in ("control_confirm", "robot_status"):
                 self.controls.cancel()
-            if operation in ("speed", "phase_speeds", "control_preview", "control_confirm", "release_locations"):
+            if operation in ("speed", "phase_speeds", "device_speeds", "control_preview", "control_confirm", "release_locations"):
                 self.language.cancel()
             if operation == "start":
                 result = self.language.start()
+            elif operation == "failover_resume":
+                self.language.cancel()
+                result = self.session.failover.resume(payload["run_id"])
+                if isinstance(result, str):
+                    result = {"message": result}
             elif operation == "scan":
                 self.language.cancel()
                 result = {"kind": "inventory", "inventory": self.session.scan()}
@@ -721,15 +795,28 @@ class WebController:
                 result = {"message": "Proposal cancelled. No movement requested."}
             elif operation == "recovery":
                 self.language.cancel()
-                self.session.acknowledge_recovery()
+                recovery = self.session.acknowledge_recovery()
                 with self._lock:
                     self._check_generation(generation)
                     self._update(stop_requested=False, stop=None)
-                result = {"message": "Inspection acknowledged. No robot command sent. Scan again."}
+                result = (recovery if isinstance(recovery, dict) else
+                          {"message": "Inspection acknowledged. No robot movement sent. Scan again."})
             elif operation == "robot_status":
                 result = self.controls.refresh_status()
             elif operation == "speed":
-                result = self.controls.set_speed(payload["speed"])
+                runner = getattr(self.session, "failover", None)
+                if getattr(runner, "supports_device_speeds", False) is True:
+                    speeds = runner.device_speed_settings()
+                    speeds["primary"] = payload["speed"]
+                    result = runner.set_device_speeds(speeds)
+                else:
+                    result = self.controls.set_speed(payload["speed"])
+            elif operation == "device_speeds":
+                runner = getattr(self.session, "failover", None)
+                if getattr(runner, "supports_device_speeds", False) is not True:
+                    raise SelectionError("Separate device speeds require the automatic failover workflow.")
+                result = runner.set_device_speeds({role: payload[role]
+                    for role in ("primary", "secondary", "tertiary")})
             elif operation == "phase_speeds":
                 result = self.session.set_phase_speeds({key: payload[key] for key in
                     ("pick_lift", "handover", "flip", "placement")})
@@ -808,6 +895,9 @@ class WebController:
             self._closed = True
             self._update(ready=False)
         # Do not pretend closing a UI/server is a physical emergency stop.
+        runner = getattr(self.session, "failover", None)
+        if runner is not None:
+            runner.close()
         finish_batch = getattr(self.session, "finish_batch_when_parked", None)
         if callable(finish_batch):
             finish_batch()

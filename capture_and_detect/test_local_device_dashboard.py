@@ -95,6 +95,17 @@ class LocalDashboardTests(unittest.TestCase):
         self.dashboard.submit(operation, self.payload(**values))
         return self.wait_idle()
 
+    def test_automatic_failover_blocks_manual_worker_activation_but_keeps_local_ui(self):
+        self.dashboard.automatic_failover = True
+        state = self.dashboard.state()
+        self.assertFalse(state["devices"]["can_switch"])
+        self.assertEqual(state["devices"]["active_id"], "mac")
+        self.assertIn("Automatic failover", state["devices"]["message"])
+        with self.assertRaisesRegex(WebError, "Automatic failover"):
+            self.submit("device_select", device_id="pi")
+        self.assertEqual(self.clients["pi"].count("/v1/activate"), 0)
+        self.assertEqual(self.submit("scan")["inventory"]["capture"], self.fixture.session.inventory["capture"])
+
     def test_real_local_preview_has_source_and_rejects_old_context_after_round_trip(self):
         state = self.submit("scan")
         original_payload = self.payload(capture_id=state["inventory"]["capture"], cup_id=1, action="goto")

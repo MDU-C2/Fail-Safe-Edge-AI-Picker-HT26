@@ -37,7 +37,7 @@ function dashboard(initial = snapshot()) {
   const dom = Object.fromEntries(ids.map((id) => [id, element()]));
   const requests = [];
   const context = vm.createContext({ dom, state: initial, connected: true, posting: false, stopPosting: false,
-    phaseSpeedDirty: false, localStopInhibit: false, releaseReview: null, quickGeneration: 0,
+    deviceSpeedDirty: false, phaseSpeedDirty: false, localStopInhibit: false, releaseReview: null, quickGeneration: 0,
     transientError: "", document: { activeElement: null },
     text: (id, value) => { dom[id].textContent = String(value ?? ""); },
     hide: (id, value) => { dom[id].hidden = value; },
@@ -54,13 +54,16 @@ function dashboard(initial = snapshot()) {
   const code = section("  const idle =", "  const isStop =")
     + section("  function robotRequestSupported(", "  function renderRobotControls()")
     + section("  async function post(", "  async function showQuick(")
+    + section('  deviceSpeedKeys.forEach((key) => dom[`device-speed-${key}`].addEventListener', '  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener')
     + section('  phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener', '  dom["robot-status-button"].addEventListener')
     + section("  function renderProposal()", "  function renderSavedCups()")
     + section("  function renderMode()", "  function renderConnection()");
-  vm.runInContext(code + "\nglobalThis.render = renderPhaseSpeedControls; globalThis.send = post; globalThis.review = renderProposal; globalThis.mode = renderMode;", context);
+  vm.runInContext(code + "\nglobalThis.render = () => { renderDeviceSpeedControls(); renderPhaseSpeedControls(); }; globalThis.send = post; globalThis.review = renderProposal; globalThis.mode = renderMode;", context);
   context.render();
   return { dom, context, requests, render: () => context.render(),
     edit(key, value) { dom[`phase-speed-${key}`].value = value; dom[`phase-speed-${key}`].fire("input"); },
+    editDevice(key, value) { dom[`device-speed-${key}`].value = value; dom[`device-speed-${key}`].fire("input"); },
+    async applyDevices() { dom["robot-device-speed-form"].fire("submit"); await new Promise((resolve) => setImmediate(resolve)); },
     async apply() { dom["robot-phase-speed-form"].fire("submit"); await new Promise((resolve) => setImmediate(resolve)); },
   };
 }
@@ -80,6 +83,135 @@ test("stage fields use explicit capability and server-applied values with indepe
     assert.match(page.dom["robot-speed-policy"].textContent, /Loaded pick and cup flip stay capped at 100/);
   }
   assert.equal(page.requests.length, 0);
+});
+
+function deviceSnapshot() {
+  const state = snapshot({ device_epoch: "owner-7", devices: { active_id: "mac", switching: false } });
+  state.motion.device_speeds_supported = true;
+  state.motion.device_speeds = { primary: 250, secondary: 180, tertiary: 120 };
+  return state;
+}
+
+test("device speed fields show server-applied values and replace overall only with explicit support", () => {
+  const page = dashboard(deviceSnapshot());
+  assert.equal(page.dom["robot-device-speeds"].hidden, false);
+  assert.equal(page.dom["robot-speed-form"].hidden, true);
+  assert.equal(page.dom["robot-speed-current"].hidden, true);
+  assert.equal(page.dom["device-speed-primary"].value, "250");
+  assert.equal(page.dom["device-speed-secondary"].value, "180");
+  assert.equal(page.dom["device-speed-tertiary"].value, "120");
+  assert.match(page.dom["device-speed-tertiary-current"].textContent, /Applied: 120 mm\/s/);
+  assert.match(page.dom["robot-device-speed-status"].textContent, /applied for the next batch/);
+  assert.equal(page.dom["robot-device-speed-apply"].disabled, true);
+  assert.match(html, /for="device-speed-primary">MacBook/);
+  assert.match(html, /for="device-speed-secondary">Raspberry Pi/);
+  assert.match(html, /for="device-speed-tertiary">Lynx/);
+  for (const capability of [undefined, false, "true", 1]) {
+    page.context.state.motion.device_speeds_supported = capability; page.render();
+    assert.equal(page.dom["robot-device-speeds"].hidden, true);
+    assert.equal(page.dom["robot-speed-form"].hidden, false);
+    assert.equal(page.dom["robot-speed-current"].hidden, false);
+    assert.equal(page.dom["robot-device-speed-apply"].disabled, true);
+    for (const key of ["primary", "secondary", "tertiary"]) assert.equal(page.dom[`device-speed-${key}`].disabled, true);
+  }
+  assert.equal(page.requests.length, 0);
+});
+
+test("device drafts survive polling and explicit Apply sends all three values with ownership", async () => {
+  const page = dashboard(deviceSnapshot());
+  page.editDevice("primary", "350");
+  page.editDevice("secondary", "220.5");
+  page.editDevice("tertiary", "160");
+  page.context.state.motion.device_speeds = { primary: 260, secondary: 190, tertiary: 130 };
+  page.render();
+  assert.equal(page.dom["device-speed-primary"].value, "350");
+  assert.equal(page.dom["device-speed-secondary"].value, "220.5");
+  assert.match(page.dom["device-speed-primary-current"].textContent, /260 mm\/s/);
+  assert.match(page.dom["robot-device-speed-status"].textContent, /Changes have not been applied/);
+  assert.equal(page.requests.length, 0);
+  await page.applyDevices();
+  assert.deepEqual(JSON.parse(JSON.stringify(page.requests)), [{ url: "/api/device_speeds",
+    body: { primary: 350, secondary: 220.5, tertiary: 160, _device_id: "mac", _device_epoch: "owner-7", request_id: "request-test" },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": "csrf-test" } }]);
+  assert.equal(page.context.deviceSpeedDirty, false);
+});
+
+test("device speed validation rejects every invalid field and accepts inclusive limits", async () => {
+  for (const key of ["primary", "secondary", "tertiary"]) {
+    for (const value of ["", " ", "0", "-1", "1500.1", "NaN", "Infinity", "100x"]) {
+      const page = dashboard(deviceSnapshot()); page.editDevice(key, value);
+      assert.equal(page.dom["robot-device-speed-apply"].disabled, true, `${key}: ${value}`);
+      await page.applyDevices();
+      assert.equal(page.requests.length, 0);
+    }
+  }
+  const page = dashboard(deviceSnapshot());
+  page.editDevice("primary", "1"); page.editDevice("secondary", "1500");
+  await page.applyDevices();
+  assert.equal(page.requests[0].body.primary, 1);
+  assert.equal(page.requests[0].body.secondary, 1500);
+});
+
+test("device settings cannot dispatch after busy, Stop, recovery, connection or capability changes", async () => {
+  for (const change of [{ busy: true }, { ready: false }, { stop_requested: true }, { stop_in_flight: true },
+    { recovery_required: true }, { devices: { switching: true } }]) {
+    const page = dashboard(deviceSnapshot()); page.editDevice("tertiary", "160");
+    Object.assign(page.context.state, change);
+    await page.applyDevices();
+    assert.equal(page.requests.length, 0, JSON.stringify(change));
+    page.render();
+    assert.equal(page.dom["device-speed-tertiary"].disabled, true);
+    assert.equal(page.dom["robot-device-speed-apply"].disabled, true);
+  }
+  for (const flag of ["posting", "stopPosting", "localStopInhibit"]) {
+    const page = dashboard(deviceSnapshot()); page.editDevice("tertiary", "160");
+    page.context[flag] = true;
+    await page.applyDevices(); assert.equal(page.requests.length, 0, flag);
+  }
+  const page = dashboard(deviceSnapshot()); page.editDevice("tertiary", "160");
+  page.context.connected = false;
+  await page.applyDevices(); assert.equal(page.requests.length, 0);
+  page.context.connected = true;
+  vm.runInContext('gatewayRecovery.status = "idle"; gatewayRecovery.queue = { state: "failed" };', page.context);
+  await page.applyDevices(); assert.equal(page.requests.length, 0);
+  vm.runInContext('gatewayRecovery.queue = null;', page.context);
+  page.context.state.motion.device_speeds_supported = false;
+  await page.applyDevices(); assert.equal(page.requests.length, 0);
+});
+
+test("missing device values disable editing and malformed direct payloads cannot dispatch", async () => {
+  const page = dashboard(deviceSnapshot());
+  delete page.context.state.motion.device_speeds.tertiary; page.render();
+  assert.equal(page.dom["robot-device-speeds"].hidden, false);
+  assert.equal(page.dom["device-speed-primary"].disabled, true);
+  assert.match(page.dom["robot-device-speed-status"].textContent, /unavailable/);
+  page.context.state = deviceSnapshot(); page.render();
+  for (const body of [{ primary: 100 }, { primary: 100, secondary: 100, tertiary: "100" },
+    { primary: 100, secondary: 100, tertiary: null }, { primary: 100, secondary: 0, tertiary: 100 }]) {
+    await page.context.send("/api/device_speeds", body);
+  }
+  assert.equal(page.requests.length, 0);
+});
+
+test("shared stage limits are explained separately from each device overall speed", () => {
+  const page = dashboard(deviceSnapshot());
+  assert.equal(page.dom["robot-phase-speeds"].hidden, false);
+  assert.match(page.dom["robot-speed-policy"].textContent, /Stage limits below are shared by all three/);
+  assert.match(page.dom["robot-phase-speed-cap"].textContent, /each device’s overall speed.*lower value/);
+  assert.match(page.dom["phase-speed-pick_lift-current"].textContent, /MacBook applied: 100 mm\/s/);
+  page.context.state.motion.handover.adjusted = true; page.render();
+  assert.match(page.dom["robot-phase-speed-cap"].textContent, /25 mm\/s/);
+});
+
+test("a failed device update keeps the draft and never retries automatically", async () => {
+  const page = dashboard(deviceSnapshot()); page.editDevice("secondary", "210");
+  page.context.response = { ok: false, json: async () => ({ detail: "Finish the current batch first." }) };
+  await page.applyDevices(); page.render();
+  assert.equal(page.requests.length, 1);
+  assert.equal(page.context.deviceSpeedDirty, true);
+  assert.equal(page.dom["device-speed-secondary"].value, "210");
+  assert.match(page.dom["device-speed-secondary-current"].textContent, /180 mm\/s/);
+  assert.match(page.context.transientError, /Finish the current batch/);
 });
 
 test("drafts preserve follow-overall values and only Apply sends the guarded request", async () => {

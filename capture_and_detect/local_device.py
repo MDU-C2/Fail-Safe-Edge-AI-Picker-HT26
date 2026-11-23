@@ -30,7 +30,7 @@ class LocalDeviceClient:
             raise ValueError("Invalid local computer execution mode.")
         required = {"backend", "state_dir", "model", "gateway", "robot_id"}
         optional = {"controller_profile", "runtime_paths", "conf", "depth_frames", "max_result_age",
-                    "inference_timeout", "threads", "speed", "camera_z"}
+                    "inference_timeout", "threads", "speed", "camera_z", "failover"}
         if (not isinstance(value, dict) or not required.issubset(value)
                 or set(value) - required - optional or value["backend"] != "local"):
             raise ValueError("Invalid local computer device configuration.")
@@ -84,9 +84,25 @@ class LocalDeviceClient:
         if paths["table_reference"] != paths["placing_grid"].with_suffix(".table-reference.json"):
             raise ValueError("The table reference must be paired with the configured placement grid.")
         profile = path(value["controller_profile"]) if "controller_profile" in value else root / "controller-status.json"
+        failover_options = {}
+        if "failover" in value:
+            failover = value["failover"]
+            if (not isinstance(failover, dict) or set(failover) != {"coordinator_url", "token_file"}
+                    or not isinstance(failover["coordinator_url"], str)
+                    or not isinstance(failover["token_file"], str) or not failover["token_file"].strip()):
+                raise ValueError("Failover requires coordinator_url and a private token_file.")
+            origin = urlsplit(failover["coordinator_url"])
+            if (origin.scheme not in ("http", "https") or not origin.hostname or origin.username or origin.password
+                    or origin.path not in ("", "/") or origin.query or origin.fragment):
+                raise ValueError("Failover coordinator must be an http(s) origin without credentials.")
+            token_path = (directory / failover["token_file"]).absolute()
+            if token_path.is_symlink() or not token_path.is_file():
+                raise ValueError("Failover coordinator token must be an existing regular file.")
+            failover_options = {"coordinator_url": failover["coordinator_url"].rstrip("/"),
+                                "coordinator_token_file": token_path}
         args = SimpleNamespace(device_id="mac", backend="python", state_dir=root, model=model,
             gateway=gateway.rstrip("/"), robot_id=value["robot_id"], live=mode == "live",
-            controller_profile=profile, **options)
+            controller_profile=profile, **options, **failover_options)
         resources = ExitStack()
         try:
             # This single-operator setup uses no OS file locks. Device ownership

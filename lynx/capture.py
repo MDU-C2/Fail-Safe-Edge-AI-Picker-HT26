@@ -9,7 +9,7 @@ import time
 
 from camera_client import CameraError, NoNewCameraFrame
 from cup_inventory import (SelectionError, atomic_json, build_inventory,
-                           normalize_offset, save_inventory)
+                           finite_number, normalize_offset, save_inventory)
 from table_reference_contract import validate_reference, _identity
 from .placement_records import combine, exclude_placed_cups
 from .raw_images import write_png
@@ -158,7 +158,7 @@ class CaptureService:
                 "cell_size_mm": cell_size, "table_z_mm": self.table_z,
                 "table_reference": self.reference}
 
-    def _observe(self, config):
+    def _observe(self, config, *, require_fresh=False):
         self._check_identity()
         deadline, samples, metadata = time.monotonic() + 10.0, [], []
         for index in range(self.depth_frames):
@@ -168,7 +168,7 @@ class CaptureService:
                     break
                 raise CameraError("Depth sample collection timed out.")
             try:
-                capture = (self.camera.capture_raw if samples else
+                capture = (self.camera.capture_raw if samples or require_fresh else
                            getattr(self.camera, "capture_latest_raw", self.camera.capture_raw))
                 pair = capture(timeout_s=min(remaining, 2.0) if samples else remaining)
             except NoNewCameraFrame:
@@ -200,16 +200,40 @@ class CaptureService:
         self._check_identity()
         return rgb, depth, frame, result
 
+    def _source_presence(self, objects, snapshot, assigned_slots):
+        """Count source cups even when a missing base prevents picking.
+
+        Current-frame grid assignments exclude already placed cups when their
+        depth cannot locate them. Unlocated, unassigned cups remain possible
+        source cups, so they cannot incorrectly trigger an empty-workspace Home.
+        """
+        raw_cups = []
+        for index, obj in enumerate(objects):
+            if obj.get("class") != "CUP":
+                continue
+            located = all(finite_number(obj.get(f"robot_{axis}_mm")) for axis in ("x", "y", "z"))
+            raw_cups.append({"object_index": index,
+                             "x": obj.get("robot_x_mm") if located else None,
+                             "y": obj.get("robot_y_mm") if located else None})
+        exclude_placed_cups(raw_cups, snapshot["locations"], snapshot.get("cell_size_mm", 80.0),
+                            self.calibration.offset)
+        assigned = {index for slot in assigned_slots for cup in slot.get("assigned_cups", [])
+                    for index in cup.get("object_indices", []) if type(index) is int}
+        return {"cup_detections": sum(not cup.get("placement_location_ids")
+                                      and cup["object_index"] not in assigned for cup in raw_cups)}
+
     def capture(self, purpose):
         self._check_identity()
         snapshot = self.grid.snapshot()
         config = self._config(snapshot)
         observations, sequences, model_results = [], [], []
-        count = self.scan_observations if purpose == "scan" else 1
+        grid_scan = purpose in ("scan", "between_cups_grid")
+        require_fresh = purpose in ("between_cups", "between_cups_grid")
+        count = self.scan_observations if grid_scan else 1
         for index in range(count):
             if index:
                 del rgb, depth, result
-            rgb, depth, frame, result = self._observe(config)
+            rgb, depth, frame, result = self._observe(config, require_fresh=require_fresh)
             observations.append(result["slots"])
             sequences.append(frame["sequence"])
             if len(sequences) > 1 and sequences[-1] <= sequences[-2]:
@@ -235,7 +259,7 @@ class CaptureService:
                                     "inference": model_results[-1], "observation_results": model_results})
         inventory["images"]["annotation_status"] = "raw image; cup IDs and grid polygons are in JSON"
         exclude_placed_cups(inventory["cups"], snapshot["locations"], config["cell_size_mm"], self.calibration.offset)
-        observation = (combine(snapshot, observations, sequences) if purpose == "scan" else
+        observation = (combine(snapshot, observations, sequences) if grid_scan else
                        {"frame_count": 1, "slots": observations[-1], "applied": False,
                         "released_ids": [], "message": "Verification image only; placement status unchanged."})
         observation["cell_size_mm"] = config["cell_size_mm"]
@@ -246,6 +270,7 @@ class CaptureService:
             "fit_rms_mm": self.reference["fit"]["rms_mm"],
             "file_sha256": hashlib.sha256(self.reference_raw).hexdigest()}
         inventory["placement_observation"] = observation
+        inventory["source_presence"] = self._source_presence(result["objects"], snapshot, observations[-1])
         self.store.save_capture(inventory, rgb, depth, result["objects"], self.K, purpose)
         print(f"[{purpose}] {len(inventory['cups'])} cup candidates; native inference {result['inference_ms']:.0f} ms", flush=True)
         return inventory, frame["observation_started_monotonic"]

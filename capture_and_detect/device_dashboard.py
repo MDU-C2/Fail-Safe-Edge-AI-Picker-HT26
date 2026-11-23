@@ -133,8 +133,13 @@ class DeviceDashboard:
                     raise ValueError("Invalid configured device.")
                 token_path = (path.parent / value["token_file"]).resolve()
                 clients[name] = DeviceClient(value["url"], read_secret(token_path))
-            return cls(clients, (path.parent / config["state_file"]).resolve(),
-                       initial_device=config["initial_device"], mode=mode)
+            dashboard = cls(clients, (path.parent / config["state_file"]).resolve(),
+                            initial_device=config["initial_device"], mode=mode)
+            dashboard.automatic_failover = bool(mode == "live" and config["devices"]["mac"].get("failover"))
+            if dashboard.automatic_failover and dashboard.record["device_id"] != "mac":
+                dashboard.close()
+                raise ValueError("Select the local computer before enabling automatic failover.")
+            return dashboard
         except BaseException:
             for client in clients.values():
                 if isinstance(client, LocalDeviceClient):
@@ -435,6 +440,9 @@ class DeviceDashboard:
             can_switch = (permitted and current["ready"] and not current["busy"]
                           and not current["recovery_required"] and not current["stop_requested"]
                           and not any(p.get("reserved") for p in (current.get("placement_grid") or {}).get("locations", [])))
+            if getattr(self, "automatic_failover", False):
+                can_switch = False
+                device_message = "Automatic failover is enabled: MacBook → Raspberry Pi → Lynx. Start batches here; returning devices regain priority between cups."
             current["devices"] = {"selected_id": self.record.get("target_id") or device,
                 "active_id": device if self.record["phase"] not in ("new", "handoff_ready") else None,
                 "switching": self._busy_switch or self.record["phase"] != "active",
@@ -459,6 +467,8 @@ class DeviceDashboard:
                     or operation not in ("scan", "select", "batch", "pick_saved")):
                 raise WebError("Assistant actions require the active local computer picker.")
             if operation == "device_select":
+                if getattr(self, "automatic_failover", False):
+                    raise WebError("Automatic failover chooses the robot worker by priority. Start batches from this computer.")
                 if (set(payload) != {"device_id", "request_id"} or payload["device_id"] not in self.clients
                         or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", str(payload["request_id"]))):
                     raise WebError("Invalid device selection.", 422)

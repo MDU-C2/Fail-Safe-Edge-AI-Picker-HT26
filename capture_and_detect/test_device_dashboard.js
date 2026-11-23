@@ -46,7 +46,7 @@ function dashboard(initial = snapshot()) {
     deviceChoice: "", deviceSelectionKey: "", deviceOptionsKey: "", dom,
     selectedId: null, selectedCapture: null, imageCapture: null, imageLoaded: false,
     cardsKey: "", placementsKey: "", savedCupsKey: "", saveSelectionKey: "",
-    speedDirty: false, phaseSpeedDirty: false, controlDeadline: 0, proposalDeadline: 0,
+    speedDirty: false, deviceSpeedDirty: false, phaseSpeedDirty: false, controlDeadline: 0, proposalDeadline: 0,
     releaseReview: null, quickGeneration: 0, transientError: "", pollNumber: 0, appliedPoll: 0,
     document: { createElement: element, createElementNS: (_, tag) => element(tag) },
     text(id, value) { assert.ok(dom[id]); dom[id].textContent = String(value ?? ""); },
@@ -209,7 +209,13 @@ test("every mutation binds to the observed active device and epoch", async () =>
   const paths = ["scan", "start", "batch", "command", "preview", "confirm", "cancel", "recovery", "robot_status", "speed", "phase_speeds", "handover_offset", "control_preview", "control_confirm", "control_cancel", "save_cup", "pick_saved", "forget_cup", "release_locations", "stop", "device_select"];
   for (const path of paths) {
     const page = dashboard();
-    await page.context.send(`/api/${path}`, { device_id: "pi", _device_id: "forged", _device_epoch: "forged" });
+    const payload = { device_id: "pi", _device_id: "forged", _device_epoch: "forged" };
+    if (path === "recovery") {
+      page.context.state.recovery_required = true;
+      page.dom["recovery-ack"].checked = true;
+      payload.acknowledged = true;
+    }
+    await page.context.send(`/api/${path}`, payload);
     assert.equal(page.requests.length, 1, path);
     assert.equal(page.requests[0].body._device_id, "mac", path);
     assert.equal(page.requests[0].body._device_epoch, "epoch-1", path);
@@ -292,7 +298,7 @@ test("epoch changes invalidate local selections, image bindings and reviewed ack
   for (const change of [{ device_epoch: "epoch-2" }, { instance_id: "router-2" }]) {
     const page = dashboard();
     Object.assign(page.context, { selectedId: 2, selectedCapture: "old", imageCapture: "old", imageLoaded: true,
-      proposalDeadline: 9000, controlDeadline: 9000, speedDirty: true, phaseSpeedDirty: true,
+      proposalDeadline: 9000, controlDeadline: 9000, speedDirty: true, deviceSpeedDirty: true, phaseSpeedDirty: true,
       cardsKey: "old", placementsKey: "old", savedCupsKey: "old", saveSelectionKey: "old" });
     page.dom["robot-control-ack"].checked = true; page.dom["recovery-ack"].checked = true;
     page.dom["selection-overlay"].append(element("rect"));
@@ -300,7 +306,7 @@ test("epoch changes invalidate local selections, image bindings and reviewed ack
     page.context.incoming = snapshot(change);
     await page.context.refresh();
     for (const key of ["selectedId", "selectedCapture", "imageCapture"]) assert.equal(page.context[key], null);
-    for (const key of ["imageLoaded", "speedDirty", "phaseSpeedDirty"]) assert.equal(page.context[key], false);
+    for (const key of ["imageLoaded", "speedDirty", "deviceSpeedDirty", "phaseSpeedDirty"]) assert.equal(page.context[key], false);
     assert.equal(page.context.proposalDeadline, 0); assert.equal(page.context.controlDeadline, 0);
     assert.equal(page.dom["robot-control-ack"].checked, false); assert.equal(page.dom["recovery-ack"].checked, false);
     assert.equal(page.dom["selection-overlay"].children.length, 0);

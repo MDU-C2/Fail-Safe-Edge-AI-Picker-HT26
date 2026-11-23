@@ -29,6 +29,7 @@
   let proposalDeadline = 0;
   let controlDeadline = 0;
   let speedDirty = false;
+  let deviceSpeedDirty = false;
   let phaseSpeedDirty = false;
   let releaseReview = null;
   let releaseMessage = "";
@@ -39,11 +40,15 @@
   const cups = () => Array.isArray(state?.inventory?.cups) ? state.inventory.cups : [];
   const currentCup = () => selectedCapture === state?.inventory?.capture ? cups().find((cup) => cup.id === selectedId) : null;
   const idle = () => connected && Boolean(state?.ready) && !state?.busy && !state?.devices?.switching && !posting && !stopPosting;
+  const gatewayRecovery = { status: null, client_id: null, queue: null };
+  const needsRecovery = () => Boolean(state?.recovery_required || (state?.mode === "live"
+    && gatewayRecovery.status === "idle" && !gatewayRecovery.client_id
+    && ["failed", "cancelled"].includes(gatewayRecovery.queue?.state)));
   const actionable = () => idle() && !localStopInhibit && !state?.stop_requested;
-  const controlActionable = () => actionable() && !state?.recovery_required;
+  const controlActionable = () => actionable() && !needsRecovery();
   const canStop = () => connected && Boolean(state?.ready || state?.devices?.active_id) && !stopPosting && !state?.stop_in_flight;
   const isStop = (value) => ["stop", "halt", "stop robot", "stop the robot"].includes(value.trim().toLowerCase().replace(/\s+/g, " "));
-  const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !state?.recovery_required && !localStopInhibit && !state?.stop_requested);
+  const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !needsRecovery() && !localStopInhibit && !state?.stop_requested);
   const pickableCups = () => cups().filter((cup) => cup.selectable && cup.pick_available);
   const placementLocations = () => Array.isArray(state?.placement_grid?.locations) ? state.placement_grid.locations : [];
   const placementAvailable = (location) => location.occupied === false && !location.reserved && !location.vision_blocked;
@@ -498,8 +503,8 @@
       : !state?.ready ? "Wait for the selected controller to become ready."
       : state?.devices?.switching ? "Wait for the device switch, then scan and select a cup."
       : state?.busy || posting || stopPosting ? "Wait for the current operation to finish before selecting an action."
-      : state?.recovery_required ? "Inspect the robot and acknowledge app recovery, then scan again and select a cup."
-      : localStopInhibit || state?.stop_requested ? "Stop is latched. Complete app recovery, then scan again and select a cup."
+      : needsRecovery() ? "Inspect both arms, confirm they are stationary with empty grippers, then use Unblock failed batch and scan again."
+      : localStopInhibit || state?.stop_requested ? "Stop is latched. Use Unblock failed batch after inspection, then scan again and confirm a new pick."
       : state?.proposal ? "Review or cancel the current preview before choosing another action."
       : !safeScan() ? "Scan workspace, then select a cup in the image or the detected cups list."
       : !cup ? "Select one cup in the image or the detected cups list. Picking it opens a preview for your confirmation."
@@ -808,11 +813,45 @@
   };
 
   function robotRequestSupported(path, payload) {
+    if (path === "/api/device_speeds") return state?.motion?.device_speeds_supported === true
+      && !state?.stop_in_flight && validDeviceSpeeds(payload);
     if (path === "/api/phase_speeds") return state?.motion?.phase_speeds_supported === true;
     if (path === "/api/control_preview") return robotActionSupported(payload.action);
     if (path === "/api/control_confirm") return robotActionSupported(state?.robot_controls?.proposal?.action);
     if (path === "/api/robot_status") return robotStatusAvailable();
     return true; // Stop remains a best-effort request; local settings need no gateway action.
+  }
+
+  const deviceSpeedKeys = ["primary", "secondary", "tertiary"];
+  const enteredDeviceSpeeds = () => Object.fromEntries(deviceSpeedKeys.map((key) => {
+    const value = dom[`device-speed-${key}`].value.trim();
+    return [key, value === "" ? NaN : Number(value)];
+  }));
+  const validDeviceSpeeds = (values) => deviceSpeedKeys.every((key) =>
+    Number.isFinite(values?.[key]) && values[key] >= 1 && values[key] <= 1500);
+
+  function renderDeviceSpeedControls() {
+    const supported = state?.motion?.device_speeds_supported === true;
+    const settings = state?.motion?.device_speeds;
+    const enabled = supported && validDeviceSpeeds(settings) && controlActionable() && !state?.stop_in_flight;
+    hide("robot-device-speeds", !supported);
+    hide("robot-speed-form", supported);
+    hide("robot-speed-current", supported);
+    deviceSpeedKeys.forEach((key) => {
+      const input = dom[`device-speed-${key}`];
+      if (!supported || !deviceSpeedDirty) input.value = Number.isFinite(settings?.[key]) ? String(settings[key]) : "";
+      input.disabled = !enabled;
+      text(`device-speed-${key}-current`, `Applied: ${speedText(settings?.[key])}`);
+    });
+    if (!supported) deviceSpeedDirty = false;
+    const entered = enteredDeviceSpeeds();
+    const changed = deviceSpeedKeys.some((key) => entered[key] !== settings?.[key]);
+    dom["robot-device-speed-apply"].disabled = !enabled || !validDeviceSpeeds(entered) || !changed;
+    text("robot-device-speed-status", !supported ? "" : !validDeviceSpeeds(settings) ? "Device speed settings are unavailable."
+      : !enabled ? "Finish the current batch and clear any Stop or recovery before changing device speeds."
+      : !validDeviceSpeeds(entered) ? "Enter a speed from 1 to 1500 mm/s for every device."
+      : changed ? "Changes have not been applied. Apply device speeds before starting the next batch."
+      : "These device speeds are applied for the next batch. No movement is started by changing a speed.");
   }
 
   const phaseSpeedKeys = ["pick_lift", "handover", "flip", "placement"];
@@ -829,9 +868,12 @@
     const supported = motion?.phase_speeds_supported === true;
     const settings = motion?.phase_speed_settings;
     const defaults = motion?.phase_speed_defaults;
+    const deviceProfiles = motion?.device_speeds_supported === true;
     const enabled = supported && controlActionable() && validPhaseSpeeds(settings);
     hide("robot-phase-speeds", !supported);
-    text("robot-speed-policy", supported
+    text("robot-speed-policy", deviceProfiles
+      ? "Set device speeds before starting a batch. Each device uses its own overall limit when it takes control. Stage limits below are shared by all three devices. Changes cancel pending previews."
+      : supported
       ? "Overall speed is the ceiling for every stage. Automatic Home, when enabled, is limited to 200 mm/s and manual Home to 100 mm/s. Changes cancel pending previews and apply to future actions."
       : "Apply sets normal speed and caps automatic Home, when enabled, at this speed, up to 200 mm/s. Applies until restart and cancels pending previews. Loaded pick and cup flip stay capped at 100 mm/s.");
     phaseSpeedKeys.forEach((key) => {
@@ -842,7 +884,7 @@
       input.disabled = !enabled;
       const effective = motion?.phase_speeds?.[key];
       const approach = motion?.handover?.approach_speed;
-      text(`phase-speed-${key}-current`, `Applied: ${speedText(effective)}${key === "handover" && Number.isFinite(approach) && approach !== effective ? ` · Receiving: ${speedText(approach)}` : ""}`);
+      text(`phase-speed-${key}-current`, `${deviceProfiles ? "MacBook applied" : "Applied"}: ${speedText(effective)}${key === "handover" && Number.isFinite(approach) && approach !== effective ? ` · Receiving: ${speedText(approach)}` : ""}`);
       const defaultValue = defaults?.[key];
       text(`phase-speed-${key}-default`, Number.isFinite(defaultValue) ? `Default: ${speedText(defaultValue)}`
         : defaultValue === null && phaseSpeedNullable(key) ? "Default: follow overall" : "Default unavailable");
@@ -857,7 +899,9 @@
       : !validPhaseSpeeds(entered) ? "Enter a speed from 1 to 1500 mm/s. Right receiving and placement may be left blank to follow overall."
       : changed ? "Changes have not been applied. Review the values, then apply stage speeds." : "These settings are applied. No movement is started by changing a speed.");
     const aligned = state?.motion?.handover?.adjusted === true;
-    text("robot-phase-speed-cap", aligned
+    text("robot-phase-speed-cap", deviceProfiles
+      ? `These stage limits apply to each device’s overall speed: the lower value is used. Blank right handover or placement follows that device’s overall speed.${aligned ? " Adjusted handover alignment also limits the receiving approach to 25 mm/s." : " The cup flip keeps its reduced acceleration."}`
+      : aligned
       ? "Each applied speed is limited by overall speed. The adjusted handover alignment also limits the right receiving approach to 25 mm/s. Blank right receiving or placement follows overall speed."
       : "Each applied speed is limited by overall speed. Blank right receiving or placement follows overall speed. The cup flip keeps its reduced acceleration.");
   }
@@ -872,10 +916,12 @@
     const enteredSpeed = Number(dom["robot-speed-input"].value);
     const validSpeed = dom["robot-speed-input"].value.trim() !== "" && Number.isFinite(enteredSpeed) && enteredSpeed >= 1 && enteredSpeed <= 1500;
     const speedChanged = enteredSpeed !== currentSpeed || Math.min(enteredSpeed, 200) !== state?.motion?.home_speed;
-    dom["robot-speed-input"].disabled = !enabled;
-    dom["robot-speed-button"].disabled = !enabled || !validSpeed || !speedChanged;
+    const deviceProfiles = state?.motion?.device_speeds_supported === true;
+    dom["robot-speed-input"].disabled = !enabled || deviceProfiles;
+    dom["robot-speed-button"].disabled = !enabled || deviceProfiles || !validSpeed || !speedChanged;
     const home = state?.motion?.home_after_cup ? `Sequence home ${speedText(state?.motion?.home_speed)}` : "Automatic home off";
     text("robot-speed-current", `Applied overall ${speedText(currentSpeed)} · ${home}.`);
+    renderDeviceSpeedControls();
     renderPhaseSpeedControls();
     renderReleaseLocations();
     text("robot-home-speed", `Manual home: ${speedText(controls?.home_speed ?? (Number.isFinite(currentSpeed) ? Math.min(currentSpeed, 100) : null))}.`);
@@ -903,14 +949,14 @@
     }
     const discoveryReason = capabilityText("robot_status", "reason");
     text("robot-capability-notice", `Only supported gateway controls are shown. Review and confirm each robot action.${discoveryReason && robotCapability("robot_status")?.supported !== true ? ` ${discoveryReason}` : ""}`);
-    dom["robot-local-recovery-button"].disabled = !idle() || !state?.recovery_required;
-    text("robot-controls-badge", !connected ? "Disconnected" : state?.recovery_required ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
+    dom["robot-local-recovery-button"].disabled = !idle() || !needsRecovery();
+    text("robot-controls-badge", !connected ? "Disconnected" : needsRecovery() ? "Inspection needed" : state?.mode === "live" ? "Live controls" : "Preview only");
     dom["robot-controls-panel"].classList.toggle("live", state?.mode === "live");
     text("robot-rapid-state", snapshot?.execution_state ? humanize(snapshot.execution_state) : "Not read");
     text("robot-controller-state", snapshot?.controller_state ? humanize(snapshot.controller_state) : "Not read");
     text("robot-operation-mode", snapshot?.operation_mode ? humanize(snapshot.operation_mode) : "Not read");
     text("robot-status-time", snapshot ? `${state?.mode === "demo" ? "Demo snapshot" : state?.mode === "dry_run" ? "Dry-run snapshot" : "Read from controller"}${snapshot.read_at ? ` · ${clockText(snapshot.read_at)}` : ""}. Refresh before recovery; this is not a continuous safety monitor.` : "Refresh to read the robot controller.");
-    const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : state?.recovery_required ? "Inspect both arms and the cup, then use Acknowledge app recovery to clear the local block. This does not clear the robot’s collision fault." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
+    const inhibit = !connected ? "Reconnect to the app before using robot controls. Displayed status may be stale." : needsRecovery() ? "Inspect both arms and confirm they are stationary with empty grippers, then use Unblock failed batch. Resolve controller faults on the FlexPendant first. Scan again and confirm a new batch after recovery." : localStopInhibit || state?.stop_requested ? "Stop is latched. New robot actions remain blocked until recovery is acknowledged." : state?.busy || posting ? "One action is in progress. Robot controls will be available when it finishes." : state?.mode !== "live" ? "Preview mode: these controls will not send physical robot commands." : "";
     text("robot-control-inhibit", inhibit);
     hide("robot-control-inhibit", !inhibit);
     hide("robot-control-proposal", !proposal || localStopInhibit || state?.stop_requested);
@@ -979,7 +1025,7 @@
     const waitingForGrid = batch?.state === "waiting_for_grid";
     const waitingForCups = batch?.state === "waiting_for_cups";
     const homingWhenEmpty = batch?.state === "homing_when_empty";
-    text("activity-status", !connected ? "Offline" : busy ? "Working" : state?.recovery_required ? "Check required" : "Idle");
+    text("activity-status", !connected ? "Offline" : busy ? "Working" : needsRecovery() ? "Check required" : "Idle");
     dom["activity-indicator"].classList.toggle("busy", connected && busy);
     let title = state?.message || "Ready for your next action";
     let description = "Scan the workspace, then select a cup or type a command.";
@@ -994,7 +1040,7 @@
       description = `${unpickable ? "Cups are still detected, so the arms stay clear while the camera looks for a pickable cup." : "Pick all is still active."} The camera keeps refreshing; picking resumes automatically when a pickable source cup and a clear grid cell are available. Stop ends the run.`;
     }
     else if (busy) { title = progress?.step ? humanize(progress.step) : humanize(state.operation || "Processing request"); description = state.mode === "live" ? "Follow the controller status. Use physical safety controls if needed." : "Processing locally. No physical movement is enabled."; }
-    else if (state.recovery_required) { title = "Operator inspection required"; description = "Acknowledge recovery only after checking both arms and the cup."; }
+    else if (needsRecovery()) { title = "Failed batch needs inspection"; description = "Inspect both arms, confirm they are stationary with empty grippers, then use Unblock failed batch. Scan again before starting a new batch."; }
     else if (state.robot_controls?.proposal) { title = "Review the robot control action"; description = "Inspect both arms and the held cup, then confirm the preview in Robot controls. Nothing has been sent to the robot yet."; }
     else if (state.proposal) { title = "Waiting for your confirmation"; description = `Review the action for ${state.proposal.action === "goto_all" ? state.proposal.dynamic_batch ? "all current workspace cups, including changes during the run" : `cups ${(state.proposal.cup_ids || []).join(", ")}` : `cup ${state.proposal.cup_id}`}. No movement has been requested yet.`; }
     else if (state.error) { title = "Request blocked or interrupted"; description = asMessage(state.error); }
@@ -1002,7 +1048,7 @@
     else if (state.inventory) description = "Choose a detected cup to see its available actions.";
     text("operation-title", asMessage(title));
     text("operation-description", description);
-    text("operation-symbol", !connected ? "○" : state?.error || state?.recovery_required || localStopInhibit ? "!" : busy ? "↻" : state?.proposal ? "◇" : "✓");
+    text("operation-symbol", !connected ? "○" : state?.error || needsRecovery() || localStopInhibit ? "!" : busy ? "↻" : state?.proposal ? "◇" : "✓");
     const showProgress = !waitingForGrid && !waitingForCups && !homingWhenEmpty && progress && Number.isFinite(progress.total) && progress.total > 0;
     hide("progress-section", !showProgress);
     if (showProgress) {
@@ -1056,7 +1102,7 @@
   function renderControls() {
     const canAct = actionable();
     const pending = Boolean(state?.proposal);
-    dom["start-button"].disabled = !canAct || pending || Boolean(state?.recovery_required);
+    dom["start-button"].disabled = !canAct || pending || Boolean(needsRecovery());
     dom["stop-button"].disabled = !canStop();
     dom["status-button"].disabled = !connected || quickPosting;
     dom["help-button"].disabled = !connected || quickPosting;
@@ -1065,8 +1111,8 @@
     const command = dom["command-input"].value.trim();
     const readOnly = ["status", "help"].includes(command.toLowerCase());
     dom["command-input"].disabled = !connected || !state?.ready;
-    dom["command-button"].disabled = isStop(command) ? !canStop() : readOnly ? !connected || quickPosting : !canAct || pending || Boolean(state?.recovery_required) || !command;
-    document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = !canAct || pending || (!state?.llm_enabled && !button.dataset.direct) || Boolean(state?.recovery_required); });
+    dom["command-button"].disabled = isStop(command) ? !canStop() : readOnly ? !connected || quickPosting : !canAct || pending || Boolean(needsRecovery()) || !command;
+    document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = !canAct || pending || (!state?.llm_enabled && !button.dataset.direct) || Boolean(needsRecovery()); });
     renderSelectedActions();
     const pickable = pickableCups();
     const capacity = availableLocations().length;
@@ -1075,8 +1121,8 @@
     text("batch-hint", !safeScan() ? "Scan again before selecting a batch." : !gridReady() ? "Load a valid placement grid before picking." : !capacity ? "No available placement locations remain." : state?.motion?.dynamic_batch ? `Pick all follows the current workspace after every placement, including moved and new cups. ${capacity} destination${capacity === 1 ? "" : "s"} available.${state?.motion?.between_cup_grid_check ? " Grid occupancy also refreshes; camera-cleared cells can be reused." : ""}${state?.motion?.continuous_batch ? " When the workspace is empty, both arms go Home once; the camera keeps watching for new cups until Stop." : ""} Single-cup actions still pick only one cup.` : capacity < pickable.length ? `Room for ${capacity} of ${pickable.length} cups. The preview selects the highest confidence cups that fit.` : "Review every cup and destination before confirming.");
     dom["batch-button"].disabled = !canAct || pending || !safeScan() || !pickable.length || !gridReady() || !capacity;
     dom["cancel-button"].disabled = !canAct || !pending;
-    dom["recovery-button"].disabled = !idle() || !dom["recovery-ack"].checked || !state?.recovery_required;
-    dom["recovery-ack"].disabled = !idle();
+    dom["recovery-button"].disabled = !idle() || Boolean(state?.stop_in_flight) || !dom["recovery-ack"].checked || !needsRecovery();
+    dom["recovery-ack"].disabled = !idle() || Boolean(state?.stop_in_flight);
     document.querySelectorAll(".cup-card").forEach((card) => { card.disabled = !connected || Boolean(state?.busy) || posting || pending; });
     text("model-label", state?.mode === "demo" ? "Sample commands · demo" : "Commands · use Assistant for Astra");
     text("command-hint", "Start prepares a batch. Stop, status and help also work while the controller is busy. Every movement requires confirmation.");
@@ -1096,13 +1142,31 @@
     renderSelection();
     renderPlacements();
     renderProposal();
-    hide("recovery-panel", !state?.recovery_required || Boolean(state?.busy));
+    hide("recovery-panel", !needsRecovery());
     renderActivity();
     renderControls();
     renderNavigation();
   }
 
+  function receiveGatewayState(value) {
+    const before = JSON.stringify(gatewayRecovery);
+    gatewayRecovery.status = value?.status || "unavailable";
+    gatewayRecovery.client_id = value?.client_id || null;
+    gatewayRecovery.queue = value?.queue ? {
+      state: value.queue.state, owner: value.queue.owner, fingerprint: value.queue.fingerprint || null,
+    } : null;
+    // Poll timestamps and labels are not inspection evidence. A changed
+    // queue, control owner, or availability always requires a fresh check.
+    if (JSON.stringify(gatewayRecovery) !== before) dom["recovery-ack"].checked = false;
+    if (state) render();
+  }
+
   async function readState() {
+    // Busy/message updates do not change the inspection, but ownership,
+    // recovery, Stop, and motion evidence must invalidate acknowledgement.
+    const recoveryContext = (snapshot) => JSON.stringify([snapshot?.instance_id, snapshot?.device_epoch,
+      snapshot?.recovery_required, snapshot?.stop_requested,
+      snapshot?.stop_in_flight, snapshot?.stop, snapshot?.progress]);
     const number = ++pollNumber;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500);
@@ -1138,6 +1202,7 @@
         proposalDeadline = 0;
         controlDeadline = 0;
         speedDirty = false;
+        deviceSpeedDirty = false;
         phaseSpeedDirty = false;
         dom["recovery-ack"].checked = false;
         dom["robot-control-ack"].checked = false;
@@ -1145,7 +1210,7 @@
           ? "The controller restarted. Review its current state and scan again before selecting a cup."
           : "The active device changed. Scan again before selecting a cup.";
       }
-      if (state?.recovery_required !== incoming.recovery_required) dom["recovery-ack"].checked = false;
+      if (recoveryContext(state) !== recoveryContext(incoming)) dom["recovery-ack"].checked = false;
       if (state?.robot_controls?.proposal?.token !== incoming.robot_controls?.proposal?.token) {
         dom["robot-control-ack"].checked = false;
         if (incoming.robot_controls?.proposal) dom["robot-controls-panel"].open = true;
@@ -1165,6 +1230,7 @@
       if (number < appliedPoll) return;
       appliedPoll = number;
       connected = false;
+      dom["recovery-ack"].checked = false;
       if (releaseReview) cancelReleaseReview("Connection lost. Review the current placement locations after reconnecting.");
       if (!state) transientError = "Could not reach the local controller. Keep the web app process running and this page will reconnect.";
       render();
@@ -1186,8 +1252,10 @@
       return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
     const stopping = path === "/api/stop";
-    const adminMutation = ["/api/speed", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
+    const adminMutation = ["/api/speed", "/api/device_speeds", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
     const permitted = stopping ? canStop() : path === "/api/device_select" ? deviceSwitchAllowed(payload.device_id) : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
+    if (needsRecovery() && ["/api/start", "/api/batch", "/api/select", "/api/confirm", "/api/command"].includes(path)) return;
+    if (path === "/api/recovery" && (state?.stop_in_flight || !needsRecovery() || !dom["recovery-ack"].checked || payload.acknowledged !== true)) return;
     if (!permitted || !state?.csrf_token || !robotRequestSupported(path, payload)) return;
     const deviceEpoch = state.device_epoch;
     const ownerContext = state.devices ? { _device_id: state.devices.active_id, _device_epoch: deviceEpoch } : {};
@@ -1207,8 +1275,12 @@
       window.dispatchEvent?.(new CustomEvent("assistant-local-stop"));
       proposalDeadline = 0;
       controlDeadline = 0;
+      dom["recovery-ack"].checked = false;
       dom["robot-control-ack"].checked = false;
     } else posting = true;
+    // Each explicit recovery attempt consumes the inspection acknowledgement.
+    // A rejection or unknown result must never silently retry the same approval.
+    if (path === "/api/recovery") dom["recovery-ack"].checked = false;
     transientError = "";
     render();
     const controller = new AbortController();
@@ -1229,6 +1301,7 @@
       }
       if (!response.ok || !result.accepted) throw new Error(asMessage(result.detail || result.error) || `Request rejected (${response.status}).`);
       if (path === "/api/speed") speedDirty = false;
+      if (path === "/api/device_speeds") deviceSpeedDirty = false;
       if (path === "/api/phase_speeds") phaseSpeedDirty = false;
       await readState();
       if (path !== "/api/device_select" && state?.instance_id !== instance) transientError = "The controller restarted during this request. Check the current state; the request was not retried.";
@@ -1361,6 +1434,12 @@
     event.preventDefault();
     if (!dom["robot-speed-button"].disabled) post("/api/speed", { speed: Number(dom["robot-speed-input"].value) });
   });
+  deviceSpeedKeys.forEach((key) => dom[`device-speed-${key}`].addEventListener("input", () => { deviceSpeedDirty = true; renderDeviceSpeedControls(); }));
+  dom["robot-device-speed-form"].addEventListener("submit", (event) => {
+    event.preventDefault();
+    const values = enteredDeviceSpeeds();
+    if (!dom["robot-device-speed-apply"].disabled && validDeviceSpeeds(values)) post("/api/device_speeds", values);
+  });
   phaseSpeedKeys.forEach((key) => dom[`phase-speed-${key}`].addEventListener("input", () => { phaseSpeedDirty = true; renderPhaseSpeedControls(); }));
   dom["robot-phase-speed-form"].addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1418,6 +1497,7 @@
   window.addEventListener("assistant-preview-ready", () => {
     readState();
   });
+  window.addEventListener("gateway-state", (event) => receiveGatewayState(event.detail));
   setInterval(updateCountdown, 250);
   setInterval(updateControlCountdown, 250);
   async function poll() {
@@ -1425,4 +1505,134 @@
     setTimeout(poll, 700);
   }
   poll();
+})();
+
+/* Read-only device readback. This never changes workflow selection or sends a command. */
+(() => {
+  "use strict";
+  const element = (id) => document.getElementById(id);
+  const panel = element("active-device-panel");
+  if (!panel) return;
+  let current = null;
+  let online = false;
+  let disconnected = false;
+  let gateway = null;
+  const roles = { primary: "cloud", secondary: "pi", tertiary: "lynx" };
+  const names = { cloud: "Cloud", pi: "Raspberry Pi", lynx: "Lynx" };
+  const wording = (value, fallback) => typeof value === "string" && value.trim() ? value : fallback;
+
+  function workflowView() {
+    const devices = current?.devices;
+    const entries = Array.isArray(devices?.entries) ? devices.entries : [];
+    const active = entries.find((entry) => entry?.id === devices.active_id);
+    const view = { eyebrow: "UI WORKFLOW DEVICE", name: active ? wording(active.label, "Computer") : "Local workflow",
+      device: active?.id || "unknown", tone: "neutral", status: "Not ready", detail: "Waiting for the workflow to be ready." };
+    if (devices?.switching) {
+      return { ...view, name: "Switching device…", tone: "attention", status: "Switching", detail: "Waiting for the device change to be confirmed." };
+    }
+    if (devices && !active) {
+      return { ...view, name: "None confirmed", status: "Waiting", detail: "Choose an available device to run the UI workflow." };
+    }
+    const startup = typeof active?.status === "string" ? active.status.trim().toLowerCase() : "";
+    if (active?.available === false || startup === "startup failed") {
+      return { ...view, tone: "attention", status: "Unavailable", detail: "The UI workflow device is unavailable." };
+    }
+    if (startup === "starting") return { ...view, status: "Starting", detail: "Loading the picker and detection model." };
+    if (current?.ready) {
+      return { ...view, tone: "active", status: current.busy ? "Running" : "Ready",
+        detail: current.busy ? "Running the current UI workflow." : "Ready for the next UI action." };
+    }
+    return view;
+  }
+
+  function deviceView() {
+    const empty = { eyebrow: "CURRENT DEVICE", name: "Connecting…", status: "Checking", tone: "neutral", device: "unknown", detail: "Waiting for device status." };
+    if (!online) return current || disconnected ? { ...empty, name: "Status unavailable", status: "Disconnected", tone: "attention", detail: "The dashboard connection is unavailable. Current device is unconfirmed." } : empty;
+    if (current.mode === "demo") return { ...empty, name: "Demo workspace", status: "Preview", detail: "Sample scene · no robot device is active in this demo." };
+    if (current.mode === "dry_run") {
+      const view = workflowView();
+      return ["Running", "Ready"].includes(view.status)
+        ? { ...view, status: "Dry run", tone: "neutral", detail: "Detection and previews · this workflow sends no robot movements." }
+        : { ...view, detail: `Dry run · ${view.detail}` };
+    }
+    if (!gateway || gateway.status === "unconfigured") return workflowView();
+    if (gateway.status === "connecting") return { ...empty, detail: "Checking which device holds robot control." };
+    if (!["active", "idle"].includes(gateway.status)) return { ...empty, name: "Device unconfirmed", status: "Unavailable", tone: "attention", detail: "Gateway device status is unavailable. Waiting for a fresh update." };
+    const inControl = gateway.status === "active";
+    const device = inControl && Object.hasOwn(names, gateway.device_id) ? gateway.device_id : "unknown";
+    const view = { ...empty, eyebrow: "ROBOT CONTROL", name: inControl ? wording(gateway.label, "Other controller") : "No active device",
+      device, status: inControl ? "In control" : "Idle", tone: inControl ? "active" : "neutral", route: true,
+      detail: inControl ? `${wording(gateway.label, "Other controller")} controller role · confirmed by the gateway.` : "No device currently holds robot control." };
+    const queue = gateway.queue;
+    if (queue?.state === "running") {
+      if (!inControl && queue.owner && queue.label) {
+        return { ...view, eyebrow: "CURRENT QUEUE", name: queue.label, device: roles[queue.owner] || "unknown", status: "Finishing queue",
+          tone: "attention", detail: "An accepted queue is finishing; no device currently holds control." };
+      }
+      if (inControl && queue.owner && queue.owner !== gateway.client_id) {
+        return { ...view, status: "Taking over", tone: "attention", detail: `Finishing a queue from ${wording(queue.label, "the previous controller")}.` };
+      }
+    }
+    if (["failed", "cancelled"].includes(queue?.state)) {
+      return { ...view, status: "Queue " + queue.state, tone: "attention", detail: `The ${wording(queue.label, "previous controller")} queue ${queue.state}.` };
+    }
+    return view;
+  }
+
+  function renderDevice() {
+    const view = deviceView();
+    panel.dataset.tone = view.tone;
+    panel.dataset.device = view.device;
+    for (const [id, value] of Object.entries({ "active-device-eyebrow": view.eyebrow, "active-device-name": view.name,
+      "active-device-state-text": view.status, "active-device-detail": view.detail })) {
+      const target = element(id);
+      if (target.textContent !== value) target.textContent = value;
+    }
+    element("active-device-route").hidden = !view.route;
+    for (const id of Object.keys(names)) {
+      const item = element("active-device-" + id);
+      const label = wording(gateway?.names?.[id], names[id]);
+      if (item.textContent !== label) item.textContent = label;
+      // The route highlights the lease holder; a predecessor queue is described separately.
+      const confirmed = view.route && gateway?.status === "active" && gateway.device_id === id;
+      if (confirmed) item.setAttribute("aria-current", "true");
+      else item.removeAttribute("aria-current");
+    }
+  }
+
+  window.addEventListener("assistant-state", (event) => {
+    current = event.detail;
+    online = true;
+    disconnected = false;
+    renderDevice();
+  });
+  window.addEventListener("assistant-disconnected", () => {
+    online = false;
+    disconnected = true;
+    renderDevice();
+  });
+
+  async function pollDevice() {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3500);
+    try {
+      const response = await fetch("/api/active_device", { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+      // An existing UI process may still be serving the previous backend while a cup finishes.
+      if (response.status === 404 || response.status === 405) gateway = { status: "unconfigured" };
+      else {
+        if (!response.ok) throw new Error("Device status unavailable");
+        const result = await response.json();
+        if (!result || typeof result !== "object" || Array.isArray(result) || typeof result.status !== "string") throw new Error("Invalid device status");
+        gateway = result;
+      }
+    } catch (_) {
+      gateway = { status: "unavailable" };
+    } finally {
+      clearTimeout(timeout);
+      window.dispatchEvent(new CustomEvent("gateway-state", { detail: gateway }));
+      renderDevice();
+      setTimeout(pollDevice, 1500);
+    }
+  }
+  pollDevice();
 })();

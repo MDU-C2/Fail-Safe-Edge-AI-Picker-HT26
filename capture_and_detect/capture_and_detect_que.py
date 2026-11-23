@@ -28,6 +28,9 @@ Every time you press Enter:
        they are.
        With --left-only the right arm stays still: the left arm picks the cup, lifts it to
        TRAVEL_Z, puts it back where it stood, lets go and stays above it.
+    Robot control is held across capture, detection, every cup and the final Home.
+    A lost or uncertain renewal blocks further submissions; a cup already accepted
+    into the gateway queue can finish independently.
 
 A cup is a CUP BASE inside a detected CUP (the robot's joint was once seen as a CUP BASE).
 
@@ -165,6 +168,8 @@ USE_QUEUE = True           # send the whole hand-over as one queue; --per-step s
 QUEUE_MAX_STEPS = 64       # the gateway accepts 1..64 steps
 QUEUE_POLL = 0.3           # s between GET /robot/rws/queue while it runs
 QUEUE_TIMEOUT = 300        # s: give up waiting for the queue (it keeps running on the gateway)
+CONTROL_LEASE_SECONDS = 5.0
+CONTROL_RENEW_SECONDS = 2.0
 
 
 def log(*parts):
@@ -197,9 +202,13 @@ class Gateway:
     def __init__(self, url, token):
         self.api = url.rstrip("/") + "/api/v1"
         self.headers = {"Authorization": f"Bearer {token}"}
-        self.holding = False                       # NEW: standby holds the lease for the whole run
-        self.lost = threading.Event()              # NEW: set when a renew is refused (control lost)
-        self._renew_stop = None                    # NEW: stops the whole-run renew thread
+        self.holding = False                       # Persistent standby ownership, not a scoped batch.
+        self.lost = threading.Event()
+        self._control_depth = 0
+        self._control_lock = threading.RLock()
+        self._lease_deadline = None
+        self._renew_stop = None
+        self._renew_thread = None
 
     def get(self, path):
         """GET; stop with a clear message on auth/connection errors."""
@@ -235,38 +244,96 @@ class Gateway:
 
     @contextmanager
     def control(self):
-        """Hold robot control for the with-block: the lease lasts 5 s, so a thread
-        renews it every 2 s; it is released at once at the end."""
-        if self.holding:                           # NEW: standby already holds it for the whole run,
-            yield                                  # so neither acquire again (409) nor release per cup
-            return
-        r = self.post("/control/acquire", timeout=10)
-        if r.status_code != 200:
-            raise SystemExit(f"Cannot take robot control ({r.status_code}): {r.text}")
-        stop = threading.Event()
+        """Renew one lease across the outer scope; nested cup/Home scopes reuse it.
+
+        Standby owns its lease until drop(), independently of these scopes.
+        The lock prevents another local thread mistaking an active batch for
+        its own nested scope. Arm workers only check ownership before dispatch.
+        """
+        with self._control_lock:
+            if self.holding or self._control_depth:
+                self.check_control()
+                self._control_depth += 1
+                try:
+                    yield
+                finally:
+                    self._control_depth -= 1
+                return
+            started = time.monotonic()
+            r = self.post("/control/acquire", timeout=10)
+            if r.status_code != 200:
+                raise SystemExit(f"Cannot take robot control ({r.status_code}): {r.text}")
+            self.lost.clear()
+            self._lease_deadline = started + CONTROL_LEASE_SECONDS
+            self._control_depth = 1
+            try:
+                self._start_renewing()
+                self.check_control()
+                yield
+            finally:
+                self._control_depth = 0
+                self._stop_renewing()
+                self._release_control()
+
+    def check_control(self):
+        """Refuse new submissions once ownership is lost, expired or unknown."""
+        if (not self.holding and not self._control_depth
+                or self._lease_deadline is None
+                or time.monotonic() >= self._lease_deadline):
+            self.lost.set()
+        if self.lost.is_set():
+            raise RobotError("Robot control is no longer confirmed; no new commands will be sent.")
+
+    def _start_renewing(self):
+        stop = self._renew_stop = threading.Event()
 
         def renew():
-            while not stop.wait(2):
+            while not stop.wait(CONTROL_RENEW_SECONDS):
+                if self.lost.is_set():
+                    return
+                started = time.monotonic()
                 try:
-                    self.post("/control/renew", timeout=5).raise_for_status()
+                    r = self.post("/control/renew", timeout=5)
                 except requests.RequestException as e:
-                    log(f"  lease renew failed: {e}")
+                    if not stop.is_set():
+                        self.lost.set()
+                        log(f"  CONTROL LOST: lease renewal is unknown ({type(e).__name__}).")
+                    return
+                if stop.is_set() or self.lost.is_set():
+                    return
+                if r.status_code != 200:
+                    self.lost.set()
+                    log(f"  CONTROL LOST: renew refused ({r.status_code}): {r.text}")
+                    return
+                # Measure from request start so a delayed response cannot extend
+                # our local ownership estimate past the gateway's five seconds.
+                self._lease_deadline = started + CONTROL_LEASE_SECONDS
 
-        threading.Thread(target=renew, daemon=True).start()
-        try:
-            yield
-        finally:
-            stop.set()
+        self._renew_thread = threading.Thread(target=renew, daemon=True)
+        self._renew_thread.start()
+
+    def _stop_renewing(self):
+        if self._renew_stop is not None:
+            self._renew_stop.set()
+        if self._renew_thread is not None:
+            self._renew_thread.join(timeout=6)
+        self._renew_stop = None
+        self._renew_thread = None
+
+    def _release_control(self):
+        if not self.lost.is_set():
             try:
                 self.post("/control/release", timeout=5)
             except requests.RequestException:
-                pass                               # the lease runs out by itself after 5 s
+                pass                               # The gateway lease expires by itself.
+        self._lease_deadline = None
 
     # ---------------- NEW: standby ----------------
 
     def try_acquire(self):
         """One try to take control. (True, lease) if we got it, (False, why) if not:
         another client holds it (409), or the gateway cannot be reached."""
+        started = time.monotonic()
         try:
             r = self.post("/control/acquire", timeout=10)
         except requests.RequestException as e:
@@ -274,6 +341,7 @@ class Gateway:
         if r.status_code in (401, 403):
             raise SystemExit(f"Gateway refused the token ({r.status_code}): {r.text}")
         if r.status_code == 200:
+            self._lease_deadline = started + CONTROL_LEASE_SECONDS
             return True, r.json().get("lease", {})
         try:
             return False, r.json().get("detail", r.text)
@@ -281,36 +349,16 @@ class Gateway:
             return False, f"HTTP {r.status_code}"
 
     def hold(self):
-        """Keep the lease we just acquired until drop(): renew every 2 s. A refused renew
-        (another client took control) sets `lost`; a network error is retried."""
+        """Keep the acquired standby lease; any uncertain renewal latches loss."""
         self.lost.clear()
         self.holding = True
-        stop = self._renew_stop = threading.Event()
-
-        def renew():
-            while not stop.wait(2):
-                try:
-                    r = self.post("/control/renew", timeout=5)
-                except requests.RequestException as e:
-                    log(f"  lease renew failed: {e}")
-                    continue
-                if r.status_code != 200:
-                    log(f"  CONTROL LOST: renew refused ({r.status_code}): {r.text}")
-                    self.lost.set()
-                    return
-
-        threading.Thread(target=renew, daemon=True).start()
+        self._start_renewing()
 
     def drop(self):
         """Stop renewing and release the lease (if we still have it)."""
-        if self._renew_stop:
-            self._renew_stop.set()
+        self._stop_renewing()
         self.holding = False
-        if not self.lost.is_set():
-            try:
-                self.post("/control/release", timeout=5)
-            except requests.RequestException:
-                pass                               # it runs out by itself after 5 s
+        self._release_control()
 
     def arm_busy(self, arm):
         """True while the arm works on a job, also one another client started."""
@@ -327,9 +375,13 @@ class Gateway:
         """POST the whole sequence. (True, queue) when accepted (202), else (False, reason).
         Nothing runs unless every step passes the gateway's checks (422/409/503)."""
         try:
+            self.check_control()
+        except RobotError as e:
+            return False, str(e)
+        try:
             r = self.post("/robot/rws/queue", timeout=30, body={"steps": steps})
         except requests.RequestException as e:
-            return False, f"gateway unreachable: {e}"
+            return False, f"queue submission completion unknown ({type(e).__name__}); command not retried"
         if r.status_code in (200, 202):
             return True, r.json()
         return False, f"HTTP {r.status_code}: {r.text}"
@@ -344,6 +396,10 @@ class Gateway:
         """DELETE: running -> cancel (the jobs running now finish, nothing more is sent);
         done/failed/cancelled -> clear to idle. Needs the lease."""
         try:
+            self.check_control()
+        except RobotError as e:
+            return str(e)
+        try:
             r = requests.delete(self.api + "/robot/rws/queue", headers=self.headers, timeout=10)
         except requests.RequestException as e:
             return f"gateway unreachable: {e}"
@@ -352,6 +408,7 @@ class Gateway:
     def robot_job(self, arm, path, body):
         """POST one job to /robot/rws/<path> and wait until the arm has done it.
         True if the robot accepts the job and reports DONE; prints the reply either way."""
+        self.check_control()
         try:
             r = self.post(f"/robot/rws/{path}", timeout=JOB_TIMEOUT, body={"arm": arm, **body})
         except requests.RequestException as e:
@@ -1050,6 +1107,13 @@ class Picker:
         log(f"Done. {self.captures} captures saved.")
 
     def capture_once(self):
+        # A standby must not take over a healthy primary between cups or while
+        # it is capturing/detecting. Nested move_one/go_home scopes reuse this
+        # lease; a persistent standby owner keeps its existing whole-run lease.
+        with self.gateway.control():
+            return self._capture_once_controlled()
+
+    def _capture_once_controlled(self):
         rgb, depth, depths = depth_average.capture_averaged(self.gateway, DEPTH_FRAMES)
         log(f"Depth: mean of {len(depths)} frame(s)")
         t = time.perf_counter()
@@ -1068,7 +1132,7 @@ class Picker:
         placed = 0
         while self.move_one(cups, stamp):          # all cups of this capture, most certain first
             placed += 1
-        if placed and not any(c["status"] == "failed" for c in cups):
+        if placed and not self.gateway.lost.is_set() and not any(c["status"] == "failed" for c in cups):
             self.go_home()                         # all done: home once, not between cups
         out_of_reach = sum(c["status"] == "out of reach" for c in cups)
         if out_of_reach:
@@ -1113,6 +1177,8 @@ class Picker:
         while True:
             if not self.wait_for_queue():          # NEW: a queued cup must end first (see wait_for_queue)
                 return False
+            if self.gateway.lost.is_set():
+                return True                        # Return to standby without taking recovery actions.
             log("  Takeover: waiting until both arms are idle ...")
             deadline = time.monotonic() + JOB_TIMEOUT
             while any(self.gateway.arm_busy(a) for a in ("left", "right")):
@@ -1161,6 +1227,8 @@ class Picker:
             return True
         shown = None
         while True:
+            if self.gateway.lost.is_set():
+                return True
             try:
                 q = self.gateway.queue_status()
             except requests.HTTPError as e:
@@ -1196,7 +1264,12 @@ class Picker:
         """Capture and pick without Enter while we hold control. False: the person chose to quit;
         True: control was lost (back to standby)."""
         while not self.gateway.lost.is_set():
-            cups = self.capture_once()
+            try:
+                cups = self.capture_once()
+            except RobotError:
+                if self.gateway.lost.is_set():
+                    break
+                raise
             if self.gateway.lost.is_set():
                 break
             if any(c["status"] == "failed" for c in cups):
@@ -1238,6 +1311,11 @@ class Picker:
         True if it was placed, False if there was none left or it failed (then stop)."""
         cup = next((c for c in cups if c["status"] == "waiting"), None)
         if cup is None:
+            return False
+        try:
+            self.gateway.check_control()
+        except RobotError as error:
+            log(f"  STOP: {error}")
             return False
         places, place = None, None
         if not self.left_only:

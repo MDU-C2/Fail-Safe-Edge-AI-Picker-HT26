@@ -1,7 +1,6 @@
 #include "http/server.hpp"
 
-#include <sys/socket.h>
-#include <sys/time.h>
+#include <chrono>
 
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/ip/tcp.hpp>
@@ -11,6 +10,7 @@
 #include <boost/beast/websocket/rfc6455.hpp>
 
 #include "http/websocket_session.hpp"
+#include "http/idle_deadline_stream.hpp"
 #include "util/log.hpp"
 #include "util/text.hpp"
 #include "util/thread.hpp"
@@ -74,7 +74,7 @@ void parse_target(
 // ================================================================
 
 bool write_response(
-    tcp::socket& socket,
+    IdleDeadlineStream& stream,
     const Response& response,
     unsigned version,
     bool keep_alive
@@ -97,7 +97,7 @@ bool write_response(
 
     bhttp::response_serializer<bhttp::empty_body> serializer{header};
 
-    bhttp::write_header(socket, serializer, error);
+    bhttp::write_header(stream, serializer, error);
 
     if (error) {
         return false;
@@ -105,7 +105,7 @@ bool write_response(
 
     if (response.body_size() > 0) {
         net::write(
-            socket,
+            stream,
             net::buffer(response.body_data(), response.body_size()),
             error
         );
@@ -115,34 +115,23 @@ bool write_response(
 }
 
 void write_error(
-    tcp::socket& socket,
+    IdleDeadlineStream& stream,
     int status,
     const char* detail
 ) {
-    write_response(socket, error_response(status, detail), 11, false);
+    write_response(stream, error_response(status, detail), 11, false);
 }
 
 // ================================================================
 // Connections
 // ================================================================
 
-void set_receive_timeout(
-    tcp::socket& socket,
-    int seconds
-) {
-    timeval timeout{};
-
-    timeout.tv_sec = seconds;
-
-    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-}
-
 void serve_connection(
     tcp::socket socket,
     const Router& router,
     const ServerOptions& options
 ) {
-    set_receive_timeout(socket, options.keep_alive_seconds);
+    IdleDeadlineStream stream(socket, std::chrono::seconds(options.keep_alive_seconds));
 
     beast::flat_buffer buffer;
 
@@ -154,10 +143,10 @@ void serve_connection(
         parser.body_limit(options.max_body_bytes);
         parser.header_limit(64 * 1024);
 
-        bhttp::read_header(socket, buffer, parser, error);
+        bhttp::read_header(stream, buffer, parser, error);
 
         if (error == bhttp::error::header_limit) {
-            write_error(socket, 431, "Request Header Fields Too Large");
+            write_error(stream, 431, "Request Header Fields Too Large");
             return;
         }
 
@@ -173,17 +162,17 @@ void serve_connection(
         if (bhttp::token_list(header[bhttp::field::expect]).exists("100-continue")) {
             bhttp::response<bhttp::empty_body> go_on{bhttp::status::continue_, header.version()};
 
-            bhttp::write(socket, go_on, error);
+            bhttp::write(stream, go_on, error);
 
             if (error) {
                 return;
             }
         }
 
-        bhttp::read(socket, buffer, parser, error);
+        bhttp::read(stream, buffer, parser, error);
 
         if (error == bhttp::error::body_limit) {
-            write_error(socket, 413, "Request Entity Too Large");
+            write_error(stream, 413, "Request Entity Too Large");
             return;
         }
 
@@ -221,10 +210,11 @@ void serve_connection(
                 forbidden.content_type = "text/plain; charset=utf-8";
                 forbidden.body = "Forbidden";
 
-                write_response(socket, forbidden, 11, false);
+                write_response(stream, forbidden, 11, false);
                 return;
             }
 
+            stream.restore_blocking();
             run_websocket(std::move(socket), std::move(message), std::move(request), *handler, WebSocketOptions{});
 
             return;
@@ -236,7 +226,7 @@ void serve_connection(
 
         const bool keep_alive = message.keep_alive();
 
-        if (!write_response(socket, response, message.version(), keep_alive) || !keep_alive) {
+        if (!write_response(stream, response, message.version(), keep_alive) || !keep_alive) {
             beast::error_code ignored;
 
             socket.shutdown(tcp::socket::shutdown_send, ignored);
@@ -287,7 +277,8 @@ void Server::run() {
         socket.set_option(tcp::no_delay(true), error);
 
         if (connections_.load() >= options_.max_connections) {
-            write_error(socket, 503, "Too many connections");
+            IdleDeadlineStream stream(socket, std::chrono::seconds(options_.keep_alive_seconds));
+            write_error(stream, 503, "Too many connections");
             continue;
         }
 
