@@ -89,7 +89,7 @@
   }
 
   // Workspace navigation changes only the local view, never controller state.
-  const workspaceTabs = ["pick", "assistant", "robot", "settings"];
+  const workspaceTabs = ["pick", "assistant", "robot", "scene", "settings"];
   let activeWorkspaceTab = "pick";
   const navigationProposalKeys = { pick: null, robot: null };
 
@@ -813,6 +813,8 @@
   };
 
   function robotRequestSupported(path, payload) {
+    if (path === "/api/pick-height") return state?.motion?.pick_height_supported === true
+      && typeof payload.camera_z === "boolean" && !state?.stop_in_flight;
     if (path === "/api/device_speeds") return state?.motion?.device_speeds_supported === true
       && !state?.stop_in_flight && validDeviceSpeeds(payload);
     if (path === "/api/phase_speeds") return state?.motion?.phase_speeds_supported === true;
@@ -820,6 +822,20 @@
     if (path === "/api/control_confirm") return robotActionSupported(state?.robot_controls?.proposal?.action);
     if (path === "/api/robot_status") return robotStatusAvailable();
     return true; // Stop remains a best-effort request; local settings need no gateway action.
+  }
+
+  function renderPickHeight() {
+    const supported = state?.motion?.pick_height_supported === true;
+    const mode = state?.motion?.camera_z;
+    const enabled = supported && typeof mode === "boolean" && controlActionable() && !state?.stop_in_flight;
+    for (const [id, camera] of [["pick-height-fixed", false], ["pick-height-camera", true]]) {
+      dom[id].setAttribute("aria-pressed", String(mode === camera));
+      dom[id].disabled = !enabled || mode === camera;
+    }
+    const description = mode === true ? "Camera depth: cup-base height + 20 mm, with a 40 mm minimum."
+      : mode === false ? "Fixed height: 70 mm for every cup." : "Pickup height is unavailable.";
+    text("pick-height-status", !supported ? "Update this device to change pickup height."
+      : `${description} ${enabled ? "Choose before starting. Changing it cancels pending previews; applies until restart." : "Finish the batch and clear any Stop or recovery to change it."}`);
   }
 
   const deviceSpeedKeys = ["primary", "secondary", "tertiary"];
@@ -1129,6 +1145,7 @@
     dom["command-input"].placeholder = state?.llm_enabled ? "Pick cup two…" : "Try goto 2 or hover 2…";
     updateCountdown();
     renderRobotControls();
+    renderPickHeight();
     renderSavedCups();
   }
 
@@ -1252,7 +1269,7 @@
       return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     }
     const stopping = path === "/api/stop";
-    const adminMutation = ["/api/speed", "/api/device_speeds", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
+    const adminMutation = ["/api/pick-height", "/api/speed", "/api/device_speeds", "/api/phase_speeds", "/api/control_preview", "/api/control_confirm", "/api/control_cancel", "/api/save_cup", "/api/pick_saved", "/api/forget_cup"].includes(path);
     const permitted = stopping ? canStop() : path === "/api/device_select" ? deviceSwitchAllowed(payload.device_id) : path === "/api/release_locations" ? releaseActionable() : ["/api/recovery", "/api/robot_status"].includes(path) ? idle() : adminMutation ? controlActionable() : actionable();
     if (needsRecovery() && ["/api/start", "/api/batch", "/api/select", "/api/confirm", "/api/command"].includes(path)) return;
     if (path === "/api/recovery" && (state?.stop_in_flight || !needsRecovery() || !dom["recovery-ack"].checked || payload.acknowledged !== true)) return;
@@ -1430,6 +1447,11 @@
     if (dom["release-locations-confirm"].disabled || !releaseReview || !releaseActionable() || releaseReview.context !== releaseContext(state)) return;
     post("/api/release_locations", { fingerprint: releaseReview.fingerprint, acknowledged: true });
   });
+  for (const [id, camera] of [["pick-height-fixed", false], ["pick-height-camera", true]]) {
+    dom[id].addEventListener("click", () => {
+      if (!dom[id].disabled) post("/api/pick-height", { camera_z: camera });
+    });
+  }
   dom["robot-speed-form"].addEventListener("submit", (event) => {
     event.preventDefault();
     if (!dom["robot-speed-button"].disabled) post("/api/speed", { speed: Number(dom["robot-speed-input"].value) });

@@ -32,7 +32,7 @@ function dashboard() {
     document: { querySelectorAll() { return []; } },
     text(id, value) { dom[id].textContent = String(value ?? ""); },
     hide(id, hidden) { dom[id].hidden = hidden; },
-    renderSelectedActions() {}, updateCountdown() {}, renderRobotControls() {}, renderSavedCups() {},
+    renderSelectedActions() {}, updateCountdown() {}, renderRobotControls() {}, renderPickHeight() {}, renderSavedCups() {},
     post(url) { requests.push(url); },
   });
   vm.runInContext(section("  const cups =", "  const releaseActionable =")

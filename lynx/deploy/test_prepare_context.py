@@ -27,6 +27,8 @@ class ContextTests(unittest.TestCase):
             "capture_and_detect/placing_grid.json": "live-state", "capture_and_detect/best.pt": "weights",
             "capture_and_detect/web_static/index.html": "<!doctype html>",
             "capture_and_detect/web_static/secret.json": "private",
+            "capture_and_detect/web_static/3d/secret.json": "private",
+            "capture_and_detect/web_static/3d/unrelated.js": "private",
             "lynx/app.py": "pass\n", "lynx/native/CMakeLists.txt": "project(test)",
             "lynx/native/worker.cpp": "int main() {}", "lynx/deploy/Dockerfile": "FROM scratch",
             "lynx/deploy/start.sh": "#!/bin/sh\n", "lynx/deploy/requirements-arm64.lock": "",
@@ -55,6 +57,7 @@ class ContextTests(unittest.TestCase):
             "terminal_commands", "operator_commands", "language_commands", "local_llm",
             "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
             "workspace_check", "queued_robot_client", "failover_coordinator", "failover_workflow", "failover_worker",
+            "robot_telemetry",
         }
         self.cli_runtime = {
             "__init__", "picker", "capture", "raw_images", "model", "resources",
@@ -62,6 +65,8 @@ class ContextTests(unittest.TestCase):
         }
         files.update({"capture_and_detect/" + name + ".py": "# shared control\n"
                       for name in self.cli_control})
+        files.update({"capture_and_detect/web_static/3d/" + name: "model asset\n"
+                      for name in prepare_context.VIEWER_ASSETS})
         files.update({"lynx/" + name + ".py": "# lean runtime\n"
                       for name in self.cli_runtime})
         for name, content in files.items():
@@ -80,7 +85,10 @@ class ContextTests(unittest.TestCase):
         self.assertIn("app/capture_and_detect/picker_workflow.py", files)
         self.assertIn("app/capture_and_detect/picker_depth.py", files)
         self.assertIn("model/manifest.json", files)
-        for forbidden in (".env", "auth_clients.json", "calibration.json", "placing_grid.json", "best.pt", "unrelated.pt", "secret.json"):
+        self.assertEqual({name for name in files if "/web_static/3d/" in name},
+                         {"app/capture_and_detect/web_static/3d/" + name
+                          for name in prepare_context.VIEWER_ASSETS})
+        for forbidden in (".env", "auth_clients.json", "calibration.json", "placing_grid.json", "best.pt", "unrelated.pt", "secret.json", "unrelated.js"):
             self.assertFalse(any(path.name == forbidden for path in output.rglob("*")), forbidden)
         self.assertFalse(any(path.name.startswith("test_") for path in output.rglob("*")))
         manifest = json.loads((output / "source-manifest.json").read_text())
@@ -98,6 +106,13 @@ class ContextTests(unittest.TestCase):
             prepare_context.stage(self.repo, self.model, self.root)
         (self.model / "manifest.json").unlink()
         with self.assertRaisesRegex(ValueError, "prepare a validated model"):
+            prepare_context.stage(self.repo, self.model, self.root / "context")
+
+    def test_refuses_symlinked_viewer_asset(self):
+        source = self.repo / "capture_and_detect/web_static/3d/yumi_model.bin"
+        source.unlink()
+        source.symlink_to(self.repo / "gateway/.env")
+        with self.assertRaisesRegex(ValueError, "regular source file"):
             prepare_context.stage(self.repo, self.model, self.root / "context")
 
     def test_cli_stages_only_control_runtime_and_selects_cli_build_inputs(self):

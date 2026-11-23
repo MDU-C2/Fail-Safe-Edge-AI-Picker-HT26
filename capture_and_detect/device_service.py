@@ -98,6 +98,8 @@ class PickerHandler(BaseHTTPRequestHandler):
             agent = self.server.agent
             routes = {"/v1/health": agent.health, "/v1/state": agent.state,
                       "/v1/handoff": agent.last_handoff}
+            if callable(getattr(agent, "robot_pose", None)):
+                routes["/v1/robot-pose"] = agent.robot_pose
             if self.path in routes:
                 self.json_response(200, routes[self.path]())
                 return

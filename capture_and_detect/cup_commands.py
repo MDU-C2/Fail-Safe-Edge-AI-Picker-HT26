@@ -103,7 +103,7 @@ class CupSession:
 
     @property
     def camera_z(self):
-        """Pick-height policy is fixed when this session is constructed."""
+        """Pick-height policy; changes must pass the idle-operation guards."""
         return self._camera_z
 
     @property
@@ -1097,6 +1097,34 @@ class CupSession:
                 "phase_speeds": normalize_phase_speeds(self.phase_speeds),
                 "effective_phase_speeds": phases,
                 "handover": handover_settings(self.handover_offset, phases["handover"])}
+
+    def set_pick_height(self, camera_z):
+        """Select the existing height policy for future, newly reviewed plans."""
+        if type(camera_z) is not bool:
+            raise SelectionError("camera_z must be a boolean")
+        runner = getattr(self, "failover", None)
+        if runner is not None:
+            # An idle local UI may have handed its batch to Pi or Lynx. The
+            # shared admission lock and run state must also allow this change.
+            return runner.set_pick_height(camera_z)
+        if not self._activity_lock.acquire(blocking=False):
+            raise SelectionError("Wait for the active operation before changing pickup height.")
+        try:
+            return self._set_pick_height_locked(camera_z)
+        finally:
+            self._activity_lock.release()
+
+    def _set_pick_height_locked(self, camera_z):
+        """Apply after the caller holds this session's activity lock."""
+        if type(camera_z) is not bool:
+            raise SelectionError("camera_z must be a boolean")
+        self._check_stop()
+        if self.motion_uncertain or self.recovery is not None and self.recovery.required():
+            raise SelectionError("Inspect and acknowledge recovery before changing pickup height.")
+        self._camera_z = camera_z
+        self.batch_progress = None
+        return {"message": "Pickup height updated for the next pick. Review a new preview before confirming.",
+                "camera_z": camera_z}
 
     def set_phase_speeds(self, settings):
         """Change only future plans under the same admission lock as execution."""

@@ -83,6 +83,8 @@ class DeviceDashboard:
         if self.astra_named_matching:
             self.labels["mac"] = {"darwin": "MacBook", "win32": "Windows PC"}.get(sys.platform, "This PC")
         self._lock = threading.RLock()
+        self._pose_lock = threading.Lock()
+        self._pose_cache = None
         self._stop = threading.Event()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-handoff")
         self._poller = None
@@ -389,6 +391,7 @@ class DeviceDashboard:
             fresh = time.monotonic() - cached.get("observed_at", 0) < 5
             owned = bool(health and self._owned(health, context))
             current = copy.deepcopy(cached.get("state") or self._empty)
+            current["pose_clock_id"] = current.get("instance_id")
             permitted = fresh and owned and self.record["phase"] == "active" and not self._busy_switch and not self._closed
             current.update(instance_id=self._instance, csrf_token=self._csrf, device_epoch=self._epoch)
             if not permitted:
@@ -509,6 +512,52 @@ class DeviceDashboard:
         result["capture_id"] = (state.get("inventory") or {}).get("capture")
         result["source"] = "Cached selected-device state; not a live robot status query."
         return result
+
+    def robot_pose(self):
+        """Forward read-only telemetry from the same worker as /api/state.
+
+        Coalesce open viewers into one bounded request. A stale response from
+        an earlier device selection or restarted controller is discarded.
+        """
+        unavailable = {"source": "unavailable", "arms": {"left": None, "right": None},
+                       "clock_id": None}
+        with self._lock:
+            device, epoch = self.record["device_id"], self._epoch
+            if self._closed or self._busy_switch or self.record["phase"] != "active":
+                return {**unavailable, "device_id": device, "device_epoch": epoch}
+            cached = self._cache.get(device, {})
+            clock_id = (cached.get("state") or {}).get("instance_id")
+            health = cached.get("health") or {}
+            if ((health.get("features") or {}).get("robot_pose") is not True
+                    or not clock_id or not self._owned(health, self.record["context"] or {})
+                    or time.monotonic() - cached.get("observed_at", 0) >= 5):
+                return {**unavailable, "device_id": device, "device_epoch": epoch}
+            identity = (device, epoch, clock_id)
+            prior = self._pose_cache
+            fallback = ({**unavailable, "device_id": device, "device_epoch": epoch,
+                         "clock_id": clock_id} if prior is None or prior[0] != identity
+                        else copy.deepcopy(prior[2]))
+            if prior is not None and prior[0] == identity and time.monotonic() - prior[1] < .1:
+                return fallback
+        if not self._pose_lock.acquire(blocking=False):
+            return fallback
+        try:
+            try:
+                pose = self.clients[device].request("/v1/robot-pose", timeout=1.0)
+            except (WebError, OSError, ValueError):
+                pose = unavailable
+            with self._lock:
+                current_clock = (self._cache.get(device, {}).get("state") or {}).get("instance_id")
+                if (self._closed or self._busy_switch or self.record["phase"] != "active"
+                        or (self.record["device_id"], self._epoch, current_clock) != identity):
+                    return {**unavailable, "device_id": self.record["device_id"], "device_epoch": self._epoch}
+                if not isinstance(pose, dict) or pose.get("clock_id") != clock_id:
+                    pose = unavailable
+                result = {**pose, "device_id": device, "device_epoch": epoch, "clock_id": clock_id}
+                self._pose_cache = (identity, time.monotonic(), copy.deepcopy(result))
+                return result
+        finally:
+            self._pose_lock.release()
 
     def help(self):
         return WebController.help()

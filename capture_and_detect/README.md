@@ -95,6 +95,43 @@ scene with the destination layout used by the next controller.
 UI backend unless an entry point is explicitly named. They do not add features
 or checks to the V4 terminal capture workflow.**
 
+### Pickup height selector
+
+The **Pick cups → Pickup height** control chooses the policy before a single pick
+or batch preview. **Fixed height** is the UI default: the pickup TCP is 70 mm.
+**Camera depth** uses the same calculation as the terminal workflow:
+`max(40, round(cup_base_z + 20, 1))` mm. The existing flange/gripper conversion is
+applied once. The mode only changes the pickup descent; handover, parking,
+placement and travel retain their existing plans.
+
+Changing the mode cancels pending cup and robot-control previews, sends no robot
+command and retains the current scan and grid. It is blocked while local or shared
+work is active, Stop is latched, or a receipt still needs recovery. Review a new
+preview after changing it. The choice lasts until this controller restarts; its
+startup `--camera-z` option still sets the initial value. Confirmed failover batch
+settings include this policy, so Pi and Lynx apply it when continuing the batch.
+Older workers already understand that batch setting; editing it directly on a
+selected remote worker requires the updated device service.
+
+### YuMi 3D view
+
+The **3D view** tab integrates the model from branch `3d`. It shows measured arm
+joints, grippers, cups inferred from the latest scan/completed steps, and placement
+cells. Cup drawings are an illustration of workflow state, not live object tracking.
+Live readings can lag and are marked stale when too old; a missing arm reading is
+not represented as a measured home pose. Demo mode is explicitly simulated.
+
+The viewer follows the selected UI device. Device changes and controller restarts
+reset interpolation and cup playback; pose and step timestamps always come from
+the same worker clock. Older remote services report telemetry unavailable until
+updated. The read-only telemetry connection uses sequential GET requests and
+backs off on errors. Polling and animation stop when the tab/page is hidden.
+No gateway or RAPID update is needed.
+
+The bundled model and three.js module are served locally from `web_static/3d/`.
+To rebuild the model from RobotStudio STL exports, see `tools/build_yumi_model.py`;
+the three.js bundle entry and rebuild command are in `tools/three-bundle-entry.js`.
+
 Scan captures one averaged-depth observation and establishes the cups and
 destinations reviewed for single picks or a batch. The **MacBook UI refreshes
 source cups and placement-grid occupancy after every successful live placement**, including the

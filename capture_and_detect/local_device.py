@@ -125,7 +125,8 @@ class LocalDeviceClient:
     def request(self, path, body=None, **kwargs):
         if self._closed:
             raise WebError("The local computer picker is closed.", 503)
-        reads = {"/v1/state": self.agent.state, "/v1/health": self.agent.health, "/v1/handoff": self.agent.last_handoff}
+        reads = {"/v1/state": self.agent.state, "/v1/health": self.agent.health,
+                 "/v1/handoff": self.agent.last_handoff, "/v1/robot-pose": self.agent.robot_pose}
         writes = {"/v1/activate": self.agent.activate, "/v1/deactivate": self.agent.deactivate,
                   "/v1/command": self.agent.submit}
         if body is None and path in reads:

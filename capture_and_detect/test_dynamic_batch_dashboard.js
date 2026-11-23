@@ -32,7 +32,7 @@ function page() {
     actionable() { return true; }, canStop() { return true; }, safeScan() { return true; },
     gridReady() { return true; }, idle() { return true; }, isStop() { return false; },
     pickableCups() { return [{ id: 1 }, { id: 2 }]; }, availableLocations() { return [{ id: 8 }, { id: 9 }]; },
-    renderSelectedActions() {}, renderRobotControls() {}, renderSavedCups() {},
+    renderSelectedActions() {}, renderRobotControls() {}, renderPickHeight() {}, renderSavedCups() {},
     document: { querySelectorAll() { return []; } },
   });
   vm.runInContext(section("  const gatewayRecovery =", "  const actionable =")

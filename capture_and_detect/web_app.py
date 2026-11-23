@@ -107,6 +107,27 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return FileResponse(HERE / "web_static" / asset)
 
+    # 3D view: vendored three.js bundle, viewer module and the YuMi model.
+    viewer_assets = {"viewer3d.js": "text/javascript", "pose_interpolation.js": "text/javascript",
+                     "cup_holding.js": "text/javascript",
+                     "three-bundle.min.js": "text/javascript",
+                     "yumi_model.json": "application/json", "yumi_model.bin": "application/octet-stream"}
+
+    @app.get("/static/3d/{asset}")
+    def viewer_asset(asset: str):
+        if asset not in viewer_assets:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return FileResponse(HERE / "web_static" / "3d" / asset, media_type=viewer_assets[asset])
+
+    @app.get("/api/robot-pose")
+    def robot_pose():
+        # Read-only telemetry. Controllers without it (e.g. a remote device
+        # proxy) report it as unavailable instead of failing the page.
+        read = getattr(controller, "robot_pose", None)
+        if not callable(read):
+            return {"source": "unavailable", "arms": {"left": None, "right": None}}
+        return read()
+
     @app.get("/api/state")
     def state():
         return controller.state()
@@ -233,6 +254,8 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
 
     @app.post("/api/{operation}")
     async def command(operation: str, request: Request):
+        if operation == "pick-height":
+            operation = "pick_height"
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             return JSONResponse({"detail": "Send a JSON request."}, status_code=415)
         raw = bytearray()

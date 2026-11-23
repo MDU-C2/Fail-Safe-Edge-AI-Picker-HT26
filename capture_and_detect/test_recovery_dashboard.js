@@ -52,7 +52,7 @@ function dashboard() {
   });
   for (const name of ["renderMode", "renderConnection", "renderDevices", "renderInference", "renderStop",
     "renderInventory", "renderSelection", "renderPlacements", "renderProposal", "renderActivity", "renderNavigation",
-    "renderSelectedActions", "updateCountdown", "renderRobotControls", "renderSavedCups"]) context[name] = () => {};
+    "renderSelectedActions", "updateCountdown", "renderRobotControls", "renderPickHeight", "renderSavedCups"]) context[name] = () => {};
   vm.runInContext(section("  const cups =", "  const selectedIds =")
     + section("  function updateCountdown()", "  function renderActivity()")
     + section("  function renderControls()", "  async function showQuick(")

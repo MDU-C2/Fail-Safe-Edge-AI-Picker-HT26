@@ -157,6 +157,54 @@ class FailoverRunner:
                 self.session._activity_lock.release()
             self._execution.release()
 
+    def set_pick_height(self, camera_z):
+        """Change the next batch's height policy without altering admitted work."""
+        if type(camera_z) is not bool:
+            raise SelectionError("camera_z must be a boolean")
+        if self.role != "primary":
+            raise SelectionError("Only the primary UI can change pickup height.")
+        if not self._execution.acquire(blocking=False):
+            raise SelectionError("Wait for the shared batch before changing pickup height.")
+        activity_acquired = False
+        try:
+            activity_acquired = self.session._activity_lock.acquire(blocking=False)
+            if not activity_acquired or self.executing or self._closed.is_set():
+                raise SelectionError("Wait for the active operation before changing pickup height.")
+            self.session._check_stop()
+            if (self.session.motion_uncertain
+                    or self.session.recovery is not None and self.session.recovery.required()):
+                raise SelectionError("Inspect and acknowledge recovery before changing pickup height.")
+            pending = self.robot._read_pending(self.pending_path)
+            if pending is not None and not pending["reconciled"]:
+                # Match speed preferences: a proved completed local receipt is
+                # historical evidence, and changing future settings must leave
+                # both that receipt and its placement callbacks untouched.
+                completed = pending["state"] == "done" and pending["callbacks_applied"]
+                if completed:
+                    queue = self.robot._validate_queue_status(pending.get("queue"))
+                    completed = (queue["state"] == "done"
+                        and queue.get("owner") == pending["expected_owner"]
+                        and queue.get("started_at") == pending.get("started_at")
+                        and self.robot._signature(queue["steps"]) ==
+                            self.robot._signature(pending["steps"], submitted=True))
+                if not completed:
+                    raise SelectionError("Resolve the previous queue receipt before changing pickup height.")
+            state = self.coordinator.state()
+            if not isinstance(state, dict) or "run" not in state or "head" not in state:
+                raise SelectionError("Shared batch status is unavailable; pickup height is unchanged.")
+            run, head = state["run"], state["head"]
+            if run is not None and (not isinstance(run, dict) or run.get("phase") not in {"complete", "stopped", "blocked"}):
+                raise SelectionError("Stop or finish the shared batch before changing pickup height.")
+            if head is not None and (not isinstance(head, dict) or head.get("state") not in {"done", "not_submitted"}):
+                raise SelectionError("Shared queue recovery is required before changing pickup height.")
+            # Camera height is already part of the original motion contract, so
+            # existing standbys require no new queue or coordinator capability.
+            return self.session._set_pick_height_locked(camera_z)
+        finally:
+            if activity_acquired:
+                self.session._activity_lock.release()
+            self._execution.release()
+
     def settings(self):
         session = self.session
         grid = session.placing_grid._read()

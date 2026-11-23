@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/assistant.js" defer></script>
+  <script type="module" src="/static/3d/viewer3d.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -37,6 +38,7 @@
         <button id="nav-pick" class="workspace-tab" type="button" role="tab" data-workspace-tab="pick" aria-controls="view-pick" aria-selected="true">Pick cups</button>
         <button id="nav-assistant" class="workspace-tab" type="button" role="tab" data-workspace-tab="assistant" aria-controls="view-assistant" aria-selected="false" tabindex="-1">Assistant</button>
         <button id="nav-robot" class="workspace-tab" type="button" role="tab" data-workspace-tab="robot" aria-controls="view-robot" aria-selected="false" tabindex="-1">Robot controls</button>
+        <button id="nav-scene" class="workspace-tab" type="button" role="tab" data-workspace-tab="scene" aria-controls="view-scene" aria-selected="false" tabindex="-1">3D view</button>
         <button id="nav-settings" class="workspace-tab" type="button" role="tab" data-workspace-tab="settings" aria-controls="view-settings" aria-selected="false" tabindex="-1">Settings</button>
       </nav><div class="utility-actions"><button id="status-button" class="button button-secondary" type="button" disabled>Status</button><button id="help-button" class="button button-secondary" type="button" disabled>Help</button></div></div>
       <section id="quick-panel" class="panel quick-panel" hidden aria-live="polite"><div><h2 id="quick-title"></h2><button id="quick-close" class="cancel-button" type="button">Close</button></div><pre id="quick-content"></pre></section>
@@ -65,6 +67,14 @@
               <div class="cup-section"><div class="section-heading"><h3>Detected cups</h3><span id="cup-helper">IDs belong to the current scan</span></div><div id="cup-list" class="cup-list"><p class="empty-list">Your detected cups will appear here.</p></div></div><div id="selection-tools" class="selection-tools"><div class="selected-summary"><span id="selected-label">Pick one selected cup</span><span id="selected-status"></span></div><div class="action-buttons"><button id="pick-button" class="button button-primary" type="button" disabled>Pick selected cup</button><button id="hover-button" class="button button-secondary" type="button" disabled>Hover above</button></div><p id="selected-reason" class="selected-reason" role="status">Scan workspace, then select a cup in the image or the detected cups list.</p>
 
           </div>
+              <section id="pick-height-settings" class="pick-height-settings" aria-labelledby="pick-height-heading">
+                <div class="section-heading"><h3 id="pick-height-heading">Pickup height</h3></div>
+                <div class="pick-height-options" role="group" aria-label="Pickup height">
+                  <button id="pick-height-fixed" class="pick-height-option" type="button" aria-pressed="false" disabled><strong>Fixed height</strong><span>70 mm</span></button>
+                  <button id="pick-height-camera" class="pick-height-option" type="button" aria-pressed="false" disabled><strong>Camera depth</strong><span>Follows each cup</span></button>
+                </div>
+                <p id="pick-height-status" class="fine-print" role="status">Loading pickup height…</p>
+              </section>
               <div class="batch-section"><div class="section-heading"><h3>Pick a batch</h3></div><p>Preview all available cups from this scan, or scan again to prepare a new batch.</p><div id="batch-tools" class="batch-tools" hidden><div><strong id="batch-summary"></strong><p id="batch-hint">Review every cup and destination before confirming.</p></div><button id="batch-button" class="button button-secondary" type="button" disabled>Preview available cups</button></div><button id="start-button" class="button button-primary" type="button" disabled>Scan &amp; prepare batch</button></div>
               <details class="secondary-details command-details"><summary>Type a command</summary><div class="command-panel"><h3 id="command-heading" class="sr-only">Command input</h3><form id="command-form"><label class="sr-only" for="command-input">Command for the robot</label><textarea id="command-input" rows="2" maxlength="2000" placeholder="Pick cup two…" disabled></textarea><div class="command-footer"><span id="model-label"><span class="status-dot"></span> Local controller</span><button class="send-button" id="command-button" type="submit" aria-label="Interpret command" disabled><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 15 10-10M5 5h10v10"/></svg></button></div></form><div class="examples" aria-label="Example commands"><span>TRY</span><button type="button" data-example="Which cups are available?">Available cups</button><button type="button" data-example="Hover above the rightmost cup">Hover rightmost</button><button type="button" data-example="Pick all available cups" data-direct="true">Pick all cups</button></div><p id="command-hint" class="fine-print">Every movement starts with an action preview.</p></div></details>
             </section>
@@ -84,6 +94,14 @@
           <dl class="robot-status-grid"><div><dt>RAPID program</dt><dd id="robot-rapid-state">Not read</dd></div><div><dt>Controller</dt><dd id="robot-controller-state">Not read</dd></div><div><dt>Operating mode</dt><dd id="robot-operation-mode">Not read</dd></div></dl>
           <p id="robot-control-inhibit" class="robot-control-attention" role="status" hidden></p>
           </div></details></section><section class="robot-recovery-tools" aria-labelledby="robot-reset-heading"><div><p class="eyebrow">INSPECT → UNBLOCK → SCAN</p><h3 id="robot-reset-heading">Failed batch recovery</h3><p>Use the inspection panel to clear a failed batch or queue. Check that both arms are stationary and both grippers are empty before choosing Unblock failed batch. Then scan again and confirm a new batch.</p></div><div class="robot-recovery-actions"><button id="robot-local-recovery-button" class="button button-secondary" type="button" disabled>Review blocked workflow</button></div><p class="robot-tool-copy">Recovery does not move or stop the robot, send it home, reset the robot program, or resume an interrupted pick. It does not resolve controller faults.</p></section>
+      </section>
+      <section id="view-scene" class="workspace-view" role="tabpanel" aria-labelledby="nav-scene" tabindex="0" hidden>
+        <section class="panel scene-panel" aria-labelledby="scene-heading">
+          <div class="scene-heading"><div><p class="eyebrow">LIVE CELL VIEW</p><h2 id="scene-heading">3D view</h2><p>The YuMi as the controller reports it, with the cups from the latest scan and the placement locations. Read-only: nothing here moves the robot.</p></div><span id="scene-badge" class="scene-badge" data-tone="info">NOT LOADED</span></div>
+          <div id="scene-canvas-host" class="scene-canvas-host"></div>
+          <div class="scene-footer"><p id="scene-status" class="scene-status" role="status" aria-live="polite">Open this tab to load the model.</p><div class="scene-controls"><label class="scene-toggle"><input id="scene-show-cups" type="checkbox" checked><span>Cups</span></label><label class="scene-toggle"><input id="scene-show-grid" type="checkbox" checked><span>Placement grid</span></label><button id="scene-reset-view" class="button button-secondary" type="button">Reset view</button></div></div>
+          <p class="fine-print">Drag to orbit, scroll or pinch to zoom, right-drag or two fingers to pan. The pose is delayed and may become stale; always watch the robot itself.</p>
+        </section>
       </section>
       <section id="view-assistant" class="workspace-view" role="tabpanel" aria-labelledby="nav-assistant" tabindex="0" hidden>
         <section class="panel assistant-chat" aria-labelledby="assistant-heading">
