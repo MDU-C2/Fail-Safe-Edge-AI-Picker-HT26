@@ -179,10 +179,33 @@ ClientRegistry::ClientRegistry(
             );
         }
 
+        //
+        // A SHA-256 as the gateway computes it: 64 lowercase hex
+        // digits. Anything else can never match a token, so a cut
+        // value (WeOS keeps only 63 characters of an app environment
+        // value) would otherwise lock every client out silently.
+        //
+        const std::string token_hash = client["token_hash"].get<std::string>();
+
+        const bool hash_valid =
+            token_hash.size() == 64
+            && token_hash.find_first_not_of("0123456789abcdef") == std::string::npos;
+
+        if (!hash_valid) {
+            throw RegistryError(
+                format(
+                    "Auth client '%s' in %s: token_hash must be 64 lowercase hex digits (a SHA-256), got %zu characters",
+                    client_id.c_str(),
+                    source.c_str(),
+                    token_hash.size()
+                )
+            );
+        }
+
         clients_.push_back(
             Client{
                 client_id,
-                client["token_hash"].get<std::string>(),
+                token_hash,
                 client["permissions"].get<std::vector<std::string>>(),
                 client["control_priority"].get<long long>(),
             }

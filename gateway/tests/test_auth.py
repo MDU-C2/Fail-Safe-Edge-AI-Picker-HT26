@@ -202,3 +202,25 @@ def test_malformed_inline_clients_stop_startup(
 
     with pytest.raises(RuntimeError, match="GATEWAY_AUTH_CLIENTS"):
         gateway.start()
+
+
+@pytest.mark.cpp_only
+def test_cut_inline_clients_stop_startup(
+    tmp_path: Path,
+) -> None:
+    """WeOS keeps only 63 characters of an app environment value; the
+    cut line must stop the gateway, not lock every client out."""
+
+    line = f"admin:1000:*:{hashlib.sha256(b'admin-token').hexdigest()}"
+
+    gateway = Gateway(
+        tmp_path,
+        "strict",
+        {
+            **mock_settings(),
+            "GATEWAY_AUTH_CLIENTS": line[:63],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="64 lowercase hex"):
+        gateway.start()

@@ -19,8 +19,9 @@
       2. `file app import` it on the Lynx;
       3. move the image label (gatewaycpp) to it;
       4. define/update the app (image, cmd, host network, /state share,
-         GATEWAY_* environment, including the safe zone and the clients
-         of -ClientsFile as GATEWAY_AUTH_CLIENTS);
+         GATEWAY_* environment, including the safe zone; the clients
+         come from gateway/auth_clients.json inside the package, and a
+         GATEWAY_AUTH_CLIENTS left on the app is removed);
       5. restart the app and wait for /health.
     Nothing else on the Lynx is changed; images of older versions stay.
     The Lynx allows 5 apps; the script stops if the app cannot be created.
@@ -43,11 +44,6 @@ param(
     # Seconds without the gateway's RWS heartbeat before an idle arm goes
     # home on its own; a gateway start also sends the arms home. 0 = off.
     [string]$HeartbeatTimeout = "5",
-    # The clients (token hashes only), written into the app environment
-    # as GATEWAY_AUTH_CLIENTS, since the image has no clients file. To
-    # change them later: edit the file and run this script again, or
-    # change GATEWAY_AUTH_CLIENTS on the Lynx (see gateway/cpp/LYNX.md).
-    [string]$ClientsFile = "",
     [int]$Port = 8000,
     [int]$ServePort = 8099,
     [switch]$Autostart,
@@ -69,35 +65,13 @@ if (-not $Version) {
 
 $package = "gateway-cpp-$Version.wmopkg"
 
-if (-not $ClientsFile) {
-    $ClientsFile = Join-Path $repo "gateway\auth_clients.json"
-}
-
 #
-# The clients on one line, as the gateway reads GATEWAY_AUTH_CLIENTS:
-# "id:control_priority:permissions:token_hash ...", permissions
-# separated by commas. A WeOS environment value cannot hold JSON's
-# quotes, hence this form.
+# The clients are baked into the package (gateway/auth_clients.json at
+# build time), not set in the app environment: WeOS keeps only 63
+# characters of an environment value, and GATEWAY_AUTH_CLIENTS needs
+# about 600 (one SHA-256 alone is 64). A value cut there locked every
+# client out on 2026-11-24 (see "Clients" in gateway/cpp/LYNX.md).
 #
-function ConvertTo-InlineClients([string]$path) {
-    $clients = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
-    $entries = foreach ($client in $clients.PSObject.Properties) {
-        $fields = @(
-            $client.Name,
-            [string]$client.Value.control_priority,
-            (@($client.Value.permissions) -join ","),
-            $client.Value.token_hash
-        )
-        foreach ($field in $fields) {
-            if ($field -match '[\s:"]') { throw "Client $($client.Name) in ${path}: no spaces, colons or quotes allowed in '$field'" }
-        }
-        $fields -join ":"
-    }
-    if (-not $entries) { throw "No clients in $path" }
-    $entries -join " "
-}
-
-$inlineClients = ConvertTo-InlineClients $ClientsFile
 
 if (-not (Test-Path (Join-Path $dist $package))) {
     throw "$dist\$package missing: build it with gateway/cpp/dev.sh wmopkg $Version"
@@ -194,7 +168,9 @@ $config = @(
     "environment GATEWAY_RWS_SAFE_ZONE_MIN $SafeZoneMin",
     "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
     "environment GATEWAY_RWS_HEARTBEAT_TIMEOUT $HeartbeatTimeout",
-    "environment GATEWAY_AUTH_CLIENTS `"$inlineClients`"",
+    # Empty (not "no environment", which may fail silently once it is
+    # gone): an empty value makes the gateway use the clients file.
+    "environment GATEWAY_AUTH_CLIENTS",
     "enable",
     $(if ($Autostart) { "autostart" } else { "no autostart" }),
     "leave"

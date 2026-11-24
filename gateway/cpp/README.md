@@ -85,11 +85,13 @@ the working directory):
 gateway/cpp/build/dev/gateway --host 127.0.0.1 --port 8000
 ```
 
-The runtime image holds only the binary, at `/sbin/init` (where WeOS
-app hosting starts an app). Give it the clients, either as a file or,
-C++ only, on one line in `GATEWAY_AUTH_CLIENTS` (clients separated by
-spaces, each `id:control_priority:permissions:token_hash`; it replaces
-the file; the Lynx uses it, see [LYNX.md](LYNX.md#clients)):
+The runtime image holds the binary, at `/sbin/init` (where WeOS app
+hosting starts an app), and `gateway/auth_clients.json` as it was at
+build time (the Lynx needs it there: WeOS keeps only 63 characters of an
+app environment value, see [LYNX.md](LYNX.md#clients)). Another clients
+file, or C++ only one line in `GATEWAY_AUTH_CLIENTS` (clients separated
+by spaces, each `id:control_priority:permissions:token_hash`), replaces
+it:
 
 ```sh
 docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.json:ro \

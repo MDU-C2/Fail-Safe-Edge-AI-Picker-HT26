@@ -5,6 +5,7 @@
 
 #include <unistd.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -183,6 +184,33 @@ INSTANTIATE_TEST_SUITE_P(
         "x:1:robot.read:h x:2:robot.read:h2"
     )
 );
+
+TEST_F(ClientRegistryTest, HashesThatCannotMatchATokenAreRejected) {
+    const std::string hash = sha256_hex("admin-token");
+
+    //
+    // As the Lynx stored it: WeOS keeps 63 characters of an app
+    // environment value, which cut the first hash to 50 digits.
+    //
+    const std::string cut = ("admin:1000:*:" + hash).substr(0, 63);
+
+    EXPECT_THROW(ClientRegistry((directory / "missing.json").string(), cut), RegistryError);
+
+    std::string upper = hash;
+
+    for (char& c : upper) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+
+    EXPECT_THROW(ClientRegistry((directory / "missing.json").string(), "admin:1000:*:" + upper), RegistryError);
+
+    EXPECT_THROW(
+        ClientRegistry(write(ordered_json{{"admin", {{"token_hash", hash.substr(1)}, {"permissions", {"*"}}, {"control_priority", 1}}}}.dump())),
+        RegistryError
+    );
+
+    EXPECT_NO_THROW(ClientRegistry((directory / "missing.json").string(), "admin:1000:*:" + hash));
+}
 
 TEST(RepositoryClientsFile, IsValid) {
     //
