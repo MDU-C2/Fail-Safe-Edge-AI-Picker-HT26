@@ -18,7 +18,7 @@ python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token>
 
 The gateway is then at `http://169.254.219.127:8000/api/v1`, and at
 `http://192.168.125.20:8000/api/v1` on the robot subnet (strict mode,
-the clients of `gateway/auth_clients.json`).
+the clients of `gateway/auth_clients.json`, see [Clients](#clients)).
 
 > The Lynx is shared lab hardware. Deploying adds an image and one app
 > (`gateway`); it changes nothing else. Only one process can hold the
@@ -30,15 +30,16 @@ the clients of `gateway/auth_clients.json`).
 | | |
 |---|---|
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
-| Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only) |
+| Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, nothing else (no clients file: the clients are in the app environment, see [Clients](#clients)) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` and `GATEWAY_AUTH_CLIENTS` (see [Clients](#clients)) from the deploy script since 0.6.0 (the 0.6.0 build deployed on 2026-11-23 predates both); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
 calibration, lives on the `/state` share (external media); it survives
-restarts and redeploys. Settings are environment variables on the app;
-there is no `.env` in the image.
+restarts and redeploys. Settings and the clients are environment
+variables on the app; there is no `.env` or clients file in the image,
+so neither needs a new package to change.
 
 ## 1. Build the package
 
@@ -169,6 +170,44 @@ Invoke-RestMethod http://169.254.219.127:8000/api/v1/health
 | Change a setting | `configure` → `app-hosting` → `app gateway` → `environment GATEWAY_<NAME> <value>` → `leave`, then `app-hosting restart gateway` |
 | New version | `dev.sh wmopkg`, then the deploy script (or import + `app-hosting label gateway-cpp-<new> gatewaycpp` + `app-hosting reload gatewaycpp`) |
 | Calibration file | `/state/calibration.json` in the app = `external/app/gateway/state` on the Lynx |
+| Clients / tokens | `GATEWAY_AUTH_CLIENTS` in the app environment, see [Clients](#clients) |
+
+### Clients
+
+The clients (`gateway/auth_clients.json` on the laptop) are not in the
+package: the deploy script writes them into the app environment as
+`GATEWAY_AUTH_CLIENTS`, which the gateway reads instead of a clients
+file. There is no other way to get a file to the app (scp to the Lynx is
+off, WeOS's `file` commands handle only images, configs and logs, the
+image has no shell), and an environment value cannot hold JSON's quotes,
+hence one line: clients separated by spaces, each
+`id:control_priority:permissions:token_hash` with the permissions
+separated by commas.
+
+```
+admin:1000:*:<sha256> primary:300:robot.read,robot.control,camera.read:<sha256> ...
+```
+
+To change a client or token (hash from `python gateway/scripts/generate_token.py <client>`):
+
+- edit `gateway/auth_clients.json` and run the deploy script again (it
+  converts the file; the package itself does not change), or
+- on the Lynx, give the whole line (all clients) in double quotes:
+
+```
+configure
+app-hosting
+app gateway
+environment GATEWAY_AUTH_CLIENTS "admin:1000:*:<sha256> primary:300:robot.read,robot.control,camera.read:<sha256> ..."
+leave
+app-hosting restart gateway
+copy running-config startup-config    # keep it over a reboot (saves the whole running config)
+```
+
+A malformed line stops the gateway at startup, naming
+`GATEWAY_AUTH_CLIENTS` in `show log app-gateway.log`. The hashes are in
+the Lynx's running config (`show running-config`); the plaintext tokens
+stay in `client_tokens.json` on the laptop.
 
 ### Safe zone
 

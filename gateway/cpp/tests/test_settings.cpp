@@ -15,6 +15,7 @@ TEST(Settings, DefaultsMatchThePythonGateway) {
     EXPECT_EQ(settings.security_mode, "strict");
     EXPECT_EQ(settings.api_prefix, "/api/v1");
     EXPECT_EQ(settings.auth_clients_file, "gateway/auth_clients.json");
+    EXPECT_EQ(settings.auth_clients, "");
     EXPECT_EQ(settings.camera_provider, "oak");
     EXPECT_EQ(settings.robot_provider, "tcp");
     EXPECT_EQ(settings.robot_host, "192.168.125.1");
