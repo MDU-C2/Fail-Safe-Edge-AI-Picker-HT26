@@ -8,13 +8,28 @@ process retains the shared motion/stop/recovery controller and uses only
 DepthAI, PyTorch, Ultralytics, FastAPI or Uvicorn. Native OpenCV core/imgproc are
 statically linked into the worker.
 
-**0.2.9 is installed and the Lynx service is ready** with the V4 snapshot
-workflow, smooth handover and no automatic Home. Installed hashes and preservation
-of calibration, placement state and recovery were verified, and offline replay passed. No live
-scan or physical picking was performed for this update. See the
-[2026-11-17 workflow update](WORKFLOW_UPDATE_2026-11-17.md) for package identity and
-validation scope. The [2026-11-13 CLI validation report](CLI_CHECK_2026-11-13.md)
-records historical 0.2.5 camera and memory checks, not 0.2.9 validation.
+**Installed package: 0.2.13.** Native Lynx supports finite camera-refreshed
+batches and tertiary queue standby. Installed files and offline behavior were
+verified on Lynx; the existing dashboard service is online and inactive.
+Standby has not been armed, and the existing failed `left_park` queue is
+preserved for inspection. See the
+[2026-11-20 queue update](QUEUE_FAILOVER_UPDATE_2026-11-20.md) for launch commands,
+package identity, preserved state and validation limits. The
+[2026-11-19 rollback report](CAMERA_ROLLBACK_2026-11-19.md) describes the preceding
+0.2.10 installation. Building alone does not replace an installed application.
+
+The historical **0.2.10** update installed the complete smooth handover plan.
+The earlier 0.2.9 package blended only some movements; its
+`handover_motion=blended_path` status did not establish that the complete plan
+was present. See the
+[2026-11-19 smooth handover update](SMOOTH_HANDOVER_UPDATE_2026-11-19.md) for
+package identity and validation scope. Installed hashes and offline behavior
+were verified directly on Lynx. No live capture or robot movement was performed
+for that historical update; it does not establish the current installed runtime.
+The [2026-11-17 workflow update](WORKFLOW_UPDATE_2026-11-17.md) records the
+historical 0.2.9 deployment. The
+[2026-11-13 CLI validation report](CLI_CHECK_2026-11-13.md) records historical
+0.2.5 camera and memory checks, not 0.2.10 validation.
 The old combined gateway/dashboard build is still selected by
 `--profile combined` (also the preparer's default). Its historical
 [2026-11-06 report](LIVE_CHECK_2026-11-06.md) does not validate the CLI profile.
@@ -25,7 +40,9 @@ this source does not change an already installed gateway or picker package.
 
 ## Select the model and stage an isolated context
 
-Run from the repository root on the development machine. `MODEL_DIR` must name an
+Run from the repository root on the development machine. Select a new release
+version in `PICKER_VERSION`; do not reuse an installed package's version for
+changed source. `MODEL_DIR` must name an
 actual prepared NCNN export, not a PyTorch checkpoint. For an unprepared 640 INT8
 export, generate the manifest once with the export's actual precision:
 
@@ -33,7 +50,7 @@ export, generate the manifest once with the export's actual precision:
 python -m lynx.prepare_model "$MODEL_DIR" \
   --input-size 640 --classes-file "$MODEL_DIR/classes.txt" --precision int8
 python lynx/deploy/prepare_context.py --profile cli \
-  --model-dir "$MODEL_DIR" --output /tmp/lynx-cli-0.2.9-context
+  --model-dir "$MODEL_DIR" --output "/tmp/lynx-cli-${PICKER_VERSION}-context"
 ```
 
 A manifest argument does not quantize or resize an export. Keep the FP32 baseline;
@@ -52,7 +69,7 @@ credentials, `.env`, calibration, grid/recovery records and captures.
 
 ```sh
 docker buildx build --platform linux/arm64 --load \
-  --tag lynx-picker-cli:0.2.9 /tmp/lynx-cli-0.2.9-context
+  --tag "lynx-picker-cli:${PICKER_VERSION}" "/tmp/lynx-cli-${PICKER_VERSION}-context"
 ```
 
 Use the staged context, never the full checkout. An ARM64 Linux host or Docker
@@ -103,7 +120,7 @@ directories. Preserve earlier state/journals; reuse the prepared directory on
 updates instead of reinitializing it.
 
 Mount persistent SD storage at `/state` and put the prepared directory at
-`/state/cli-0.2.0`. Keep this existing state path when updating to package 0.2.9;
+`/state/cli-0.2.0`. Keep this existing state path when updating the package;
 package version changes do not require reinitializing robot state. The CLI reference identity must match calibration, actual camera
 intrinsics, seven-cell geometry, 90 mm cell size and table height exactly. The
 current profile requires its calibrated 1920×1080 aligned frames; reducing camera
@@ -117,9 +134,9 @@ Use a Linux/WSL host with Docker, `squashfs-tools`, `u-boot-tools`,
 
 ```sh
 python lynx/deploy/package_weos.py \
-  --image lynx-picker-cli:0.2.9 --version 0.2.9 \
+  --image "lynx-picker-cli:${PICKER_VERSION}" --version "$PICKER_VERSION" \
   --description "Lynx command-line picker with native perception and external gateway" \
-  --output /tmp/lynx-picker-0.2.9.wmopkg
+  --output "/tmp/lynx-picker-${PICKER_VERSION}.wmopkg"
 ```
 
 On macOS/Windows with Docker Desktop, add `--container-tools`. Add
@@ -136,8 +153,8 @@ exposes that gateway there. Do not start a second camera owner.
 
 ## Startup commands
 
-Installed package 0.2.9 supplies the snapshot defaults below. Exit any
-current live CLI before replacing or reloading its application. Verify the
+The current source supplies the finite camera-refreshed defaults below. Exit any current
+live CLI before replacing or reloading its application. Verify the
 package version and installed-module hashes; the WeOS app's cosmetic description
 alone does not establish which code is running.
 
@@ -182,26 +199,83 @@ After validation, explicit live startup is:
   --state-dir /state/cli-0.2.0 --live
 ```
 
-The current source uses **one full inference pass per scan**. Picks reuse its
-saved cup coordinates and placement evidence; there is no per-cup verification
-capture, cup rematching or observation-age expiry. Each observation collects up
-to five distinct raw depth samples for object coordinates and uses the latest
-raw aligned frame for placement evidence. Legacy verification-age arguments
-remain accepted for compatibility but do not expire the snapshot. Confirmation,
-reservations, Stop and recovery checks still apply.
-The shared smooth handover paths finish above the destination after each cup.
-Home remains a separate operator command.
+The native runtime takes a nonblocking `flock` on `picker-native.lock` in its
+state directory before loading the worker. The CLI and managed native service
+cannot load two workers using the same state directory. Process exit releases
+the lock; keep its file in place. This does not exclude controllers on other
+machines or using different state directories.
+
+To arm one queued takeover batch behind cloud and Pi:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --live --standby
+```
+
+Standby defaults to `/state/cli-0.2.0/tertiary-token`; `--token-file` selects a
+different private regular file. The token must identify the gateway's existing
+`tertiary` client at priority **100**, behind cloud **300** and Pi **200**.
+The state preparer does not create this identity or token. Do not include any
+credential in an image, source file or command line. `--standby` requires
+`--live` and rejects `--scan-once`.
+
+After obtaining control, standby waits for the previously accepted gateway queue
+to finish. It does not replay accepted work, retry an uncertain queue POST, or
+automatically clear a failed or cancelled queue. Confirmed cup release and
+clearance allow the existing right-via parking tail to finish if necessary before
+the fresh scan. Unknown movement or gripper state requires inspection. The
+Lynx lease is retained through scans, cups and final Home; loss blocks further
+submissions and leaves an accepted cup to finish independently. Deploy the
+updated `capture_and_detect/capture_and_detect_que.py` to the primary/cloud and
+Pi runners as well: they must retain the batch lease during camera gaps and
+between cups to prevent unintended takeover of a healthy primary.
+
+Ctrl+C in standby exits without cancelling the accepted queue. Ordinary
+interactive CLI Stop and quit still request the existing software stop. This is
+one finite takeover batch; there is no continuous watch after it finishes.
+
+The current native source uses **one full inference pass per scan**, with a
+fresh workspace-and-grid capture after every completed cup. Each observation
+collects up to five distinct raw depth samples for object coordinates and uses
+the latest raw aligned frame for placement evidence. Between-cup refresh waits
+for a new camera sequence. Legacy verification-age arguments remain accepted
+without imposing an image-age deadline. Confirmation, reservations, Stop and
+recovery checks still apply. Fresh live scans reconcile grid occupancy and
+remove stale reservation markers, including after a failed handover. Unknown
+visibility remains unavailable. Scanning does not clear robot recovery, and
+grid bookkeeping changes do not interrupt an active handover.
+
+The native `smooth_dual_arm_v1` plan uses **19 jobs per cup, including 12 buffered
+paths**. It overlaps the left approach/grip with right preparation, then the left
+handover approach with right positioning beside it. After confirmed right grip
+and left release, the arms separate together; turnover waits for both separation
+movements. Linear moves are used near the cup, with 10 mm intermediate blends,
+a 3 mm receiving corner and exact final stops. Paths use 60% acceleration and
+40% ramp, with a 1.5 m/s² carrying limit and 30% turnover acceleration.
+Both grippers start and finish open. Each cup finishes placement before the next
+starts; the smooth branch's simulation-only inter-cup overlap is not included.
+The left returns to the existing left park target; after retracting 80 mm above
+placement, the right returns to the existing right-via target before capture.
+There is no Home between cups. A batch updates its pending cups and destinations
+from each fresh scan. A full grid makes it wait and refresh while parked, without
+Home while source cups remain. A remaining unpickable source also prevents
+empty-workspace Home. Once a scan finds the workspace empty, the batch goes Home
+once, right then left, and finishes. A single selection places only one cup,
+refreshes the scene and returns control without automatic Home.
 
 The CLI and combined dashboard use the enhanced shared workflow. The combined
 profile's `web_app.py` imports `picker_workflow.py`, independently of the V4
 capture workflow in `capture_and_detect.py`. In the repository, both entry
-points share the normal smooth dual-arm plan in `handover_plan.py`. Package
-0.2.9 applies the updated shared
-workflow to the native CLI and managed Lynx service; older images retain their
-earlier behavior until replaced.
+points share the normal smooth dual-arm plan in `handover_plan.py`. The finite
+native batch policy is selected in `lynx/picker.py` and `lynx/runtime.py`.
+The standalone desktop `picker_workflow.py` terminal keeps its snapshot policy,
+and `capture_and_detect.py` retains its existing workflow. The pre-update 0.2.10
+deployment used saved-scan picking in the native CLI and managed service; its
+historical reports do not validate the new source behavior.
 
-Camera-derived picking height remains off by default, with 250 mm travel TCP
-height and the existing diameter + 70 mm opening allowance. Shared library speed defaults remain
+Camera-derived picking height remains off by default. Dual-arm travel TCP height
+is 175 mm (334 mm at the flange); left-only travel remains 250 mm. The existing
+diameter + 70 mm opening allowance is retained. Shared library speed defaults remain
 250 mm/s travel and 200 mm/s Home; an explicit `--speed` uses the existing caps.
 The fixed pick TCP height is 70 mm. No Mac UI speed override is imported.
 

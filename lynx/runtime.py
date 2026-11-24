@@ -1,9 +1,9 @@
 """Lightweight web-controller factory for the deployed native picker runtime.
 
-This module opens no camera, model or network connection at import. The agent
-hosting the controller must hold the existing state-directory ``picker.lock``
-for the entire controller lifetime; this factory intentionally acquires no lock.
-It serves no HTTP or static UI and adds no image, ML or web-framework dependency.
+This module opens no camera, model or network connection at import. A native
+state lock excludes another model process only while the controller is active;
+an inactive service holds no native-worker resources. It serves no HTTP or static
+UI and adds no image, ML or web-framework dependency.
 """
 import copy
 from pathlib import Path
@@ -14,8 +14,8 @@ import threading
 class _WorkerResource:
     """Close the registered native worker once and invalidate cached readiness."""
 
-    def __init__(self, worker, factory):
-        self.worker, self.factory = worker, factory
+    def __init__(self, worker, factory, runtime_lock):
+        self.worker, self.factory, self.runtime_lock = worker, factory, runtime_lock
         self._closed = False
         self._lock = threading.Lock()
 
@@ -26,7 +26,16 @@ class _WorkerResource:
             self._closed = True
         try:
             self.worker.close()
-        finally:
+        except BaseException as error:
+            # Retain exclusion when child shutdown was not confirmed. A later
+            # close can retry cleanup; never admit a second model meanwhile.
+            with self._lock:
+                self._closed = False
+            self.factory._update(state="close_failed", ready=False, worker_running=True,
+                                 error_type=type(error).__name__)
+            raise
+        else:
+            self.runtime_lock.close()
             self.factory._update(state="closed", ready=False, worker_running=False)
 
 
@@ -58,6 +67,7 @@ class _NativeWebFactory:
         # controller starts its worker. None imports NumPy/OpenCV/FastAPI.
         from camera_client import CameraClient
         from cup_commands import CupSession
+        from handover_plan import right_via_pose
         from language_commands import LanguageController
         from local_llm import DisabledIntentClient
         from placing_grid import PlacingGrid
@@ -69,11 +79,13 @@ class _NativeWebFactory:
         from .picker import read_token
         from .resources import (advise_capture_cache, advise_loaded_python_cache, advise_packaged_native_cache,
                                 trim_unused_heap, wait_for_model_headroom)
+        from .runtime_lock import NativeRuntimeLock
 
         args = self.args
-        resource = None
+        resource = runtime_lock = None
         try:
             state = Path(args.state_dir).resolve(strict=True)
+            runtime_lock = NativeRuntimeLock(state).acquire()
             model = Model.load(args.model)
             calibration = Calibration(state / "calibration.json")
             grid = PlacingGrid(state / "placing-grid.json")
@@ -91,8 +103,9 @@ class _NativeWebFactory:
                          model={"weights": str(model.weights), "sha256": model.sha256,
                                 "input_size": model.input_size, "precision": model.precision,
                                 "names": list(model.names)},
-                         policy={"workflow": "v4_snapshot", "scan_observations": 1,
-                                 "verification_frames": 0, "per_cup_capture": False,
+                         policy={"workflow": "workspace_between_cups", "scan_observations": 1,
+                                 "verification_frames": 0, "per_cup_capture": True,
+                                 "between_cup_grid_check": True, "continuous_batch": False,
                                  "depth_frames": depth_frames,
                                  "camera_z": getattr(args, "camera_z", False),
                                  "confidence_threshold": confidence},
@@ -111,7 +124,7 @@ class _NativeWebFactory:
             worker = NativePerception(getattr(args, "worker", "/usr/local/bin/lynx-ncnn-worker"),
                                       model, confidence=confidence,
                                       timeout=getattr(args, "inference_timeout", 30.0))
-            resource = _WorkerResource(worker, self)
+            resource = _WorkerResource(worker, self, runtime_lock)
             controller.attach_resource(resource)
             self._update(worker_running=True)
             captures = CaptureService(camera, worker, calibration, grid, store,
@@ -153,7 +166,9 @@ class _NativeWebFactory:
                                  tag_offset=calibration.offset, speed=getattr(args, "speed", None),
                                  recovery=recovery, placing_grid=grid, verification_frames=1,
                                  strict_single_verification=True, max_result_age=max_age,
-                                 camera_z=getattr(args, "camera_z", False))
+                                 camera_z=getattr(args, "camera_z", False),
+                                 between_cup_check=True, between_cup_grid_check=True,
+                                 continuous_batch=False, right_park_pose=right_via_pose())
             language = LanguageController(session, DisabledIntentClient(),
                                           audit_dir=store.folder / "language")
             self._update(state="ready", ready=True, camera=copy.deepcopy(captures.K),
@@ -163,6 +178,8 @@ class _NativeWebFactory:
         except BaseException as error:
             if resource is not None:
                 resource.close()
+            elif runtime_lock is not None:
+                runtime_lock.close()
             self._update(state="failed", ready=False, error_type=type(error).__name__)
             raise
 

@@ -17,7 +17,7 @@ function snapshot(overrides = {}) {
 }
 function dashboard(initial = snapshot(), reducedMotion = false) {
   const requests = [], focus = [], scrolls = [], dom = {};
-  const ids = ["nav-pick", "nav-assistant", "nav-robot", "nav-settings", "view-pick", "view-assistant", "view-robot", "view-settings",
+  const ids = ["nav-pick", "nav-assistant", "nav-robot", "nav-settings", "nav-scene", "view-scene", "view-pick", "view-assistant", "view-robot", "view-settings",
     "stop-button", "stop-panel", "recovery-panel", "connection-alert", "error-banner", "proposal-panel", "robot-control-proposal"];
   for (const id of ids) {
     const listeners = {};
@@ -41,10 +41,10 @@ function dashboard(initial = snapshot(), reducedMotion = false) {
     + section('  dom["stop-button"].addEventListener', '  dom["status-button"].addEventListener')
     + "\nglobalThis.render = renderNavigation; globalThis.activate = activateWorkspaceTab; globalThis.stopAllowed = canStop; initializeNavigation();", context);
   return { dom, context, requests, focus, scrolls, render() { context.render(); },
-    selected() { return ["pick", "assistant", "robot", "settings"].filter((tab) => dom[`nav-${tab}`].attributes["aria-selected"] === "true"); },
+    selected() { return ["pick", "assistant", "robot", "scene", "settings"].filter((tab) => dom[`nav-${tab}`].attributes["aria-selected"] === "true"); },
     assertActive(tab) {
       assert.deepEqual(this.selected(), [tab]);
-      for (const id of ["pick", "assistant", "robot", "settings"]) {
+      for (const id of ["pick", "assistant", "robot", "scene", "settings"]) {
         assert.equal(dom[`view-${id}`].hidden, id !== tab);
         assert.equal(dom[`nav-${id}`].tabIndex, id === tab ? 0 : -1);
       }
@@ -64,8 +64,8 @@ test("default Pick and manual tabs use one roving focus target without HTTP", ()
 
 test("arrow keys wrap, Home and End jump, and unrelated keys retain browser behavior", () => {
   const page = dashboard();
-  for (const [from, key, to] of [["pick", "ArrowRight", "assistant"], ["assistant", "ArrowRight", "robot"], ["robot", "ArrowDown", "settings"],
-    ["settings", "ArrowRight", "pick"], ["pick", "ArrowLeft", "settings"], ["settings", "ArrowUp", "robot"],
+  for (const [from, key, to] of [["pick", "ArrowRight", "assistant"], ["assistant", "ArrowRight", "robot"], ["robot", "ArrowDown", "scene"], ["scene", "ArrowDown", "settings"],
+    ["settings", "ArrowRight", "pick"], ["pick", "ArrowLeft", "settings"], ["settings", "ArrowUp", "scene"],
     ["robot", "Home", "pick"], ["pick", "End", "settings"]]) {
     const event = page.dom[`nav-${from}`].key(key);
     assert.equal(event.prevented, true); page.assertActive(to);

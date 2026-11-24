@@ -32,7 +32,7 @@ from camera_client import CameraClient, CameraError
 from cup_commands import CupSession
 from picker_depth import capture_fresh_samples, mask_depth, DEFAULT_DEPTH_FRAMES
 from detection_masks import encode_mask
-from cup_inventory import (SelectionError, atomic_json, build_inventory, normalize_offset,
+from cup_inventory import (SelectionError, atomic_json, build_inventory, finite_number, normalize_offset,
                            save_inventory)
 from robot_client import RobotClient, RobotCommandError
 from handover_plan import (CUP_Z_MIN, CUP_Z_MAX, DEFAULT_SPEED, HOME_SPEED,
@@ -341,6 +341,7 @@ class CaptureService:
         self.camera, self.detector, self.store = camera, detector, store
         self.weights = Path(weights)
         self.placing_grid = placing_grid
+        self._source_grid_geometry = None
         self._default_grid_cell_size = grid_cell_size
         self.table_reference_path = (Path(table_reference_path) if table_reference_path is not None
                                      else placing_grid.path.with_suffix(".table-reference.json")
@@ -378,8 +379,9 @@ class CaptureService:
         if self._read_table_reference() != self._table_reference_bytes:
             raise SelectionError("Empty-table reference changed. Restart and scan again.")
 
-    def _observe(self):
-        rgb, depth, frame, samples = capture_fresh_samples(self.camera, self.depth_frames)
+    def _observe(self, *, require_fresh=False):
+        rgb, depth, frame, samples = capture_fresh_samples(
+            self.camera, self.depth_frames, require_fresh=require_fresh)
         if rgb.ndim != 3 or rgb.shape[2] != 3 or rgb.shape[:2] != (self.detector.K.get("height"), self.detector.K.get("width")):
             raise CameraError("Image dimensions do not match the camera intrinsics.")
         if depth.shape != rgb.shape[:2]:
@@ -405,11 +407,43 @@ class CaptureService:
         with observation_group(self.detector):
             return self._capture_group(purpose)
 
+    def _source_presence(self, objects, geometry, assigned_slots=()):
+        """Count visible CUP detections even when no base supports a pick.
+
+        Reuse the existing physical grid classification and current-frame
+        placement assignments. Unlocated cups remain possible source cups;
+        image overlap alone cannot establish that the workspace is empty.
+        """
+        from placement_records import exclude_placed_cups
+        raw_cups = []
+        for index, obj in enumerate(objects):
+            if obj.get("class") != "CUP":
+                continue
+            located = all(finite_number(obj.get(f"robot_{axis}_mm")) for axis in ("x", "y", "z"))
+            raw_cups.append({"object_index": index,
+                             "x": obj.get("robot_x_mm") if located else None,
+                             "y": obj.get("robot_y_mm") if located else None})
+        exclude_placed_cups(raw_cups, geometry["locations"], geometry["cell_size_mm"],
+                            self.detector.calibration.offset)
+        assigned = {index for slot in assigned_slots for cup in slot.get("assigned_cups", [])
+                    for index in cup.get("object_indices", []) if type(index) is int}
+        return {"cup_detections": sum(not cup.get("placement_location_ids")
+                                      and cup["object_index"] not in assigned for cup in raw_cups)}
+
     def _capture_group(self, purpose):
         calibration = self.detector.calibration
-        self._check_table_reference()
+        source_only = purpose == "between_cups"
+        grid_scan = purpose in ("scan", "between_cups_grid")
+        require_fresh = source_only or purpose == "between_cups_grid"
+        if source_only:
+            if self._source_grid_geometry is None:
+                raise SelectionError("Run a full scan before checking the workspace between cups.")
+        else:
+            if purpose == "scan":
+                self._source_grid_geometry = None
+            self._check_table_reference()
         snapshot, grid_error = None, None
-        if self.placing_grid is not None:
+        if self.placing_grid is not None and not source_only:
             try:
                 snapshot = self.placing_grid.snapshot()
                 cell_size = snapshot.get("cell_size_mm", self._default_grid_cell_size)
@@ -420,11 +454,12 @@ class CaptureService:
             except SelectionError as error:
                 grid_error = str(error)
         observations, sequences, inference_results = [], [], []
-        count = self.scan_observations if purpose == "scan" and snapshot is not None else 1
+        count = self.scan_observations if grid_scan and snapshot is not None else 1
         completed, restarts = 0, 0
         generation = getattr(self.detector, "generation", None)
         while completed < count:
-            rgb, depth, frame, started, objects, annotated, elapsed_ms = self._observe()
+            rgb, depth, frame, started, objects, annotated, elapsed_ms = (
+                self._observe(require_fresh=True) if require_fresh else self._observe())
             current_generation = getattr(self.detector, "generation", None)
             if current_generation != generation:
                 if completed:
@@ -446,7 +481,8 @@ class CaptureService:
                 # buffers before _observe() allocates the next RGB/depth/masks;
                 # tuple assignment otherwise retains them until that call ends.
                 del rgb, depth, annotated
-        self._check_table_reference()
+        if not source_only:
+            self._check_table_reference()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + "_" + purpose
         images = {kind: str(self.store.folder / f"{kind}_{stamp}.{extension}")
                   for kind, extension in (("rgb", "jpg"), ("depth", "png"), ("annotated", "jpg"))}
@@ -458,9 +494,17 @@ class CaptureService:
         if inference_results:
             inventory["model"]["inference"] = inference_results[-1]
             inventory["model"]["observation_results"] = inference_results
-        if observations:
+        if source_only:
+            # Only source cups participate in the workspace comparison. Use
+            # the original scan's geometry without reading occupancy, loading
+            # the table reference or assessing destination pixels again.
+            from placement_records import exclude_placed_cups
+            geometry = self._source_grid_geometry
+            exclude_placed_cups(inventory["cups"], geometry["locations"],
+                                geometry["cell_size_mm"], calibration.offset)
+        elif observations:
             self.placement_vision.exclude_placed_cups(inventory["cups"], snapshot["locations"])
-            if purpose == "scan":
+            if grid_scan:
                 if self.scan_observations == 1:
                     from placement_records import combine
                     observation = combine(snapshot, observations, sequences)
@@ -478,6 +522,12 @@ class CaptureService:
         elif grid_error:
             inventory["placement_observation"] = {"frame_count": 0, "slots": [], "applied": False,
                 "released_ids": [], "message": "Placement camera check unavailable: " + grid_error}
+        presence_geometry = (self._source_grid_geometry if source_only else
+                             {"locations": snapshot["locations"] if snapshot is not None else [],
+                              "cell_size_mm": snapshot.get("cell_size_mm", self._default_grid_cell_size)
+                                              if snapshot is not None else self._default_grid_cell_size})
+        inventory["source_presence"] = self._source_presence(
+            objects, presence_geometry, observations[-1] if observations else ())
         for cup in inventory["cups"]:
             u, v = cup["pixel"]["u"], cup["pixel"]["v"]
             if u is None or v is None:
@@ -490,6 +540,13 @@ class CaptureService:
             cv2.putText(annotated, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                         (0, 255, 0) if cup["selectable"] else (0, 180, 255), 2)
         self.store.save_capture(inventory, rgb, depth, annotated, objects, self.detector.K, purpose)
+        if purpose == "scan" and (snapshot is not None or self.placing_grid is None):
+            self._source_grid_geometry = {
+                "cell_size_mm": snapshot.get("cell_size_mm", self._default_grid_cell_size)
+                                if snapshot is not None else self._default_grid_cell_size,
+                "locations": [{key: place[key] for key in ("id", "x", "y")}
+                              for place in snapshot["locations"]] if snapshot is not None else [],
+            }
         log(f"[{purpose}] {len(inventory['cups'])} cup candidate(s), YOLO {elapsed_ms:.0f} ms")
         return inventory, started
 
@@ -722,12 +779,14 @@ def main(argv=None):
     parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"), help="Placement locations and their occupied/reserved flags")
     parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table, mm (default 0)")
     parser.add_argument("--grid-cell-size", type=float, default=80.0, help="Fallback cell width in mm (default 80; 20..200); the grid file's cell_size_mm takes precedence")
-    parser.add_argument("--gateway", default="http://169.254.125.202:8000")
+    parser.add_argument("--gateway", default="http://169.254.219.127:8000")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--depth-frames", type=int, choices=range(1, 10), default=DEFAULT_DEPTH_FRAMES,
                         help="Fresh frames averaged for cup coordinates (default 5; 1 disables averaging); grid checks use raw aligned depth")
-    parser.add_argument("--camera-z", action="store_true",
-                        help="Use measured cup-base Z + 20 mm for picking, with a 40 mm minimum TCP height")
+    parser.add_argument("--camera-z", dest="camera_z", action="store_true", default=True,
+                        help="Use measured cup-base Z + 20 mm for picking, 40 mm minimum (DEFAULT)")
+    parser.add_argument("--fixed-z", dest="camera_z", action="store_false",
+                        help="Use the fixed pick height instead of the camera depth")
     parser.add_argument("--dry-run", action="store_true", help="Preview the entire RWS sequence; no control acquisition or robot commands")
     parser.add_argument("--speed", type=positive, default=None,
                         help=f"Override motion speed, including home (1..1500 mm/s). Without this option: "

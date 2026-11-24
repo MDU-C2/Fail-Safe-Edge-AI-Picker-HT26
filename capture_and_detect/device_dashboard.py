@@ -83,6 +83,8 @@ class DeviceDashboard:
         if self.astra_named_matching:
             self.labels["mac"] = {"darwin": "MacBook", "win32": "Windows PC"}.get(sys.platform, "This PC")
         self._lock = threading.RLock()
+        self._pose_lock = threading.Lock()
+        self._pose_cache = None
         self._stop = threading.Event()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-handoff")
         self._poller = None
@@ -133,8 +135,13 @@ class DeviceDashboard:
                     raise ValueError("Invalid configured device.")
                 token_path = (path.parent / value["token_file"]).resolve()
                 clients[name] = DeviceClient(value["url"], read_secret(token_path))
-            return cls(clients, (path.parent / config["state_file"]).resolve(),
-                       initial_device=config["initial_device"], mode=mode)
+            dashboard = cls(clients, (path.parent / config["state_file"]).resolve(),
+                            initial_device=config["initial_device"], mode=mode)
+            dashboard.automatic_failover = bool(mode == "live" and config["devices"]["mac"].get("failover"))
+            if dashboard.automatic_failover and dashboard.record["device_id"] != "mac":
+                dashboard.close()
+                raise ValueError("Select the local computer before enabling automatic failover.")
+            return dashboard
         except BaseException:
             for client in clients.values():
                 if isinstance(client, LocalDeviceClient):
@@ -384,6 +391,7 @@ class DeviceDashboard:
             fresh = time.monotonic() - cached.get("observed_at", 0) < 5
             owned = bool(health and self._owned(health, context))
             current = copy.deepcopy(cached.get("state") or self._empty)
+            current["pose_clock_id"] = current.get("instance_id")
             permitted = fresh and owned and self.record["phase"] == "active" and not self._busy_switch and not self._closed
             current.update(instance_id=self._instance, csrf_token=self._csrf, device_epoch=self._epoch)
             if not permitted:
@@ -435,6 +443,9 @@ class DeviceDashboard:
             can_switch = (permitted and current["ready"] and not current["busy"]
                           and not current["recovery_required"] and not current["stop_requested"]
                           and not any(p.get("reserved") for p in (current.get("placement_grid") or {}).get("locations", [])))
+            if getattr(self, "automatic_failover", False):
+                can_switch = False
+                device_message = "Automatic failover is enabled: MacBook → Raspberry Pi → Lynx. Start batches here; returning devices regain priority between cups."
             current["devices"] = {"selected_id": self.record.get("target_id") or device,
                 "active_id": device if self.record["phase"] not in ("new", "handoff_ready") else None,
                 "switching": self._busy_switch or self.record["phase"] != "active",
@@ -459,6 +470,8 @@ class DeviceDashboard:
                     or operation not in ("scan", "select", "batch", "pick_saved")):
                 raise WebError("Assistant actions require the active local computer picker.")
             if operation == "device_select":
+                if getattr(self, "automatic_failover", False):
+                    raise WebError("Automatic failover chooses the robot worker by priority. Start batches from this computer.")
                 if (set(payload) != {"device_id", "request_id"} or payload["device_id"] not in self.clients
                         or not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", str(payload["request_id"]))):
                     raise WebError("Invalid device selection.", 422)
@@ -500,6 +513,52 @@ class DeviceDashboard:
         result["source"] = "Cached selected-device state; not a live robot status query."
         return result
 
+    def robot_pose(self):
+        """Forward read-only telemetry from the same worker as /api/state.
+
+        Coalesce open viewers into one bounded request. A stale response from
+        an earlier device selection or restarted controller is discarded.
+        """
+        unavailable = {"source": "unavailable", "arms": {"left": None, "right": None},
+                       "clock_id": None}
+        with self._lock:
+            device, epoch = self.record["device_id"], self._epoch
+            if self._closed or self._busy_switch or self.record["phase"] != "active":
+                return {**unavailable, "device_id": device, "device_epoch": epoch}
+            cached = self._cache.get(device, {})
+            clock_id = (cached.get("state") or {}).get("instance_id")
+            health = cached.get("health") or {}
+            if ((health.get("features") or {}).get("robot_pose") is not True
+                    or not clock_id or not self._owned(health, self.record["context"] or {})
+                    or time.monotonic() - cached.get("observed_at", 0) >= 5):
+                return {**unavailable, "device_id": device, "device_epoch": epoch}
+            identity = (device, epoch, clock_id)
+            prior = self._pose_cache
+            fallback = ({**unavailable, "device_id": device, "device_epoch": epoch,
+                         "clock_id": clock_id} if prior is None or prior[0] != identity
+                        else copy.deepcopy(prior[2]))
+            if prior is not None and prior[0] == identity and time.monotonic() - prior[1] < .1:
+                return fallback
+        if not self._pose_lock.acquire(blocking=False):
+            return fallback
+        try:
+            try:
+                pose = self.clients[device].request("/v1/robot-pose", timeout=1.0)
+            except (WebError, OSError, ValueError):
+                pose = unavailable
+            with self._lock:
+                current_clock = (self._cache.get(device, {}).get("state") or {}).get("instance_id")
+                if (self._closed or self._busy_switch or self.record["phase"] != "active"
+                        or (self.record["device_id"], self._epoch, current_clock) != identity):
+                    return {**unavailable, "device_id": self.record["device_id"], "device_epoch": self._epoch}
+                if not isinstance(pose, dict) or pose.get("clock_id") != clock_id:
+                    pose = unavailable
+                result = {**pose, "device_id": device, "device_epoch": epoch, "clock_id": clock_id}
+                self._pose_cache = (identity, time.monotonic(), copy.deepcopy(result))
+                return result
+        finally:
+            self._pose_lock.release()
+
     def help(self):
         return WebController.help()
 
@@ -509,7 +568,8 @@ class DeviceDashboard:
     def image_bytes(self, capture_id):
         with self._lock:
             state = self.state()
-            if capture_id != (state.get("inventory") or {}).get("capture"):
+            inventory = state.get("inventory") or {}
+            if capture_id != inventory.get("image_capture", inventory.get("capture")):
                 return None
             device, epoch = self.record["device_id"], self._epoch
         image = self.clients[device].image(capture_id)

@@ -359,13 +359,13 @@ class PlacementVisionTests(unittest.TestCase):
         result = self.vision.combine(self.snapshot, observations, [1, 2, 3])
         self.assertEqual(result["slots"][0]["valid_fraction"], 0.996)
 
-    def test_reserved_overlay_uses_reservation_color_without_changing_evidence(self):
+    def test_scan_overlay_shows_fresh_evidence_instead_of_old_reservation(self):
         slot = self.assess(location=dict(self.location, reserved=True))
         saved = copy.deepcopy(slot)
         image = np.zeros((480, 640, 3), np.uint8)
         rendered = self.vision.draw(image, [slot])
         self.assertIs(rendered, image)
-        np.testing.assert_array_equal(rendered[216, 320], [0, 185, 255])
+        np.testing.assert_array_equal(rendered[216, 320], [80, 205, 90])
         self.assertEqual(slot, saved)
         self.assertEqual(slot["state"], "clear")
 

@@ -20,14 +20,30 @@ Ultralytics, FastAPI or Ollama. Native OpenCV **core and imgproc** are still lin
 into the C++ worker. The Mac dashboard stays on the Mac; do not operate two live
 controllers against the robot concurrently.
 
-**Release status:** **0.2.9 is installed and the Lynx service is ready** with the
-V4 snapshot workflow, smooth handover and no automatic Home. Installed hashes and
-preservation of calibration, placement state and recovery were verified. Offline replay passed;
-no live scan or physical picking was performed for this update. See the
-[2026-11-17 workflow update](deploy/WORKFLOW_UPDATE_2026-11-17.md) for package
-identity and validation scope. The
+**Installed package: 0.2.13.** Native Lynx supports finite camera-refreshed
+batches and tertiary queue standby. Its installed files and offline workflow
+were verified on Lynx. The dashboard service is online with its controller
+inactive; automatic standby has not been armed. The gateway still retains a
+failed `left_park` queue requiring inspection before takeover. See the
+[2026-11-20 queue update](deploy/QUEUE_FAILOVER_UPDATE_2026-11-20.md) for launch
+commands, package identity and validation limits. The
+[2026-11-19 rollback report](deploy/CAMERA_ROLLBACK_2026-11-19.md) describes the
+previous 0.2.10 installation.
+
+The historical **0.2.10** update installed the complete smooth handover plan. It
+buffers all dual-arm movements as paths, uses straight-line motion near the cup,
+and overlaps arm movements at the pick, handover approach and separation stages.
+The earlier 0.2.9 package blended only some movements; its
+`handover_motion=blended_path` status did not identify the complete plan. See the
+[2026-11-19 smooth handover update](deploy/SMOOTH_HANDOVER_UPDATE_2026-11-19.md)
+for package identity and validation scope. Its installed files passed offline
+checks on Lynx. No live capture or robot movement was performed for that update;
+that historical report does not establish the current installed runtime.
+
+The [2026-11-17 workflow update](deploy/WORKFLOW_UPDATE_2026-11-17.md) records the
+historical 0.2.9 installation and state-preservation checks. The
 [2026-11-13 CLI validation report](deploy/CLI_CHECK_2026-11-13.md) records historical
-0.2.5 camera and memory checks; it does not validate physical picking or 0.2.9.
+0.2.5 camera and memory checks; it does not validate physical picking or 0.2.10.
 The older combined
 Python gateway/dashboard profile remains available as `--profile combined`;
 its [2026-11-06 measurements](deploy/LIVE_CHECK_2026-11-06.md) concern that older
@@ -94,7 +110,7 @@ container filesystem.
 
 ## Start and use the picker
 
-Installed package 0.2.9 uses the snapshot defaults described below. Do not
+The current source supplies the finite, camera-refreshed workflow below. Do not
 replace or restart an application while an operator is using its live CLI.
 
 Connect to the configured Lynx application:
@@ -140,18 +156,49 @@ Explicit live operation, after checking the saved images, coordinates and robot:
   --state-dir /state/cli-0.2.0 --live
 ```
 
-Startup itself performs no robot movement. The current single-operator source
-does not acquire OS file locks. Device handoff and recovery guards still apply.
-It does not prevent a separate Mac
-controller from connecting, so close that controller before live use.
+Ordinary interactive startup performs no robot movement. A nonblocking process
+lock (`picker-native.lock`, using `flock`) allows only one native runtime to load
+a worker for a state directory. The lock is released when the process exits;
+do not delete the lock file to bypass it. This does not exclude a controller on
+another machine or using another state directory. Device handoff and recovery
+guards still apply; close an ordinary Mac controller before manual live use.
+
+For automatic takeover after cloud and Pi relinquish control:
+
+```sh
+/start.sh --gateway http://127.0.0.1:8000 \
+  --state-dir /state/cli-0.2.0 --live --standby
+```
+
+This mode reads `/state/cli-0.2.0/tertiary-token`, or the private regular file
+selected with `--token-file`. It requires the gateway's existing `tertiary`
+identity at priority **100**, behind cloud **300** and Pi **200**. State
+preparation does not create that identity or token. Keep credentials out of
+commands, source and packages. Standby cannot be combined with `--scan-once`.
+
+Standby waits for its lease and for an already accepted gateway queue to finish.
+It does not replay that cup, retry an uncertain queue submission, or clear failed
+or cancelled queue history automatically. After confirmed release and clearance,
+it completes the existing right-via parking tail if needed, captures a fresh
+scene and runs one finite batch. Unknown movement or gripper state requires
+inspection. The batch retains its lease during camera work, picks and final
+Home; lease loss prevents further submissions without cancelling an accepted
+cup. The primary/cloud and Pi runners must also use the updated
+`capture_and_detect/capture_and_detect_que.py`, which retains its lease across
+the entire batch. Older copies release control between cups and can invite an
+unwanted takeover while the primary is still healthy.
+
+Ctrl+C in standby exits without cancelling the accepted gateway queue; that cup
+may finish independently. Ordinary interactive CLI Stop and quit behavior stays
+as listed below. Standby is a single takeover batch, not a continuous watcher.
 
 | Command | Result |
 | --- | --- |
 | `scan` | Capture and assess the scene once; no movement |
 | Empty Enter | Ignore; no camera check or movement |
 | `list`, `show 2` | Inspect cups in the current capture |
-| `goto 2` | Pick cup 2 using the saved scan, hand it over and place it; finish above the destination |
-| `goto all` | Preview the available batch; `confirm <code>` starts it |
+| `goto 2` | Pick only cup 2, hand it over, place it, park clear and refresh the scene |
+| `goto all` | Preview the available batch; `confirm <code>` starts the finite camera-refreshed batch |
 | `start` | Scan and preview a batch; still requires confirmation |
 | `hover 2` | Approach above cup 2 using its saved scan coordinates |
 | `status`, `robot status` | Application state, or refreshed gateway/controller state |
@@ -172,25 +219,37 @@ separate operator tasks. Software Stop still depends on the gateway/controller;
 use the physical stop when immediate stopping is needed. Lease expiry does not
 stop an already active RAPID movement.
 
-## Preserved motion and camera checks
+## Motion and finite camera-refreshed batches
 
-The CLI uses the shared controller and plans, including their smooth handover
-paths, overlapping arm movements, completion checks, reservations and recovery
-journal. Each completed pick ends above the destination; Home remains a separate
-operator command. Defaults are:
+The CLI uses the shared controller and the normal `smooth_dual_arm_v1` plan.
+Each native cup uses 19 jobs, including 12 buffered paths. Left approach/grip overlaps
+right preparation; left handover approach overlaps right positioning beside it.
+After confirmed right grip and left release, the arms separate together before
+the right turns the cup over. Each cup finishes placement before the next starts;
+the smooth branch's simulation-only inter-cup overlap is not used. Both grippers
+start and finish open. Before the next capture, the left uses the existing left
+park target and the right retracts 80 mm above placement, then goes to its
+existing right-via target. These are the normal plan's parking targets. The
+batch does not send the arms Home between cups. Defaults are:
 
 | Setting | Value |
 | --- | --- |
-| Travel TCP height | 250 mm; the 159 mm gripper offset makes the flange target 409 mm |
+| Dual-arm travel TCP height | 175 mm; the 159 mm gripper offset makes the flange target 334 mm |
+| Left-only travel TCP height | 250 mm; flange target 409 mm |
 | Fixed picking TCP height | 70 mm |
 | Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
 | Ordinary travel speed | 250 mm/s |
+| Path acceleration / ramp | 60% / 40%; turnover acceleration 30% |
+| Carrying acceleration limit | 1.5 m/s² |
+| Intermediate path blends | 10 mm; receiving corner 3 mm; final targets stop exactly |
 | Home speed when requested | 200 mm/s, subject to an explicitly selected lower speed cap |
 | Camera-derived picking height | Off; `--camera-z` explicitly selects the existing measured-height policy |
 | Object-depth samples | Up to five distinct frames; `--depth-frames` accepts 1..9 |
 | Normal scan | One full YOLO/perception pass |
-| Placement evidence | The saved scan; no capture before or between picks |
-| Observation expiry | None in the snapshot workflow; `--max-result-age` is retained for argument compatibility |
+| Placement evidence | Fresh workspace and grid assessment after each completed cup |
+| Batch completion | Workspace observed empty: Home once, right then left, and finish |
+| Full placement grid | Wait and refresh while stationary; no Home while source cups remain |
+| Observation expiry | No age deadline; `--max-result-age` remains an accepted compatibility argument |
 
 `--speed` selects a different travel speed through the existing plan limits. An
 explicit setting previously used in the Mac UI is not automatically imported.
@@ -199,18 +258,33 @@ With `--camera-z`, the pick TCP uses the existing base Z + 20 mm policy with a
 samples; the removed core/spread rejection does not block cup selection.
 Placement evidence and saved depth use the **latest raw aligned frame**.
 **Five raw depth samples do not mean five inference passes.** A scan performs
-one observation. If no new camera sequence arrives, available samples may be
-used. The initial saved destination evidence must be clear, and its reservation
-must still be valid before motion.
+one observation. Between-cup refresh requires a new camera sequence. The saved
+destination evidence must be clear; placement reservations and recovery remain
+part of execution.
 
-There is no automatic recapture, cup rematching or observation-age deadline
-before or between picks. Completed cups become unavailable; untouched cups stay
-selectable from the same scan. Scan again when the physical scene changes.
+After each completed cup, the native CLI and managed native service capture the
+workspace and grid again, update cup selections and reconcile grid occupancy.
+A batch uses that observation to choose its next cup and destination. If the
+grid is full, it waits and refreshes with the arms parked until a destination
+becomes available. It does not go Home merely because the grid is full or a
+remaining source cup cannot be picked. An observed empty workspace ends the
+batch with Home once, right then left; it does not continue watching for new
+cups. A single-cup selection still executes only that cup, then refreshes the
+scene and returns control to the operator without automatic Home.
+
 Confirmation expiry, Stop, control-lease checks, placement reservations and the
-recovery journal remain. These settings are verified in the running 0.2.9
-service. The 0.2.5 report records earlier deployed behavior.
+recovery journal remain. Fresh live scans remove stale grid reservation markers,
+including after a failed handover. Unknown visibility keeps a location
+unavailable. Scanning does not acknowledge robot recovery, and grid bookkeeping
+changes do not interrupt an active handover.
 
-Native grid assessment preserves cup-to-cell ownership, connected depth groups,
+The V4 `capture_and_detect.py` and standalone desktop `picker_workflow.py`
+terminal retain their existing capture workflows. The finite native policy is
+selected in `lynx/picker.py` and `lynx/runtime.py`. The
+[rollback report](deploy/CAMERA_ROLLBACK_2026-11-19.md) records verification of the
+restored installed package; the earlier deployment reports remain historical.
+
+Full-scan native grid assessment preserves cup-to-cell ownership, connected depth groups,
 cup-edge uncertainty, visibility and other-object checks. Oversized cup masks or
 group crops above 262,144 pixels, or aggregate decoded cup masks above 8,388,608
 pixels, fail the assessment before unbounded geometry allocation. They never

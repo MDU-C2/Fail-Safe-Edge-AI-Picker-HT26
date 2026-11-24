@@ -7,6 +7,7 @@ import hmac
 import json
 import math
 from pathlib import Path
+import platform
 import re
 import tempfile
 import time
@@ -19,7 +20,8 @@ HERE = Path(__file__).resolve().parent
 
 
 def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
-               assistant=None, assistant_settings=None, access=None, tls=False, extra_origins=()):
+               assistant=None, assistant_settings=None, access=None, tls=False, extra_origins=(),
+               device_monitor=None):
     # Optional web dependencies are never needed by terminal mode.
     from fastapi import FastAPI, Request
     from fastapi.responses import FileResponse, JSONResponse, Response
@@ -48,11 +50,17 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
 
     @asynccontextmanager
     async def lifespan(app):
-        controller.start()
         try:
+            if device_monitor is not None:
+                device_monitor.start()
+            controller.start()
             yield
         finally:
-            await asyncio.to_thread(controller.close)
+            try:
+                await asyncio.to_thread(controller.close)
+            finally:
+                if device_monitor is not None:
+                    await asyncio.to_thread(device_monitor.close)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -99,9 +107,35 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return FileResponse(HERE / "web_static" / asset)
 
+    # 3D view: vendored three.js bundle, viewer module and the YuMi model.
+    viewer_assets = {"viewer3d.js": "text/javascript", "pose_interpolation.js": "text/javascript",
+                     "cup_holding.js": "text/javascript",
+                     "three-bundle.min.js": "text/javascript",
+                     "yumi_model.json": "application/json", "yumi_model.bin": "application/octet-stream"}
+
+    @app.get("/static/3d/{asset}")
+    def viewer_asset(asset: str):
+        if asset not in viewer_assets:
+            return JSONResponse({"detail": "Not found"}, status_code=404)
+        return FileResponse(HERE / "web_static" / "3d" / asset, media_type=viewer_assets[asset])
+
+    @app.get("/api/robot-pose")
+    def robot_pose():
+        # Read-only telemetry. Controllers without it (e.g. a remote device
+        # proxy) report it as unavailable instead of failing the page.
+        read = getattr(controller, "robot_pose", None)
+        if not callable(read):
+            return {"source": "unavailable", "arms": {"left": None, "right": None}}
+        return read()
+
     @app.get("/api/state")
     def state():
         return controller.state()
+
+    @app.get("/api/active_device")
+    def active_device():
+        from active_device_status import empty_status
+        return device_monitor.snapshot() if device_monitor is not None else empty_status()
 
     @app.get("/api/status")
     def operator_status():
@@ -220,6 +254,8 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
 
     @app.post("/api/{operation}")
     async def command(operation: str, request: Request):
+        if operation == "pick-height":
+            operation = "pick_height"
         if request.headers.get("content-type", "").split(";")[0] != "application/json":
             return JSONResponse({"detail": "Send a JSON request."}, status_code=415)
         raw = bytearray()
@@ -365,12 +401,28 @@ def hardware_factory(args):
                                   depth_frames=getattr(args, "depth_frames", 5),
                                   scan_observations=getattr(args, "scan_observations", 1))
         recovery = RecoveryJournal(store.folder / "robot_recovery.json", legacy_inventory_path=store.folder / "cups.json")
+        failover = bool(getattr(args, "live", False) and getattr(args, "coordinator_url", None))
         def capture(purpose):
             controller.event("Capturing and detecting cups…" if purpose == "scan" else "Capturing a requested workspace observation…")
-            return captures.capture(purpose)
+            executing = failover and getattr(getattr(session, "failover", None), "executing", False)
+            if executing:
+                session.robot.check_lease()
+            result = captures.capture(purpose)
+            if executing:
+                session.robot.check_lease()
+            return result
         def save(inventory):
             store.save(inventory)
             controller.publish_session()
+        between_cup_check = failover or getattr(args, "between_cup_check", platform.system() == "Darwin")
+        right_park_pose = None
+        if failover:
+            from handover_plan import right_via_pose
+            right_park_pose = right_via_pose()
+        elif between_cup_check:
+            from camera_parking import load_right_park_pose
+            right_park_pose = load_right_park_pose(Path(args.placing_grid).with_suffix(".right-park.json"),
+                                                  args.gateway)
         session = CupSession(capture, save, create_robot(args, api, headers),
                      calibration.digest, tag_offset=calibration.offset, speed=args.speed,
                      max_result_age=args.max_result_age, match_mm=args.match_mm, match_px=args.match_px,
@@ -378,7 +430,18 @@ def hardware_factory(args):
                      verification_frames=getattr(args, "verification_frames", 1),
                      strict_single_verification=getattr(args, "strict_single_verification",
                                                         getattr(args, "verification_frames", 1) == 1),
-                     camera_z=getattr(args, "camera_z", False))
+                     camera_z=getattr(args, "camera_z", False),
+                     between_cup_check=between_cup_check, right_park_pose=right_park_pose,
+                     between_cup_grid_check=between_cup_check,
+                     continuous_batch=None)
+        if failover:
+            from device_service import read_gateway_token
+            from failover_coordinator import CoordinatorClient
+            from failover_workflow import FailoverRunner
+            coordinator = CoordinatorClient(args.coordinator_url,
+                                            read_gateway_token(args.coordinator_token_file), "primary")
+            session.failover = FailoverRunner(session, coordinator, role="primary", state_dir=args.state_dir,
+                                              output=controller.event)
         library = NamedCupStore(store.folder / "saved_cups.json", image_root=store.folder)
         return session, LanguageController(session, NoLanguage(), audit_dir=store.folder / "language",
                                            named_cups=library)
@@ -501,7 +564,7 @@ def main(argv=None):
     mode = "demo" if not args.gateway and not args.device_config else ("live" if args.live else "dry_run")
     temporary = tempfile.TemporaryDirectory(prefix="cup-dashboard-") if mode == "demo" else None
     directory = Path(temporary.name if temporary else args.output).resolve()
-    controller = None
+    controller = device_monitor = None
     try:
         if args.device_config:
             from device_dashboard import DeviceDashboard
@@ -510,9 +573,12 @@ def main(argv=None):
             factory = demo_factory(directory, speed=args.speed, camera_z=args.camera_z) if mode == "demo" else hardware_factory(args)
             controller = WebController(factory, mode=mode, model="Scripted demo" if mode == "demo" else "gpt-6-astra",
                                        llm_enabled=mode == "demo")
+        from active_device_status import monitor_from_options
+        device_monitor = monitor_from_options(args, mode=mode)
         app = create_app(controller, port=args.port, image_root=directory,
                          allowed_origin=args.allowed_origin, assistant_settings=args.assistant_settings,
-                         access=access, tls=tls, extra_origins=local_origins)
+                         access=access, tls=tls, extra_origins=local_origins,
+                         device_monitor=device_monitor)
         with ProcessLock(directory):
             print(f"\nCup dashboard: {scheme}://localhost:{args.port}", flush=True)
             if args.allowed_origin:
@@ -549,8 +615,12 @@ def main(argv=None):
             if controller is not None:
                 controller.close()
         finally:
-            if temporary:
-                temporary.cleanup()
+            try:
+                if device_monitor is not None:
+                    device_monitor.close()
+            finally:
+                if temporary:
+                    temporary.cleanup()
     return 0
 
 

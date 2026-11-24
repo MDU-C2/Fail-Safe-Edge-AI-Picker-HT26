@@ -6,6 +6,9 @@ from pathlib import Path
 import struct
 from types import SimpleNamespace
 import zlib
+import signal
+import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,6 +17,237 @@ from camera_client import CameraError, NoNewCameraFrame
 from cup_inventory import SelectionError
 from placing_grid import PlacingGrid
 from table_reference_contract import _identity
+
+
+@pytest.mark.parametrize("extra", [[], ["--live"], ["--live", "--standby"],
+                                   ["--scan-once"], ["--live", "--coordinator-url", "http://offline.invalid"]])
+def test_armed_cli_rejects_missing_or_incompatible_configuration(extra):
+    from lynx.picker import arguments
+    with pytest.raises(SystemExit):
+        arguments(["--state-dir", "/offline/state", "--model", "/offline/model", "--armed", *extra])
+
+
+def test_armed_cli_accepts_complete_configuration_and_keeps_standby_distinct():
+    from lynx.picker import arguments
+    args = arguments(["--state-dir", "/offline/state", "--model", "/offline/model", "--armed", "--live",
+                      "--coordinator-url", "http://offline.invalid", "--coordinator-token-file", "/offline/secret"])
+    assert args.armed and not args.standby
+    with pytest.raises(SystemExit):
+        arguments(["--state-dir", "/offline/state", "--model", "/offline/model",
+                   "--coordinator-url", "http://offline.invalid"])
+
+
+@pytest.fixture
+def armed_launcher(tmp_path, monkeypatch):
+    from lynx import picker
+    from lynx.runtime_lock import NativeRuntimeLock
+    state = tmp_path / "state"
+    state.mkdir()
+    rig = SimpleNamespace(state=state, events=[], robot=Mock(dry_run=False), capture=Mock(),
+                          worker=Mock(), runner=Mock(), sessions=[], credentials=[])
+    monkeypatch.setattr(picker.Model, "load", lambda _path: SimpleNamespace(precision="int8", input_size=640))
+    monkeypatch.setattr(picker, "Calibration", lambda _: SimpleNamespace(digest="cal", offset=(0, 0, 0)))
+    monkeypatch.setattr(picker, "PlacingGrid", lambda _: object())
+    monkeypatch.setattr(picker, "CameraClient", lambda *_a, **_k: object())
+    monkeypatch.setattr(picker, "NativePerception", lambda *_a, **_k: (rig.events.append("model_ready") or rig.worker))
+    monkeypatch.setattr(picker, "QueueRobotClient", lambda *_a, **_k: rig.robot)
+    monkeypatch.setattr(picker, "CaptureService", lambda *_a, **_k: SimpleNamespace(capture=rig.capture))
+    monkeypatch.setattr(picker, "read_token", lambda path: (rig.credentials.append(path) or "private-offline"))
+    monkeypatch.setattr(picker, "terminal_output", Mock())
+    advice = lambda *_a, **_k: SimpleNamespace(summary=lambda *_a: "offline")
+    for name in ("advise_capture_cache", "advise_packaged_native_cache", "advise_loaded_python_cache", "wait_for_model_headroom"):
+        monkeypatch.setattr(picker, name, advice)
+    monkeypatch.setattr(picker, "trim_unused_heap", lambda: "offline")
+    def session(capture, save, robot, calibration, **kwargs):
+        value = SimpleNamespace(capture=capture, robot=robot, settings=kwargs)
+        rig.sessions.append(value)
+        return value
+    monkeypatch.setattr(picker, "CupSession", session)
+    coordinator = Mock()
+    monkeypatch.setitem(sys.modules, "failover_coordinator", SimpleNamespace(CoordinatorClient=coordinator))
+    def runner(session, coordinator, **kwargs):
+        rig.events.append("runner_ready")
+        assert rig.events[0] == "model_ready"
+        rig.capture.assert_not_called()
+        rig.robot.execute_jobs.assert_not_called()
+        session.failover = rig.runner
+        rig.runner.executing = False
+        rig.runner.options = kwargs
+        return rig.runner
+    monkeypatch.setitem(sys.modules, "failover_workflow", SimpleNamespace(FailoverRunner=runner))
+    rig.run = lambda: picker.main(["--state-dir", str(state), "--model", "/offline/model", "--live", "--armed",
+        "--coordinator-url", "http://coordinator.invalid", "--coordinator-token-file", str(state / "coordinator-token")])
+    rig.assert_unlocked = lambda: NativeRuntimeLock(state).acquire().close()
+    return rig
+
+
+def test_native_armed_worker_waits_without_capture_and_releases_model_and_lease(armed_launcher):
+    from handover_plan import right_via_pose
+    rig = armed_launcher
+    assert rig.run() == 0
+    assert rig.credentials == [rig.state / "tertiary-token", rig.state / "coordinator-token"]
+    settings = rig.sessions[0].settings
+    assert settings["between_cup_check"] and settings["between_cup_grid_check"]
+    assert settings["continuous_batch"] is False and settings["right_park_pose"] == right_via_pose()
+    assert rig.runner.options["role"] == "tertiary"
+    assert rig.runner.options["state_dir"] == rig.state
+    rig.runner.serve.assert_called_once()
+    rig.capture.assert_not_called()
+    rig.robot.request_stop.assert_not_called()
+    rig.robot.cancel_wait.assert_called_once()
+    rig.robot.end_standby.assert_called_once()
+    rig.worker.close.assert_called_once()
+    rig.assert_unlocked()
+
+
+@pytest.mark.parametrize("interrupt", ["keyboard", "sigterm", "error"])
+def test_native_armed_shutdown_does_not_stop_or_cancel_gateway_queue(armed_launcher, interrupt):
+    rig = armed_launcher
+    def serve(*, stop_event):
+        if interrupt == "keyboard":
+            raise KeyboardInterrupt
+        if interrupt == "error":
+            raise RuntimeError("offline failure")
+        signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        assert stop_event.is_set()
+    rig.runner.serve.side_effect = serve
+    assert rig.run() == (1 if interrupt == "error" else 0)
+    rig.robot.request_stop.assert_not_called()
+    rig.robot._cancel_running_queue.assert_not_called()
+    rig.robot.end_standby.assert_called_once()
+    rig.worker.close.assert_called_once()
+    rig.assert_unlocked()
+
+
+def test_native_armed_runtime_lock_refuses_duplicate_before_model_load(armed_launcher):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = armed_launcher
+    with NativeRuntimeLock(rig.state):
+        assert rig.run() == 1
+    assert rig.events == []
+    rig.runner.serve.assert_not_called()
+
+
+@pytest.fixture
+def python_armed_launcher(tmp_path, monkeypatch):
+    import failover_worker as worker
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "secondary-token").write_text("offline-secondary")
+    (state / "coordinator-token").write_text("offline-coordinator")
+    (state / "placing-grid.json").write_text('{"untouched":true}')
+    rig = SimpleNamespace(state=state, robot=Mock(), model=Mock(), runner=Mock(), events=[])
+    def robot(api, headers, *, dry_run):
+        assert api == "http://gateway.invalid/api/v1" and not dry_run
+        assert headers == {"Authorization": "Bearer offline-secondary"}
+        return rig.robot
+    monkeypatch.setattr(worker, "QueueRobotClient", robot)
+    def build(args, robot, resources):
+        rig.events.append("model_ready")
+        resources.callback(rig.model.close)
+        return SimpleNamespace(robot=robot)
+    monkeypatch.setattr(worker, "build_session", build)
+    def runner(session, coordinator, **kwargs):
+        assert rig.events == ["model_ready"]
+        assert kwargs["role"] == "secondary" and kwargs["state_dir"] == state
+        rig.events.append("armed")
+        return rig.runner
+    monkeypatch.setitem(sys.modules, "failover_workflow", SimpleNamespace(FailoverRunner=runner))
+    coordinator = Mock()
+    monkeypatch.setitem(sys.modules, "failover_coordinator", SimpleNamespace(CoordinatorClient=coordinator))
+    monkeypatch.setattr(worker, "output", Mock())
+    rig.run = lambda: worker.main(["--state-dir", str(state), "--model", "/offline/model.pt", "--live",
+        "--gateway", "http://gateway.invalid", "--coordinator-url", "http://coordinator.invalid",
+        "--coordinator-token-file", str(state / "coordinator-token")])
+    return rig
+
+
+@pytest.mark.parametrize("interruption", [None, "signal", "keyboard", "error"])
+def test_python_armed_worker_warms_model_and_tears_down_without_robot_stop(python_armed_launcher, interruption):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = python_armed_launcher
+    def serve(*, stop_event):
+        if interruption == "signal":
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            assert stop_event.is_set()
+        elif interruption == "keyboard":
+            raise KeyboardInterrupt
+        elif interruption == "error":
+            raise RuntimeError("offline failure")
+    rig.runner.serve.side_effect = serve
+    assert rig.run() == (1 if interruption == "error" else 0)
+    rig.model.close.assert_called_once()
+    rig.robot.end_standby.assert_called_once()
+    rig.robot.request_stop.assert_not_called()
+    rig.robot.execute_jobs.assert_not_called()
+    assert (rig.state / "placing-grid.json").read_text() == '{"untouched":true}'
+    with NativeRuntimeLock(rig.state):
+        pass
+
+
+def test_python_armed_worker_refuses_duplicate_before_model_load(python_armed_launcher):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = python_armed_launcher
+    with NativeRuntimeLock(rig.state):
+        assert rig.run() == 1
+    assert not rig.events
+    rig.runner.serve.assert_not_called()
+
+
+def test_python_worker_requires_live_and_valid_confidence_and_speed():
+    from failover_worker import arguments
+    base = ["--state-dir", "/offline", "--model", "/offline/model.pt", "--gateway", "http://offline.invalid",
+            "--coordinator-url", "http://offline.invalid", "--coordinator-token-file", "/offline/token"]
+    for extra in ([], ["--live", "--conf", "1"], ["--live", "--speed", "1501"]):
+        with pytest.raises(SystemExit):
+            arguments([*base, *extra])
+    assert arguments([*base, "--live"]).depth_frames == 5
+
+
+def test_python_worker_reuses_shared_finite_capture_backend_and_checks_lease_only_when_executing(tmp_path, monkeypatch):
+    from contextlib import ExitStack
+    import cup_commands
+    import inference_integration
+    import failover_worker
+    import camera_client
+    import placing_grid
+    from handover_plan import right_via_pose
+    state = tmp_path
+    store = SimpleNamespace(folder=state / "captures", save=Mock())
+    store.folder.mkdir()
+    camera = SimpleNamespace(intrinsics=Mock(return_value={"offline": True}))
+    captures = SimpleNamespace(capture=Mock(return_value=({"capture": "fresh"}, 1.0)))
+    monkeypatch.setattr(camera_client, "CameraClient", lambda *_a: camera)
+    monkeypatch.setattr(placing_grid, "PlacingGrid", lambda path: SimpleNamespace(path=path))
+    factory = Mock(return_value=captures)
+    monkeypatch.setitem(sys.modules, "picker_workflow", SimpleNamespace(
+        Calibration=lambda _: SimpleNamespace(digest="cal", offset=(1, 2, 3)),
+        CaptureStore=lambda _: store, CaptureService=factory))
+    model = Mock()
+    def create_detector(args, calibration, intrinsics, *, register_resource):
+        assert args.isolated_inference and args.mac_inference_url is None
+        assert intrinsics == {"offline": True}
+        register_resource(model)
+        return object(), Path("/offline/model.pt")
+    monkeypatch.setattr(inference_integration, "create_detector", create_detector)
+    def session(capture, save, robot, calibration, **kwargs):
+        return SimpleNamespace(capture=capture, settings=kwargs, robot=robot)
+    monkeypatch.setattr(cup_commands, "CupSession", session)
+    robot = Mock(api="http://offline.invalid/api/v1", headers={})
+    args = SimpleNamespace(state_dir=state, model=Path("/offline/model.pt"), conf=0.5, threads=3, depth_frames=5, speed=100)
+    with ExitStack() as resources:
+        result = failover_worker.build_session(args, robot, resources)
+        captures.capture.assert_not_called()
+        robot.check_lease.assert_not_called()
+        assert result.settings["between_cup_check"] and result.settings["between_cup_grid_check"]
+        assert result.settings["continuous_batch"] is False and result.settings["right_park_pose"] == right_via_pose()
+        assert factory.call_args.kwargs["depth_frames"] == 5
+        result.capture("scan")
+        robot.check_lease.assert_not_called()
+        result.failover = SimpleNamespace(executing=True)
+        result.capture("between_cups_grid")
+        assert robot.check_lease.call_count == 2
+    model.close.assert_called_once()
 
 
 class Clock:
@@ -305,6 +539,90 @@ def test_native_burst_does_not_swallow_transport_errors_after_first_sample(captu
     assert not rig.worker.calls
 
 
+@pytest.mark.parametrize("observations", [1, 3])
+def test_between_cup_grid_capture_uses_fresh_bursts_and_complete_evidence(capture_rig, observations):
+    rig = capture_rig
+    original_grid = rig.grid.path.read_bytes()
+    latest = rig.store.folder / "cups.json"
+    latest.write_text('{"capture":"active-batch","cups":[]}')
+    before_latest = latest.read_bytes()
+    def refuse_cached_pair(timeout_s):
+        raise AssertionError("Between-cup capture must wait for a new camera frame")
+    rig.camera.capture_latest_raw = refuse_cached_pair
+    service = CaptureService(rig.camera, rig.worker, rig.calibration, rig.grid,
+                             rig.store, scan_observations=observations)
+    inventory, _ = service.capture("between_cups_grid")
+    evidence = inventory["placement_observation"]
+    assert rig.camera.calls == 5 * observations
+    assert len(rig.worker.calls) == observations
+    assert evidence["frame_sequences"] == [5 * (index + 1) for index in range(observations)]
+    assert evidence["frame_count"] == observations
+    assert evidence["grid_snapshot"] == rig.grid.snapshot()
+    assert evidence["applied"] is False
+    assert rig.grid.path.read_bytes() == original_grid
+    assert latest.read_bytes() == before_latest
+    saved = json.loads((rig.store.folder / f"detections_{inventory['capture']}.json").read_text())
+    assert saved["placement_observation"] == evidence
+
+
+@pytest.mark.parametrize("purpose", ["between_cups", "between_cups_grid"])
+def test_between_cup_capture_rejects_frozen_camera_without_using_cached_pair(capture_rig, purpose):
+    rig = capture_rig
+    cached = rig.camera.capture_raw
+    rig.camera.capture_latest_raw = cached
+    def no_new_frame(timeout_s):
+        raise NoNewCameraFrame("Camera frozen after placement")
+    rig.camera.capture_raw = no_new_frame
+    with pytest.raises(NoNewCameraFrame, match="frozen"):
+        rig.service.capture(purpose)
+    assert rig.camera.calls == 0 and not rig.worker.calls
+    assert not list(rig.store.folder.iterdir())
+
+
+@pytest.mark.parametrize("coordinates,assigned,expected", [
+    ((300.0, 100.0, 70.0), False, 1),  # Visible source cup without a base.
+    ((400.0, -200.0, 70.0), False, 0),  # Cup located inside a grid cell.
+    ((None, None, None), False, 1),  # Unlocated cup cannot prove an empty workspace.
+    ((400.0, -200.0, None), False, 1),  # Missing depth prevents physical exclusion.
+    ((None, None, None), True, 0),  # Latest native assignment identifies a placed cup.
+])
+def test_native_source_presence_counts_missing_base_cups_outside_current_grid(
+        capture_rig, monkeypatch, coordinates, assigned, expected):
+    rig = capture_rig
+    observe = rig.worker.observe
+    def cups_without_bases(*args):
+        result = observe(*args)
+        result["objects"] = [{"class": "CUP", "detection_id": 10, "confidence": 0.9,
+            "x_px": 3.0, "y_px": 3.0, "bbox_xyxy": [1, 1, 6, 5],
+            **dict(zip(("robot_x_mm", "robot_y_mm", "robot_z_mm"), coordinates))}]
+        if assigned:
+            result["slots"][0]["assigned_cups"] = [{"object_indices": [0], "detection_ids": [10]}]
+        return result
+    monkeypatch.setattr(rig.worker, "observe", cups_without_bases)
+    inventory, _ = rig.service.capture("between_cups_grid")
+    assert inventory["cups"] == []
+    assert inventory["source_presence"] == {"cup_detections": expected}
+
+
+def test_source_presence_uses_latest_assignment_not_an_older_grid_observation(capture_rig, monkeypatch):
+    rig = capture_rig
+    service = CaptureService(rig.camera, rig.worker, rig.calibration, rig.grid,
+                             rig.store, scan_observations=3)
+    observe = rig.worker.observe
+    def moving_cup(*args):
+        result = observe(*args)
+        result["objects"] = [{"class": "CUP", "detection_id": 10, "confidence": 0.9,
+            "x_px": 3.0, "y_px": 3.0, "bbox_xyxy": [1, 1, 6, 5],
+            "robot_x_mm": None, "robot_y_mm": None, "robot_z_mm": None}]
+        if len(rig.worker.calls) < 3:
+            result["slots"][0]["assigned_cups"] = [{"object_indices": [0], "detection_ids": [10]}]
+        return result
+    monkeypatch.setattr(rig.worker, "observe", moving_cup)
+    inventory, _ = service.capture("between_cups_grid")
+    assert inventory["source_presence"] == {"cup_detections": 1}
+    assert inventory["placement_observation"]["cup_summary"]["assigned_count"] == 0
+
+
 @pytest.mark.parametrize("when", ["before", "during_burst", "during_inference"])
 def test_capture_uses_loaded_intrinsics_without_repeated_source_checks(capture_rig, when):
     rig = capture_rig
@@ -444,19 +762,20 @@ def raw_fixture(*, width=2, height=1, rgb_chunks=(b"123456",), depth_chunks=(b"1
         "X-Frame-Timestamp": "2026-11-13T08:00:00+00:00",
     }
     status = RawResponse("status", data={"connected": True, "sequence": 10})
+    ready = RawResponse("status", data={"connected": True, "sequence": 11})
     rgb = RawResponse("rgb", headers={**common, "X-Pixel-Format": "BGR888p", **(rgb_headers or {})},
                       chunks=rgb_chunks)
     depth = RawResponse("depth", headers={**common, "X-Pixel-Format": "RAW16", **(depth_headers or {})},
                         chunks=depth_chunks)
-    session = RawSession([status, rgb, depth])
+    session = RawSession([status, ready, rgb, depth])
     client = CameraClient("http://offline.invalid/api/v1", {}, session=session,
                           max_dimensions=max_dimensions)
-    return client, session, (status, rgb, depth)
+    return client, session, (status, ready, rgb, depth)
 
 
 class RawCameraBoundaryTests(unittest.TestCase):
     def assert_closed_without_retry(self, session, responses):
-        self.assertEqual(len(session.calls), 3)
+        self.assertEqual(len(session.calls), 4)
         self.assertTrue(all(response.closed for response in responses))
 
     def test_configured_dimensions_accept_exact_boundary_and_reject_each_axis_before_body(self):
@@ -472,7 +791,7 @@ class RawCameraBoundaryTests(unittest.TestCase):
                 client, session, responses = raw_fixture(width=width, height=height)
                 with self.assertRaisesRegex(CameraError, "configured dimension limit"):
                     client.capture_raw()
-                self.assertEqual([response.body_reads for response in responses], [0, 0, 0])
+                self.assertEqual([response.body_reads for response in responses], [0, 0, 0, 0])
                 self.assert_closed_without_retry(session, responses)
 
     def test_invalid_or_mismatched_peer_headers_fail_before_any_body(self):
@@ -492,7 +811,7 @@ class RawCameraBoundaryTests(unittest.TestCase):
                 client, session, responses = raw_fixture(**{peer + "_headers": changed})
                 with self.assertRaisesRegex(CameraError, message):
                     client.capture_raw()
-                self.assertEqual([response.body_reads for response in responses], [0, 0, 0])
+                self.assertEqual([response.body_reads for response in responses], [0, 0, 0, 0])
                 self.assert_closed_without_retry(session, responses)
 
     def test_overlong_chunked_payload_stops_at_first_extra_byte_and_closes_both_streams(self):
@@ -502,10 +821,10 @@ class RawCameraBoundaryTests(unittest.TestCase):
                 client, session, responses = raw_fixture(**{peer + "_chunks": chunks})
                 with self.assertRaisesRegex(CameraError, "larger than its declared dimensions"):
                     client.capture_raw()
-                failed = responses[1 if peer == "rgb" else 2]
+                failed = responses[2 if peer == "rgb" else 3]
                 self.assertEqual(failed.chunks_read, 2)
                 if peer == "rgb":
-                    self.assertEqual(responses[2].body_reads, 0)
+                    self.assertEqual(responses[3].body_reads, 0)
                 self.assert_closed_without_retry(session, responses)
 
     def test_truncated_chunked_payload_is_rejected_and_closes_both_streams(self):
@@ -516,5 +835,5 @@ class RawCameraBoundaryTests(unittest.TestCase):
                 with self.assertRaisesRegex(CameraError, f"payload has {length} bytes; expected"):
                     client.capture_raw()
                 if peer == "rgb":
-                    self.assertEqual(responses[2].body_reads, 0)
+                    self.assertEqual(responses[3].body_reads, 0)
                 self.assert_closed_without_retry(session, responses)

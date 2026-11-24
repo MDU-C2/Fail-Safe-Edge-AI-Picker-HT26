@@ -1,9 +1,10 @@
 """Keep V4 capture/detection and the terminal entry point separate from the UI.
 
 The terminal now shares the UI's smooth motion plan. These hashes pin the
-unchanged capture/detection, storage and CLI from vision_detection4 commit
-52f54791e08709ce8e44d1f39b5687085ba8af21. Picker separately pins the batch-end
-Home added by upstream 81c1c0a. Tests do not require git, Ultralytics, model
+unchanged capture/detection and storage from vision_detection4 commit
+52f54791e08709ce8e44d1f39b5687085ba8af21. Separate hashes pin the batch-end
+Home added by upstream 81c1c0a and CLI camera-height/default-gateway changes
+from upstream eb14607. Tests do not require git, Ultralytics, model
 weights, a gateway, or a robot.
 """
 
@@ -38,9 +39,9 @@ V4_TERMINAL_COMPONENT_HASHES = {
     "CaptureStore": "c0553c85514d0c2824d385c451c336ef6f93840bee1add6deb358a748a56a492",
     "load_places": "c2fb431b72c2b259350ef66a765446a64b7cecf1b560a18a4cb225cfb01fec17",
     "save_places": "a54c57c29133a97acafa8db9e8fe93a64c683bd7e9f8c9daa2ed989cec7c8229",
-    "main": "08c3763360f6493c522dbeb2f9238dd2a0faba27e721da0f21ea4cc3285fe91a",
 }
 BATCH_HOME_PICKER_HASH = "d51d340ff27e7ffc0af2ae465ebb9adbda849a4a2d737793a30d9ae6ab97ab04"
+CAMERA_DEFAULT_CLI_HASH = "cb120da45ffdfb7d39a544d3b2a0f37b17dd8dd47926b8655df57e80c96fcff7"
 
 
 def load_v4_terminal():
@@ -79,7 +80,7 @@ class V4SourceParityTests(unittest.TestCase):
             with self.subTest(file=name):
                 self.assertEqual(hashlib.sha256((HERE / name).read_bytes()).hexdigest(), expected)
 
-    def test_capture_detection_storage_and_cli_remain_original_v4(self):
+    def test_capture_detection_and_storage_remain_original_v4(self):
         source = (HERE / "capture_and_detect.py").read_text()
         components = {node.name: ast.get_source_segment(source, node)
                       for node in ast.parse(source).body
@@ -87,6 +88,13 @@ class V4SourceParityTests(unittest.TestCase):
         for name, expected in V4_TERMINAL_COMPONENT_HASHES.items():
             with self.subTest(component=name):
                 self.assertEqual(hashlib.sha256(components[name].encode()).hexdigest(), expected)
+
+    def test_cli_preserves_upstream_camera_height_and_gateway_defaults(self):
+        source = (HERE / "capture_and_detect.py").read_text()
+        main = next(node for node in ast.parse(source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == "main")
+        self.assertEqual(hashlib.sha256(ast.get_source_segment(source, main).encode()).hexdigest(),
+                         CAMERA_DEFAULT_CLI_HASH)
 
     def test_picker_preserves_upstream_batch_end_home_change(self):
         source = (HERE / "capture_and_detect.py").read_text()
@@ -315,7 +323,7 @@ class V4TerminalTests(unittest.TestCase):
         store.assert_called_once_with(str(HERE / "Data" / "Detections"))
         load_calibration.assert_called_once_with(HERE.parent / "Calibration/calibration.json")
 
-    def test_help_exposes_the_original_terminal_flags_without_starting_hardware(self):
+    def test_help_exposes_terminal_flags_and_fixed_height_override_without_starting_hardware(self):
         with (
             patch.object(sys, "argv", ["capture_and_detect.py", "--help"]),
             patch.object(self.v4, "load_token") as token,
@@ -324,7 +332,7 @@ class V4TerminalTests(unittest.TestCase):
         ):
             self.v4.main()
         self.assertEqual(exited.exception.code, 0)
-        for option in ("--output", "--gateway", "--conf", "--left-only", "--camera-z", "--depth-frames"):
+        for option in ("--output", "--gateway", "--conf", "--left-only", "--camera-z", "--fixed-z", "--depth-frames"):
             self.assertIn(option, self.output.getvalue())
         self.assertNotIn("--web", self.output.getvalue())
         self.assertNotIn("--home-after-cup", self.output.getvalue())

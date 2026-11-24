@@ -162,23 +162,60 @@ class BatchSelectionTests(unittest.TestCase):
         self.assertEqual(self.robot.jobs, [])
         self.assertFalse(any(place.get("reserved") for place in self.locations()))
 
-    def test_grid_change_after_ready_still_blocks_approach_without_camera_recheck(self):
+    def test_grid_metadata_change_after_ready_does_not_interrupt_confirmed_batch(self):
         capture_id = self.scan()
         preview = self.session.preview_batch(capture_id=capture_id)
 
         def mutate_after_ready(count):
-            if self.robot.jobs[-1]["name"] == "left_ready":
+            if count < TRANSFER_JOB_COUNT and self.robot.jobs[-1]["name"] == "approach_cup":
                 changed = json.loads(self.grid.path.read_text())
                 changed["locations"][0]["x"] += 1
                 self.grid.path.write_text(json.dumps(changed))
         self.robot.after_move = mutate_after_ready
-        with self.assertRaisesRegex(SelectionError, "changed"):
-            self.execute(capture_id, preview)
-        self.assertEqual([job["name"] for job in self.robot.jobs],
-                         ["right_open_start", "left_open_start", "left_ready"])
-        self.assertTrue(self.session.motion_uncertain)
-        self.assertFalse(self.session.scan_usable)
+        self.execute(capture_id, preview)
+        self.assertEqual(len(self.robot.jobs), 3 * TRANSFER_JOB_COUNT)
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs
+                          if job["name"] == "right_place"], [420, 500, 580])
+        self.assertEqual(self.locations()[0]["x"], 421)
+        self.assertTrue(all(place["occupied"] for place in self.locations()))
+        self.assertFalse(any(place.get("reserved", False) for place in self.locations()))
+        self.assertFalse(self.session.motion_uncertain)
+        self.assertTrue(self.session.scan_usable)
         self.assertEqual(self.capture_trace, [("scan", 0)])
+
+    def test_scan_grid_update_during_batch_does_not_stop_or_revalidate_movements(self):
+        journal = RecoveryJournal(self.grid.path.with_name("recovery.json"))
+        self.session.recovery = journal
+        self.robot.stop = Mock()
+        capture_id = self.scan()
+        preview = self.session.preview_batch(capture_id=capture_id)
+        self.grid.validate_reservation = Mock(side_effect=AssertionError("Unexpected grid revalidation"))
+        observed = []
+
+        def update_grid_after_first_placement(count):
+            if count < TRANSFER_JOB_COUNT and self.robot.jobs[-1]["name"] == "right_place":
+                observed.append(self.grid.reconcile_observation(
+                    self.grid.snapshot(), {1: "occupied", 2: "clear", 3: "clear"}))
+
+        self.robot.after_move = update_grid_after_first_placement
+        self.execute(capture_id, preview)
+
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(len(self.robot.jobs), 3 * TRANSFER_JOB_COUNT)
+        self.assertEqual([job["body"]["points"][-1]["x"] for job in self.robot.jobs
+                          if job["name"] == "right_place"], [420, 500, 580])
+        self.assertEqual(self.locations(), observed[0]["locations"])
+        self.assertEqual([place["occupied"] for place in self.locations()], [True, False, False])
+        self.assertFalse(any(place.get("reserved", False) for place in self.locations()))
+        self.grid.validate_reservation.assert_not_called()
+        self.robot.stop.assert_not_called()
+        self.assertEqual(self.capture_trace, [("scan", 0)])
+        self.assertEqual(self.session.batch_progress["completed_cups"], [2, 3, 1])
+        self.assertEqual(self.session.batch_progress["state"], "completed")
+        self.assertTrue(self.session.scan_usable)
+        self.assertFalse(self.session.motion_uncertain)
+        self.assertFalse(self.session.stop_requested)
+        self.assertFalse(journal.required())
 
     def test_invalid_source_coordinates_cannot_reserve_grid_or_move(self):
         capture_id = self.scan()

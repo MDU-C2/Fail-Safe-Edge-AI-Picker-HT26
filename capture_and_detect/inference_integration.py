@@ -106,7 +106,11 @@ def create_robot(args, api, headers):
     """Use the original gateway lease for every local execution coordinator."""
     from robot_client import RobotClient
     live = getattr(args, "live", not getattr(args, "dry_run", True))
-    robot = RobotClient(api, headers, dry_run=not live)
+    client = RobotClient
+    if live and getattr(args, "coordinator_url", None):
+        from queued_robot_client import QueueRobotClient
+        client = QueueRobotClient
+    robot = client(api, headers, dry_run=not live)
     profile = getattr(args, "controller_profile", None)
     # Managed picker services publish controls immediately. Unflagged library
     # callers retain their existing explicit/discovery-on-demand behavior.

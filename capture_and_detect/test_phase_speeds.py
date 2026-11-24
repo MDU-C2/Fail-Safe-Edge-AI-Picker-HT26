@@ -31,13 +31,13 @@ class PhasePlanTests(unittest.TestCase):
             jobs = self.plan(speed=speed)
             self.assertEqual(jobs, self.plan(speed=speed, phase_speeds=normalize_phase_speeds()))
             expected = {
-                "left_ready": (speed, [speed]),
-                "approach_cup": (speed, [speed, min(speed, 100)]),
+                "approach_cup": (speed, [speed, speed, min(speed, 100)]),
                 "left_handover": (min(speed, 100), [min(speed, 100)] * 2),
                 "right_via": (speed, [speed]),
                 "right_beside": (speed, [speed]),
                 "right_take": (speed, [min(speed, 150), speed]),
-                "left_clear": (speed, [speed]),
+                "left_clear": (min(speed, 100), [min(speed, 100)]),
+                "left_park": (speed, [speed]),
                 "right_lower": (speed, [speed]),
                 "right_retreat": (min(speed, 100), [min(speed, 100)] * 2),
                 "right_place": (speed, [speed]),
@@ -55,8 +55,9 @@ class PhasePlanTests(unittest.TestCase):
         original = self.plan()
         changed = self.plan(phase_speeds=self.profile)
         expected = {
-            "approach_cup": (250, [250, 180]),
+            "approach_cup": (250, [250, 250, 180]),
             "left_handover": (180, [180, 180]),
+            "left_clear": (180, [180]),
             "right_via": (220, [220]),
             "right_beside": (220, [220]),
             "right_take": (220, [150, 220]),

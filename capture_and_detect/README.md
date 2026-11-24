@@ -95,11 +95,70 @@ scene with the destination layout used by the next controller.
 UI backend unless an entry point is explicitly named. They do not add features
 or checks to the V4 terminal capture workflow.**
 
-The UI keeps the **V4 snapshot selection workflow**: Scan captures one
-averaged-depth observation; reviewed single picks and batches use those saved
-cup coordinates. No new camera capture, rematching or image-age deadline runs
-between cups. Completed cups become unavailable, while remaining cups can be
-selected from the same scan. Scan again when you change the scene.
+### Pickup height selector
+
+The **Pick cups → Pickup height** control chooses the policy before a single pick
+or batch preview. **Fixed height** is the UI default: the pickup TCP is 70 mm.
+**Camera depth** uses the same calculation as the terminal workflow:
+`max(40, round(cup_base_z + 20, 1))` mm. The existing flange/gripper conversion is
+applied once. The mode only changes the pickup descent; handover, parking,
+placement and travel retain their existing plans.
+
+Changing the mode cancels pending cup and robot-control previews, sends no robot
+command and retains the current scan and grid. It is blocked while local or shared
+work is active, Stop is latched, or a receipt still needs recovery. Review a new
+preview after changing it. The choice lasts until this controller restarts; its
+startup `--camera-z` option still sets the initial value. Confirmed failover batch
+settings include this policy, so Pi and Lynx apply it when continuing the batch.
+Older workers already understand that batch setting; editing it directly on a
+selected remote worker requires the updated device service.
+
+### YuMi 3D view
+
+The **3D view** tab integrates the model from branch `3d`. It shows measured arm
+joints, grippers, cups inferred from the latest scan/completed steps, and placement
+cells. Cup drawings are an illustration of workflow state, not live object tracking.
+Live readings can lag and are marked stale when too old; a missing arm reading is
+not represented as a measured home pose. Demo mode is explicitly simulated.
+
+The viewer follows the selected UI device. Device changes and controller restarts
+reset interpolation and cup playback; pose and step timestamps always come from
+the same worker clock. Older remote services report telemetry unavailable until
+updated. The read-only telemetry connection uses sequential GET requests and
+backs off on errors. Polling and animation stop when the tab/page is hidden.
+No gateway or RAPID update is needed.
+
+The bundled model and three.js module are served locally from `web_static/3d/`.
+To rebuild the model from RobotStudio STL exports, see `tools/build_yumi_model.py`;
+the three.js bundle entry and rebuild command are in `tools/three-bundle-entry.js`.
+
+Scan captures one averaged-depth observation and establishes the cups and
+destinations reviewed for single picks or a batch. The **MacBook UI refreshes
+source cups and placement-grid occupancy after every successful live placement**, including the
+last cup, once both arms have completed all existing movement jobs. It refreshes
+the image and source-cup measurements: moved cups use their new positions, missing
+cups leave the available list, and new cups become available. Matching cups keep
+their IDs; new cups receive new IDs. A confirmed **Pick all** follows this updated
+workspace continuously until Stop. When no source cups remain, both arms go
+Home once for that empty period, then the camera keeps watching. Newly detected
+pickable cups resume automatically when a grid cell is available. If the grid fills during an
+active batch, the robot waits while the camera refreshes automatically, then
+continues when a cell becomes clear. The
+same observation updates destination availability: a removed cup's cell becomes
+reusable when the camera confirms it is clear, while newly occupied or uncertain
+cells become unavailable. Occupancy changes update the next destinations without
+interrupting the completed placement.
+**Single-cup and saved/named-cup actions still pick exactly one cup**, then refresh
+the workspace for the next request; they do not enter continuous watching or
+send the arms Home when the workspace is empty. Completed placements stay
+recorded as completed.
+
+This check is enabled for the direct macOS dashboard and the managed `mac`
+device. Pi/Lynx selections, direct Windows/Pi dashboards, and both terminal
+workflows retain their saved-scan behavior. Dry-run and hover actions do not run
+the after-placement check. There is no image-age expiry. Continuous Pick all
+does not send the arms Home while any source cups remain, including while waiting
+for grid space. Completed cups remain unavailable for another pick.
 
 The UI, Assistant, 60-second confirmations, destination reservations, recovery,
 software Stop and smooth handover remain. Receiving offsets are fixed at zero.
@@ -107,11 +166,13 @@ The camera and enhanced terminal backend now live in `picker_workflow.py`, with
 UI depth sampling in `picker_depth.py`. `web_app.py` is the separate browser
 launcher; the V4 script no longer accepts `--web`.
 
-Cup sequences send no automatic Home by default. After each handover the left
+Individual cup sequences send no automatic Home by default. After each handover the left
 arm stays above the handover and the right remains 80 mm above placement. In
 advanced-shell `--left-only` mode, the left arm stays above the replaced cup.
 `--home-after-cup` is an advanced-shell option; manual dashboard Home controls
 remain available. These options do not apply to `capture_and_detect.py`.
+Continuous MacBook Pick all has a separate Home step only after a camera
+observation finds the source workspace empty; it then continues watching.
 
 Windows multi-device setup is described in
 [Windows PC / MacBook, Pi and Lynx](DEVICE_DASHBOARD.md#move-the-dashboard-between-mac-and-windows).
@@ -134,12 +195,19 @@ Z tag offset from 40 to 20 mm and is not a substitute for that validated pair.
 checks. Cup geometry uses the V4 mask-depth rule and available positive depth
 samples, without the removed core/spread rejection. The latest matched RGB and
 its raw aligned depth are retained for UI placement checks and saved images.
-If no new sequence arrives, the available samples can be used. There is no
-per-cup or post-clearance recapture. Destination evidence comes from the saved
-scan; reservations and recovery checks still apply before execution.
+An ordinary scan can use the latest matching pair and the available samples if
+the stream stops advancing. A MacBook after-placement check first waits for a
+new frame after motion finishes, then collects one normal depth burst and runs
+detection once. It fails without a new first frame. The MacBook check uses that
+same observation for **source cups and placement-grid assessment**, including
+the table reference, destination depth and occupancy reconciliation. Cups in the
+placement area remain excluded from source picking. No second capture or model
+run is needed for the grid. A source-only configuration retains the earlier
+behavior: cached placement geometry excludes grid cups, while destination
+evidence remains from the manual scan and grid occupancy is not reassessed.
 
-Travel TCP height remains **250 mm** and requested gripper opening remains
-**diameter + 70 mm**. `--camera-z` is disabled by default; when enabled it uses
+Dual-arm travel TCP height is **175 mm**; left-only travel remains **250 mm**.
+Requested gripper opening remains **diameter + 70 mm**. `--camera-z` is disabled by default; when enabled it uses
 `max(40, round(cup_base_z + 20, 1))` mm TCP for picking and replacing. Otherwise
 pick TCP height is 70 mm. No movement occurs merely by launching the UI.
 
@@ -216,7 +284,8 @@ The advanced shell runs live unless `--dry-run` is supplied.
 If the UI or advanced shell reports an unfinished sequence, inspect both arms
 and the cup, recover the robot as needed, then acknowledge recovery through the
 UI or the shell's `reset` command. This sends no movement and does not release
-reserved placement cells. Restarting or scanning does not clear the record.
+reserved placement cells; a fresh scan updates those cells separately. Restarting
+or scanning does not clear the robot recovery record.
 Use the same UI output directory across restarts; do not delete or replace its
 recovery state to bypass it. The V4 terminal capture workflow does not read this
 journal.
@@ -246,7 +315,7 @@ These commands are not available in the original V4 terminal.
 | `goto 2` | Verify, pick, hand over, place, and lift clear; automatic Home is opt-in. |
 | `hover 2` | Verify once, move the left arm through ready, hover only. |
 | `goto all` / `pick all available cups` | Preview available cups in confidence order, limited by free grid locations. |
-| `confirm <code>` | Execute the exact batch or language proposal, once, within 60 seconds. |
+| `confirm <code>` | Execute the reviewed action once, within 60 seconds. MacBook UI Pick all follows the changing workspace; other batches keep the reviewed list. |
 | `cancel` | Discard a pending proposal; does not stop robot movement. |
 | `reset` | Acknowledge manually checking/recovering the robot; no hardware command. Requires a new scan. |
 | `q` / `quit` | Exit. If advanced-shell work is active, request software stop before waiting for it to unwind. |
@@ -305,11 +374,12 @@ send Stop. Demo and dry-run Stop make no robot or gateway requests.
 ## What goto does
 
 The shared plan in `handover_plan.py` adapts the normal smooth handover from
-`smooth-dual-arm-handover` at `46fd6f2`, with **no automatic home before,
-between or after cups**. It is used by the UI, Assistant actions, shared device
+`smooth-dual-arm-handover` at `46fd6f2`, with **no Home inside an individual
+cup-transfer plan** by default. It is used by the UI, Assistant actions, shared device
 services, `picker_workflow.py` and normal dual-arm picks in `capture_and_detect.py`.
 The terminal retains its V4 capture/detection workflow and adds its separate
-Home once the batch finishes; that final Home is not part of the UI plan.
+Home once the batch finishes. Continuous MacBook Pick all has a separate Home
+step only after the source workspace becomes empty, then keeps watching.
 The branch's simulation-only overlapping multi-cup plan is not used.
 
 Normal paths use **60% acceleration and 40% ramp**. Loaded paths also request
@@ -322,8 +392,10 @@ overall cap. These are the UI's speed settings, rather than the source branch's
 50 mm/s final-approach default. Actual speed also depends on the controller.
 
 The UI preserves detected grip yaw/opening, optional camera-Z picking, placement
-reservations, Stop/recovery and the V4 saved scan. There are no captures or
-rematches between cups. Each cup finishes completely before the next starts.
+reservations, Stop/recovery and the existing movement plan. Each cup finishes
+completely before the next starts. The MacBook UI then checks the remaining
+source cups without sending a robot command; the other runtimes keep using the
+saved scan without this additional capture.
 
 1. Open the empty grippers and move the left arm to ready. Set it to the
    detected cup opening there.
@@ -338,12 +410,20 @@ rematches between cups. Each cup finishes completely before the next starts.
    Wait for both to finish before turning the cup.
 7. Turn the cup through the sideways midpoint to the downward pose above its
    destination, blending through the midpoint by 10 mm. The left stays clear.
-8. Lower the right hand straight to the selected grid location, release, lift
-   straight to 80 mm above it and remain there with the gripper open.
+8. Lower the right hand straight to the selected grid location, release and lift
+   straight to 80 mm above it. If a camera-clear waiting position is configured, move
+   there with the gripper open; otherwise remain above the placement.
 9. Complete the UI placement reservation only after every job finishes;
    `capture_and_detect.py` instead marks its chosen grid entry occupied. The next
-   cup starts through left ready; neither arm goes home between cups. The terminal
-   has a separate final Home after the batch; the UI does not.
+   cup starts through left ready; neither arm goes home while source cups remain.
+   The terminal has a separate final Home after the batch. Continuous MacBook
+   Pick all sends both arms Home only when the source workspace becomes empty,
+   then keeps watching for new cups.
+
+On the MacBook UI, the workspace and grid refresh runs after step 9 and before any
+next cup starts. It waits for both arms, including the move to the camera-clear waiting position.
+Grid refresh changes neither the approach, handover and retreat sequence nor the
+automatic Home setting.
 
 All normal dual-arm movements use the controller's loaded `RunPath` routine via
 `POST /api/v1/robot/rws/path`. Intermediate approach/lift/turn points blend by
@@ -423,8 +503,9 @@ labelled **P1–P12**, projected onto the table. Cup IDs remain separate. The ph
 four-by-three layout appears as three columns and four rows from this camera angle.
 
 Each scan collects **one observation with averaged depth**. Green means
-clear table depth, red means a cup or raised object, gray means unknown depth or
-visibility, and amber means reserved. The picture is the last scan, not live video.
+clear table depth, red means a cup or raised object, and gray means unknown depth
+or visibility. Scan images show camera evidence; current reservations appear in
+the placement grid. The picture is the last scan, not live video.
 Remove a placed cup, move your hand clear, then scan again. In live mode, a location
 is automatically made available only when the observation confirms clear
 table depth and no cup detection overlaps its projected area. A raised depth
@@ -433,14 +514,29 @@ placement area are excluded from picking and pick-all batches.
 
 Unknown observations preserve occupancy and set `vision_blocked: true`, preventing
 selection even when the previous file status was free. A later clear scan removes
-that block. Every update checks that the grid has not changed during capture and
-uses the same in-process synchronization as reservations. Camera checks never clear reserved
-locations or robot recovery. During recovery, and in dry-run mode, observations
-are previews only and do not change the saved grid. Picking does not capture additional observations or release locations.
-Picking uses the destination evidence from the reviewed scan. There are no
-per-cup destination captures, return-phase prefetch or source-cup rematching.
-The scan still checks placement geometry, table-reference identity and clear
-space; reservations and saved occupancy prevent reusing a completed destination.
+that block. Each fresh live scan updates the current saved grid, including when
+its occupancy or reservation records changed during capture. Grid bookkeeping
+changes do not interrupt an active handover or trigger extra robot checks. The scan
+reconciles saved locations, including reservations left by an interrupted handover:
+clear locations become available, while locations containing a cup or object stay
+occupied without the old reservation. Old reservation metadata is also removed
+from unknown locations, which remain unavailable until a later scan confirms clear
+space. **Scan workspace** remains available after a failed movement while the app
+is idle, but a software Stop still blocks scanning
+until acknowledged. Scanning does not acknowledge robot recovery or enable movement;
+the recovery inspection remains required. Dry-run observations are previews only
+and do not change the saved grid. MacBook picking uses destination evidence from
+the latest scan or successful after-placement grid refresh. After both arms have
+finished, that refresh reassesses and reconciles placement locations using the
+same camera observation as the source-cup update. Removing a placed cup makes its
+cell reusable once the camera confirms clear space; a newly occupied or uncertain
+cell is withheld from the next assignment. These occupancy changes do not stop
+the batch by themselves. There is no return-phase prefetch or camera assessment
+while an arm is still moving. A manual **Scan workspace** also assesses and
+reconciles the placement locations as described above.
+The checks retain placement geometry, table-reference identity and clear-space
+validation. Source-only configurations and runtimes without between-cup checks
+keep destination evidence from their manual scan.
 
 It inverts the calibration using all three tag-offset components. Cells are
 80 mm square, matching the existing spacing. `--grid-table-z` and
@@ -615,8 +711,9 @@ placement cell and does not move the placement targets.
 Saved cup assignments include `depth_shared_groups`, listing participating cell
 IDs, exclusive support, physical area support, shared pixel counts and retained
 foreign-cell pixels. These are group evidence, not a successful individual cup
-footprint assignment. Fresh camera checks, motion completion, recovery and
-reservation checks remain active. Restart a running dashboard to load the change.
+footprint assignment. Fresh camera checks, motion completion and recovery remain
+active. Grid bookkeeping changes do not interrupt the handover. Restart a running
+dashboard to load the change.
 
 Observed robot X/Y points occupy a **2 × 2 mm raster**; each occupied bin votes
 once, avoiding double counting dense image samples. The exact raised cup-mask
@@ -734,30 +831,98 @@ cups> confirm <the displayed code>
 `goto all` works without `--llm`. The web app has **Pick all available cups**
 with the same confirmation. Only candidates passing pick checks are included,
 highest confidence first (ID breaks ties). If there are more eligible cups than
-free locations, the preview lists the included cups and those left out. No new
-cup is silently substituted. Each included cup uses the coordinates in the reviewed snapshot. Each cycle ends with both arms at clearance poses by
-default, or at home when automatic Home was explicitly enabled.
+free locations, the preview lists the initial cups and those without a destination.
+On the **MacBook UI**, the preview explicitly authorizes following the current
+workspace. After each completed placement, the next capture refreshes moved cups,
+removes missing cups and adds newly detected pickable cups to the remaining batch.
+The next cup uses its fresh measurements and an available destination from the
+latest grid assessment, including cells newly cleared by removing a cup. Newly
+occupied cells are excluded. Progress shows the actual completed and pending
+cup counts as the queue changes. **MacBook Pick all stays active until Stop.**
+When the source workspace becomes empty, the dashboard shows **Workspace empty ·
+moving both arms Home**, completes Home once for that empty period, then shows
+**Watching for cups**. The camera continues refreshing. New pickable source cups
+resume the same confirmed run automatically when a grid cell is available.
+Both arms stay out of Home while any source cups remain, including cups that
+cannot currently be picked or cups waiting for grid space.
+
+When the grid fills during an active batch, the
+dashboard shows **Waiting for a clear grid cell** and the number of queued cups.
+It hides the cup-step percentage during Home and stationary waiting phases, and refreshes the camera without
+sending robot movement. Remove a cup from the grid and move your hand clear;
+when a location is confirmed clear, the same confirmed batch resumes automatically.
+Stop ends the continuous run and remains available while waiting. A batch cannot start from an already-full
+grid: clear a cell and scan before requesting the initial preview.
+The initial preview also needs at least one pickable source cup; continuous
+watching begins within an already-confirmed run.
+A selected or saved/named cup action remains a single pick even when this refresh
+finds more cups; it has no continuous watching or empty-workspace Home step.
+
+Other runtimes keep the original reviewed cup list, order and saved coordinates.
+Source-only batches retain their existing behavior of finishing when no
+destinations remain; automatic waiting requires between-cup grid refresh.
+Each cycle ends with both arms at clearance poses by default. When a right-arm
+**camera-clear waiting position** is configured, the right arm moves there after
+lifting clear. The workspace capture waits for that movement and every left-arm
+movement to finish. The review and progress include this waiting-position move only when
+configured. Home after every cup remains a separate, explicitly enabled mode;
+the continuous run's Home on an empty workspace does not enable that setting.
+
+The Mac workspace-check mode reads an optional `.right-park.json` sidecar next to
+the selected grid, for example `placing_grid_outside_tray.right-park.json`. The
+`right_via` preset uses the existing upright right-arm waiting position: the
+shared `R_VIA` coordinates and `RIGHT_UP` orientation from the handover plan.
+This avoids copying or adjusting those coordinates in the configuration. Use the
+exact configured gateway URL in the sidecar:
+
+```json
+{
+  "schema_version": 1,
+  "gateway": "http://192.168.125.20:8000",
+  "preset": "right_via"
+}
+```
+
+Existing explicit position files remain supported as an alternative: omit
+`preset`, keep the six-axis `pose` object (`x`, `y`, `z`, `rx`, `ry`, `rz`), and
+include `controller_pose` metadata for `arm: "right"`, `tool: "tool0"`,
+`wobj: "wobj0"` and `coordinate: "Wobj"`. The configured gateway and applicable
+position/frame validation still apply. A missing sidecar keeps the existing
+finish above the placement destination. Only Mac workspace-check mode loads this
+configuration; Pi/Lynx, direct non-macOS dashboards and terminal workflows retain
+their existing movement defaults.
+
 Any failure stops the batch before another cup is dispatched. Successful picks
-leave any remaining cups available from the same snapshot.
+leave any remaining cups available for the next request.
 
-The confirmation binds the scan, cup order and exact destinations. An edited grid
-invalidates the proposal. Before the first live command, all destinations in the
-batch are atomically marked `occupied: true`, `reserved: true`, with a reservation
-ID. After each fully confirmed sequence, its location stays occupied and its
-reservation metadata is removed. This records commanded completion, not vision
-proof of placement. Dry-run does not change occupancy.
+The confirmation binds the initial scan, destinations and motion settings. An
+edited grid invalidates the proposal. Before the first live command, the initial
+destinations are atomically marked `occupied: true`, `reserved: true`, with a
+reservation ID. MacBook Pick all then adjusts unfinished reservations to the
+refreshed source queue and current camera-assessed destination availability.
+Completed cup history remains recorded; a previously used grid location can be
+assigned again after the camera confirms that its cup has been removed. In a
+source-only configuration, destination choices stay within the original scan's
+clear locations. After each fully confirmed sequence, its location is recorded
+occupied and its reservation metadata is removed. A later grid assessment can
+update that occupancy. If a scan has already replaced that reservation,
+completion preserves the newer scan state and does not interrupt the handover.
+This records commanded completion, not vision proof of placement. Dry-run does
+not change occupancy.
 
-An interruption leaves unfinished destinations reserved, including unstarted cups.
-`reset` clears the robot recovery acknowledgement only; it does not free slots.
+An interruption leaves unfinished destinations reserved until the next fresh live
+scan, including unstarted cups. Scan again when the robot is idle to reconcile
+these locations from the camera: empty locations are released and occupied
+locations stay unavailable. Uncertain visibility remains blocked. `reset` clears
+the robot recovery acknowledgement only; it does not free slots. A scan can update
+locations during recovery without clearing the robot's movement lock.
 To clear **all** locations after removing the cups, use **Robot controls →
 Placement locations → Make all locations available** in the web app, review the
 locations and tick the inspection checkbox before confirming. Scan again before
 picking. This clears saved occupancy and reservations without clearing a stop or
 robot recovery block; the next camera check may mark locations occupied or blocked
-again. To recover just one **reserved** slot manually, stop controllers while the robot is idle, inspect the arms and
-placement area, remove any cup from that slot, then set its `occupied` to `false`
-and remove its `reserved` and `reservation_id` fields. Preserve its ID and coordinates.
-Restart and scan afterward; the camera must confirm its visibility before selection.
+again. Normally no manual grid edit is needed after a failed handover: remove any
+cup from a location you want to reuse, move your hand clear and scan again.
 Do not edit the grid during a sequence. This single-operator version uses no OS
 file locks and has no runtime dependency on `fcntl`. Threads within one app still
 serialize grid and saved-cup updates; device handoff and recovery checks remain.
@@ -818,15 +983,40 @@ assumes the same cup size and tabletop setup as the existing handover code.
 
 ## Snapshot execution, interruption and recovery
 
-The selected cup is taken from the reviewed scan. The picker sends no new camera
-request when confirming a pick, before approach or between cups. Stored images
-have no movement-age deadline. A successful pick marks that cup completed and
-leaves remaining cups selectable from the same scan. A completed cup cannot be
-picked again from that scan. An explicit new scan replaces the snapshot.
+The first selected cup is taken from the reviewed scan. No extra camera request
+runs when confirming a pick or before its first approach. Stored images have no
+movement-age deadline. A successful pick marks that cup completed, so it cannot
+be picked again from that scan. An explicit new scan replaces the snapshot.
 
-The destination must be clear in the saved scan and its reservation must still
-be valid. Confirmation remains one-use and expires after 60 seconds. Stop,
-failed commands, lost control, persistence failures and uncertain completion
+After each successful live placement, the MacBook UI waits for both arms to
+finish all movement jobs, including moving clear of the camera, then captures and refreshes
+the source cups and placement grid.
+It updates source measurements and the displayed image, including cups that have
+moved, appeared or disappeared. Matching cups retain their IDs; new cups receive
+new IDs. A confirmed Pick all rebuilds its remaining queue from these current
+pickable cups. Single and named picks finish after their one selected cup.
+Cups inside the placement area are excluded from source picking. The same
+observation assesses placement depth against the table reference and reconciles
+grid occupancy. Camera-cleared cells become available; newly occupied or unknown
+cells are unavailable for the next pick. Source-only configurations instead keep
+the cached placement-area exclusion geometry and the manual scan's destination
+evidence, without between-cup grid assessment or reconciliation.
+
+A missing fresh frame, failed detection or invalid observation stops further picks
+and requires **Scan workspace**. Moving, adding or removing source cups alone
+does not require a manual scan; neither does an ordinary grid occupancy change.
+A failed check does not retry the
+completed placement or by itself mark that completed motion unconfirmed. The
+check also runs after the final cup. Manual scans retain the full placement-grid
+assessment and reconciliation. Pi/Lynx, direct non-macOS dashboards and terminal
+workflows do not enable this after-placement check.
+
+The destination comes from the latest available clear-cell evidence: the initial
+scan for the first pick, then the refreshed grid for subsequent MacBook picks.
+Changes to saved occupancy or reservations do not interrupt an active handover;
+no extra grid validation is performed between movement steps. Confirmation remains one-use
+and expires after 60 seconds. Stop, failed commands, lost control, persistence
+failures and uncertain completion
 still stop further dispatch and preserve recovery. No movement is retried.
 
 Control leases tolerate different Mac/gateway clocks. For a Lynx gateway without
@@ -941,11 +1131,19 @@ robot watchdog. Independent robot stopping controls remain necessary. Recovery
 acknowledgement requires an explicit inspection checkbox and sends no robot command;
 it clears the recovery lock and requires a new scan, but does not clear grid reservations. Do not acknowledge it until the
 physical robot and cup have been checked.
+An orderly server shutdown asks a continuous batch to finish after its current
+completed movement or stationary wait instead of waiting indefinitely for another
+cup or free cell. Closing only the browser page does not end the server's run.
 
-The camera image is the **latest scan**, not continuous video. Progress comes from
-the existing execution callbacks and confirmed steps. A completed command sequence
+The camera image is the **latest scan or successful MacBook workspace check**,
+not continuous video. In MacBook grid-refresh mode, placement evidence updates
+with each successful after-placement observation. Source-only configurations
+retain placement evidence from the manual scan. Progress comes from
+the existing execution callbacks and confirmed steps; MacBook Pick all totals
+update with its remaining queue, and its final result lists the actual completed
+cups and reason for finishing. A completed command sequence
 does not independently prove that the cup was gripped or placed. No continuous
-collision monitoring, automatic home/recovery, raw XYZ controls or voice stop is
+collision monitoring, automatic recovery, raw XYZ controls or voice stop is
 introduced by this dashboard.
 
 Web implementation: `web_app.py` (browser launcher and local HTTP server),

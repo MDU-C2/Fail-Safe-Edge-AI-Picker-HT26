@@ -7,7 +7,7 @@ Source detection follows V4; the gateway and controller check motion targets.
 
 from cup_inventory import (
     GRIPPER_TCP_Z, LEFT_DOWN, LEFT_READY, TRAVEL_Z, SelectionError,
-    finite_number, normalize_offset, position_problem,
+    _motion_flange_problem, finite_number, normalize_offset, position_problem,
 )
 from placing_grid import validate_place
 
@@ -33,6 +33,10 @@ DEFAULT_SPEED = 250
 HOME_SPEED = 200
 HOME_UP_Z = 600
 LEFT_HOME_Y = 400
+# Where the empty left arm waits after the handover, out of the camera's view, until
+# the next cup: sideways to the left (+y) at the handover height (the same side move
+# its home routine uses). Tune it so the arm is not in the camera image.
+LEFT_PARK = (HANDOVER_X, LEFT_HOME_Y, LEFT_TOP)
 LEFT_GAP_CLOSED = 75
 PICK_SPEED = 100
 FLIP_SPEED = 100
@@ -47,6 +51,35 @@ RECEIVING_BLEND_MM = 3
 SLIDE_SPEED = 150
 DEFAULT_PHASE_SPEEDS = {"pick_lift": PICK_SPEED, "handover": None,
                         "flip": FLIP_SPEED, "placement": None}
+
+
+def right_via_pose():
+    """The existing upright right-arm waiting target in tool0/wobj0.
+
+    Camera parking can select this same target before capturing, so it cannot
+    drift away from the normal next-cup preparation pose as the plan is tuned.
+    This returns coordinates only and never dispatches motion.
+    """
+    return dict(zip(("x", "y", "z", "rx", "ry", "rz"), (*R_VIA, *RIGHT_UP)))
+
+
+def normalize_right_park_pose(value=None):
+    """Copy an explicitly supplied flange pose, without offsets or inferred yaw.
+
+    These are the existing ordinary Cartesian endpoint limits, not a guarantee
+    of reachability or collision clearance. The controller checks the movement.
+    None keeps the normal workflow ending above the placement destination.
+    """
+    if value is None:
+        return None
+    axes = ("x", "y", "z", "rx", "ry", "rz")
+    if (not isinstance(value, dict) or set(value) != set(axes)
+            or any(not finite_number(value[axis]) for axis in axes)):
+        raise SelectionError("Right-arm parking pose must contain exactly six finite x/y/z/rx/ry/rz values.")
+    problem = _motion_flange_problem(tuple(value[axis] for axis in ("x", "y", "z")))
+    if problem:
+        raise SelectionError(f"Right-arm parking pose: {problem}.")
+    return {axis: value[axis] for axis in axes}
 
 
 def normalize_phase_speeds(value=None):
@@ -230,7 +263,7 @@ class _Plan:
 
 def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   home_speed=None, handover_offset=(0, 0, 0), camera_z=False, phase_speeds=None,
-                  home_after_cup=False):
+                  home_after_cup=False, right_park_pose=None):
     """Adapt the smooth branch's normal per-cup plan without automatic homing.
 
     Source XY, detected yaw/aperture, optional camera height and the selected
@@ -250,16 +283,23 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     Left approach/grip overlaps right preparation at R_VIA. Both finish before
     left lift/handover overlaps the right move beside it. Right opening waits
     for both arrivals; left release waits for confirmed right grip. After the
-    release the arms move straight apart together. Turnover waits for both to
-    finish, then placement completes before another cup can start.
+    release the arms move straight apart: the left up out of the cup, the right
+    down. The turnover waits until the left is up; only after the turnover does
+    the left move on to LEFT_PARK. Placement completes before another cup starts.
 
-    By default left stays open above the handover and right stays open above
-    placement; the grippers close only on a cup. No home command is issued,
+    By default left parks open out of the camera's view (LEFT_PARK) and
+    right stays open above placement; the grippers close only on a cup. No home command is issued,
     even for the last cup. Explicit ``home_after_cup=True`` retains the
-    initial right home and return-home sequences. There is no retry or fallback after an unconfirmed movement.
+    initial right home and return-home sequences. An explicit ``right_park_pose``
+    adds one empty-arm joint path after the normal placement clearance lift;
+    it cannot be combined with automatic homing. No pose is inferred or enabled
+    by default. There is no retry or fallback after an unconfirmed movement.
     """
     if type(home_after_cup) is not bool:
         raise SelectionError("home_after_cup must be a boolean")
+    right_park = normalize_right_park_pose(right_park_pose)
+    if home_after_cup and right_park is not None:
+        raise SelectionError("Right-arm parking cannot be combined with home_after_cup.")
     plan = _Plan(speed, home_speed, dependencies=True, phase_speeds=phase_speeds)
     normalize_handover_offset(handover_offset)
     take = R_TAKE
@@ -280,20 +320,21 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     # Grippers close only on a cup (grip_cup, right_grip); otherwise they stay
     # open, ready for the next cup. Both open first, in case they start closed.
     plan.grip("right_open_start", "right", "open")
-    plan.grip("left_open_start", "left", "open")
     if home_after_cup:
         plan.home("right_home_start", "right")
-    plan.path("left_ready", "left", [(LEFT_READY, LEFT_DOWN, plan.speed, False)],
-              move_speed=plan.speed,
-              after=("right_home_start",) if home_after_cup else ())
+    # The left opens to the cup's width where it waits (out of the camera's view),
+    # then goes to the cup in one smooth motion without stopping: through LEFT_READY
+    # and above the cup (both blended), then straight down to the grip height (stop).
     if aperture is None:
         plan.grip("left_open", "left", "open")
     else:
         position = round(min(max((aperture - LEFT_GAP_CLOSED) / 2, 0), 25), 1)
         plan.grip("left_open", "left", "move", position=position)
     plan.path("approach_cup", "left",
-              [(above, rotation, plan.speed, False),
-               (pick, rotation, pick_speed, True)], move_speed=plan.speed)
+              [(LEFT_READY, LEFT_DOWN, plan.speed, False),
+               (above, rotation, plan.speed, False),
+               (pick, rotation, pick_speed, True)], move_speed=plan.speed,
+              after=("right_home_start",) if home_after_cup else ())
     plan.grip("grip_cup", "left", "grip")
     plan.path("right_via", "right", [(R_VIA, RIGHT_UP, receive_speed, False)],
               move_speed=receive_speed, after=("left_open",))
@@ -314,18 +355,26 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               move_speed=receive_speed, zone=RECEIVING_BLEND_MM)
     plan.grip("right_grip", "right", "grip")
     plan.grip("left_release", "left", "open", after=("right_grip",))
+    # 1. Apart: the left goes straight up out of the cup (slowly, its jaws are
+    #    still around it) while the right takes the cup down out of the jaws.
     left_clear = (HANDOVER_L[0], HANDOVER_L[1], HANDOVER_L[2] + LEFT_LIFT)
-    plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, plan.speed, True)],
-              move_speed=plan.speed)
+    plan.path("left_clear", "left", [(left_clear, LEFT_DOWN, pick_speed, True)],
+              move_speed=pick_speed)
     plan.path("right_lower", "right", [(below, RIGHT_UP, receive_speed, True)],
               move_speed=receive_speed, after=("left_release",), **carrying)
+    # 2. The right turns the cup over only once the left is up.
     plan.path("right_retreat", "right",
               [(turn_half, RIGHT_SIDE, flip_speed, False),
                (place_above, RIGHT_DOWN, flip_speed, False)],
               move_speed=flip_speed, acceleration=FLIP_ACCELERATION,
               after=("left_clear",), **carrying)
+    # 3. After the turnover the left moves on: to LEFT_PARK (out of the camera's
+    #    view) between cups, or home.
     if home_after_cup:
         plan.return_home("left", left_clear, LEFT_DOWN, after=("right_retreat",))
+    else:
+        plan.path("left_park", "left", [(LEFT_PARK, LEFT_DOWN, plan.speed, False)],
+                  move_speed=plan.speed, after=("right_retreat",))
     plan.path("right_place", "right", [(spot, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed, **carrying)
     plan.grip("right_release", "right", "open")
@@ -333,6 +382,24 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
               move_speed=place_speed)
     if home_after_cup:
         plan.home("right_home", "right")
+    elif right_park is not None:
+        position = tuple(right_park[axis] for axis in ("x", "y", "z"))
+        rotation = tuple(right_park[axis] for axis in ("rx", "ry", "rz"))
+        plan.path("right_park", "right", [(position, rotation, place_speed, False)],
+                  move_speed=place_speed, zone=0)
+    return plan.jobs
+
+
+def right_camera_park_jobs(*, speed=None, phase_speeds=None):
+    """Finish an inherited, fully placed cup at the same right camera target.
+
+    The caller must confirm the previous queue completed placement and left
+    parking. This is the normal right_clear-to-right_park transition, never Home.
+    """
+    plan = _Plan(speed, None, phase_speeds=phase_speeds)
+    place_speed = plan.phase_speeds["placement"]
+    plan.path("right_park", "right", [(R_VIA, RIGHT_UP, place_speed, False)],
+              move_speed=place_speed, zone=0)
     return plan.jobs
 
 

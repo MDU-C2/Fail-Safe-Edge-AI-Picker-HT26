@@ -15,6 +15,8 @@ import shutil
 
 MODEL_REQUIRED = ("model.ncnn.param", "model.ncnn.bin", "metadata.yaml", "manifest.json")
 MODEL_OPTIONAL = ("classes.txt",)
+VIEWER_ASSETS = ("viewer3d.js", "pose_interpolation.js", "cup_holding.js", "three-bundle.min.js",
+                 "yumi_model.json", "yumi_model.bin")
 GATEWAY_PACKAGES = (
     "calibration", "camera", "control", "events", "models", "robot", "rws", "security",
 )
@@ -56,10 +58,13 @@ def stage(repo: Path, model: Path, output: Path, *, profile="combined") -> dict[
             "controller_status", "gateway_capabilities", "terminal_controller",
             "terminal_commands", "operator_commands", "language_commands", "local_llm",
             "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
+            "workspace_check", "queued_robot_client", "failover_coordinator", "failover_workflow", "failover_worker",
+            "robot_telemetry",
         ):
             add(repo / "capture_and_detect" / (name + ".py"), "app/capture_and_detect/" + name + ".py")
         for name in ("__init__", "picker", "capture", "raw_images", "model", "resources",
-                     "placement_records", "native_transport", "native_perception", "runtime"):
+                     "placement_records", "native_transport", "native_perception", "runtime",
+                     "runtime_lock", "standby", "armed_service"):
             add(repo / "lynx" / (name + ".py"), "app/lynx/" + name + ".py")
     else:
         gateway = repo / "gateway"
@@ -78,6 +83,8 @@ def stage(repo: Path, model: Path, output: Path, *, profile="combined") -> dict[
         for source in sorted((capture / "web_static").iterdir()):
             if source.suffix in {".html", ".css", ".js"}:
                 add(source, Path("app/capture_and_detect/web_static") / source.name)
+        for name in VIEWER_ASSETS:
+            add(capture / "web_static/3d" / name, Path("app/capture_and_detect/web_static/3d") / name)
         for source in sorted((repo / "lynx").glob("*.py")):
             if not source.name.startswith("test_"):
                 add(source, Path("app/lynx") / source.name)

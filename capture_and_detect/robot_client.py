@@ -26,6 +26,14 @@ class RobotCommandError(RuntimeError):
     """A command could not be validated, dispatched, or confirmed complete."""
 
 
+class GatewayReadUnavailable(RobotCommandError):
+    """A status read temporarily failed; no robot command was issued."""
+
+
+class GatewayControlUnavailable(RobotCommandError):
+    """A lease request is unconfirmed; yield and establish ownership afresh."""
+
+
 class RobotClient:
     CONTROL_TIMEOUT = 5
     # The RWS gateway waits up to 60 seconds for a job to complete.
@@ -41,7 +49,8 @@ class RobotClient:
 
     def __init__(self, api: str, headers: Mapping[str, str], dry_run: bool = False):
         self.api = api.rstrip("/")
-        self.headers = dict(headers)
+        self.headers = {key: value for key, value in headers.items() if key.lower() != "connection"}
+        self.headers["Connection"] = "close"
         self.dry_run = dry_run
         self._owned_lease = False
         self._release_needed = False
@@ -188,7 +197,9 @@ class RobotClient:
                 raise RobotCommandError(f"Gateway {endpoint} returned invalid status.")
             return reply
         except (requests.RequestException, ValueError) as exc:
-            raise RobotCommandError(f"Gateway {endpoint} status failed: {exc}{self._response_detail(response)}") from exc
+            error_type = (GatewayReadUnavailable if self._temporary_transport_failure(exc, response)
+                          else RobotCommandError)
+            raise error_type(f"Gateway {endpoint} status failed: {exc}{self._response_detail(response)}") from exc
         finally:
             if response is not None:
                 response.close()
@@ -231,10 +242,25 @@ class RobotClient:
         except (requests.RequestException, ValueError) as exc:
             detail = (" Robot completion is unknown; the command was not retried."
                       if move is not None else " No further commands will be sent.")
-            raise RobotCommandError(f"Gateway {endpoint} failed: {exc}{self._response_detail(response)}.{detail}") from exc
+            # Lease requests cannot move the robot. Their lost replies require
+            # fresh ownership checks; physical POSTs remain ambiguous and must
+            # never be labelled as a read/control operation that can be retried.
+            error_type = (GatewayControlUnavailable
+                          if endpoint in {"/control/acquire", "/control/renew", "/control/release"}
+                          and self._temporary_transport_failure(exc, response) else RobotCommandError)
+            raise error_type(f"Gateway {endpoint} failed: {exc}{self._response_detail(response)}.{detail}") from exc
         finally:
             if response is not None:
                 response.close()
+
+    @staticmethod
+    def _temporary_transport_failure(error, response):
+        code = getattr(response, "status_code", None)
+        if isinstance(code, int) and (code in {408, 429} or 500 <= code < 600):
+            return True
+        return isinstance(error, (requests.ConnectionError, requests.Timeout,
+                                  requests.exceptions.ChunkedEncodingError,
+                                  requests.exceptions.ContentDecodingError))
 
     @staticmethod
     def _response_detail(response):
@@ -895,7 +921,9 @@ class RobotClient:
                     )
             print(f"Verified {arm} home joint pose.")
         except (requests.RequestException, ValueError) as exc:
-            raise RobotCommandError(
+            error_type = (GatewayReadUnavailable if self._temporary_transport_failure(exc, response)
+                          else RobotCommandError)
+            raise error_type(
                 f"Home verification for the {arm} arm failed: {exc}. "
                 "The arm reported DONE but its home pose is unconfirmed; "
                 "no further commands will be sent."

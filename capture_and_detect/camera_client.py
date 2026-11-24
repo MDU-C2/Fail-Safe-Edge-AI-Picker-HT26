@@ -16,8 +16,12 @@ class CameraError(RuntimeError):
     """The camera could not supply a usable observation."""
 
 
-class _TransientCameraError(CameraError):
-    pass
+class TransientCameraError(CameraError):
+    """A temporary read failure; a later capture must obtain a new valid pair."""
+
+
+# Keep imports by older adapters working while exposing the retryable contract.
+_TransientCameraError = TransientCameraError
 
 
 class NoNewCameraFrame(_TransientCameraError):
@@ -40,7 +44,10 @@ class CameraClient:
     def __init__(self, api, headers, session=None, *, max_dimensions=None):
         self.max_dimensions = max_dimensions
         self.api = api.rstrip("/")
-        self.headers = dict(headers)
+        self.headers = {key: value for key, value in headers.items() if key.lower() != "connection"}
+        # Each request owns its response. Do not retain an idle server socket
+        # after a read, including when a disconnected owner abandons a stream.
+        self.headers["Connection"] = "close"
         # Injection keeps tests offline; construction never makes a request.
         self.session = requests if session is None else session
 
@@ -97,6 +104,19 @@ class CameraClient:
         # at most its current read timeout (up to two seconds).
         return self.get(path, stream=stream, timeout_s=min(2.0, self._remaining(deadline)))
 
+    def _status_sequence(self, deadline):
+        response = self._get_before("/camera/status", deadline)
+        try:
+            try:
+                status = response.json()
+            except (ValueError, TypeError) as error:
+                raise CameraError("Camera status is not valid JSON") from error
+            if not isinstance(status, dict) or status.get("connected") is not True:
+                raise CameraError("Gateway camera is not connected")
+            return _integer(status.get("sequence"), "camera status sequence")
+        finally:
+            response.close()
+
     @staticmethod
     def _frame_headers(response, expected_format):
         headers = response.headers
@@ -150,19 +170,18 @@ class CameraClient:
         last_error = CameraError("No newer matching RGB + depth pair was available")
 
         while time.monotonic() < deadline:
-            rgb_response = depth_response = status_response = None
+            rgb_response = depth_response = None
             try:
-                if fresh and baseline is None:
-                    status_response = self._get_before("/camera/status", deadline)
-                    try:
-                        status = status_response.json()
-                    except (ValueError, TypeError) as error:
-                        raise CameraError("Camera status is not valid JSON") from error
-                    if not isinstance(status, dict) or status.get("connected") is not True:
-                        raise CameraError("Gateway camera is not connected")
-                    baseline = _integer(status.get("sequence"), "camera status sequence")
-                    status_response.close()
-                    status_response = None
+                if fresh:
+                    if baseline is None:
+                        baseline = self._status_sequence(deadline)
+                    # Wait on the small status response instead of repeatedly
+                    # asking the gateway to send two large, stale images that
+                    # would be discarded after inspecting only their headers.
+                    # Recheck after a pair race too; the original baseline and
+                    # deadline still govern the entire observation.
+                    if self._status_sequence(deadline) <= baseline:
+                        raise NoNewCameraFrame("Camera has not published a newer frame (possibly frozen)")
 
                 rgb_response = self._get_before("/camera/rgb", deadline, stream=True)
                 depth_response = self._get_before("/camera/depth", deadline, stream=True)
@@ -194,7 +213,7 @@ class CameraClient:
             except _TransientCameraError as error:
                 last_error = error
             finally:
-                for response in (rgb_response, depth_response, status_response):
+                for response in (rgb_response, depth_response):
                     if response is not None:
                         response.close()
 
@@ -202,8 +221,8 @@ class CameraClient:
             if remaining > 0:
                 time.sleep(min(0.05, remaining))
 
-        error_type = NoNewCameraFrame if isinstance(last_error, NoNewCameraFrame) else CameraError
-        raise error_type(f"Could not capture a fresh matching RGB + depth pair: {last_error}")
+        error_type = NoNewCameraFrame if isinstance(last_error, NoNewCameraFrame) else TransientCameraError
+        raise error_type(f"Could not capture a fresh matching RGB + depth pair: {last_error}") from last_error
 
     def capture_latest_raw(self, timeout_s=10):
         """V4 scan entry point: use the latest matched pair without a baseline wait."""

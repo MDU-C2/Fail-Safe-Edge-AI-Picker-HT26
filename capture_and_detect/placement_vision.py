@@ -393,13 +393,14 @@ class PlacementVision:
             if polygon.shape != (4, 2) or not np.isfinite(polygon).all() or np.abs(polygon).max() > 100000:
                 continue
             polygon = np.rint(polygon).astype(np.int32)
-            reserved = slot.get("reserved", False)
-            color = (0, 185, 255) if reserved else colors[slot["state"]]
+            # The image is saved before scan reconciliation. Show what this
+            # observation sees, not a reservation inherited from an earlier run.
+            color = colors[slot["state"]]
             cv2.polylines(image, [polygon], True, color, 2, cv2.LINE_AA)
             center = np.rint(polygon.mean(axis=0)).astype(int)
             label = f"P{slot['id']}"
             evidence = slot.get("evidence", [])
-            state = ("RESERVED" if reserved else "CUP" if "cup" in evidence
+            state = ("CUP" if "cup" in evidence
                      else "OBJECT" if "detected_object" in evidence
                      else "DEPTH CHECK" if "raised_depth" in evidence
                      else slot["state"].upper())

@@ -50,7 +50,7 @@ Set it once in the terminal (never put it in this file):
 
 Usage:
     py capture_and_detect.py
-    py capture_and_detect.py --gateway http://169.254.125.202:8000 --conf 0.6
+    py capture_and_detect.py --gateway http://169.254.219.127:8000 --conf 0.6
     py capture_and_detect.py --left-only
 """
 
@@ -107,7 +107,7 @@ PICK_Z = 70             # TCP height when gripping a cup (was 80, then 70: gripp
 # Picked cups read base z ~35, so z + 35 gives the tested 70 for a typical cup.
 CAMERA_Z_OFFSET = 20       # TCP height above the cup's camera base z
 CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
-USE_CAMERA_Z = False       # set by --camera-z
+USE_CAMERA_Z = True        # default: depth from the camera; --fixed-z turns it off
 DEPTH_FRAMES = 5           # depth = pixel-by-pixel median of this many camera frames (depth_average.py)
 TRAVEL_Z = 250             # left-only TCP travel height; dual-arm uses the shared plan's 175 mm
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
@@ -847,19 +847,23 @@ def main():
     global USE_CAMERA_Z, DEPTH_FRAMES
     parser = argparse.ArgumentParser(description="Capture, detect cups and hand one over between the arms")
     parser.add_argument("--output", default=str(HERE / "Data" / "Detections"))
-    parser.add_argument("--gateway", default="http://169.254.125.202:8000", help="Gateway address")
+    parser.add_argument("--gateway", default="http://169.254.219.127:8000", help="Gateway address")
     parser.add_argument("--conf", type=float, default=0.5, help="YOLO confidence threshold")
     parser.add_argument("--left-only", action="store_true",
                         help="only the left arm: pick the cup, lift it and put it back (no hand-over)")
-    parser.add_argument("--camera-z", action="store_true",
-                        help=f"TEST: grip height from each cup's camera z + {CAMERA_Z_OFFSET} instead of PICK_Z {PICK_Z}")
+    parser.add_argument("--camera-z", dest="camera_z", action="store_true", default=True,
+                        help=f"grip height from each cup's camera z + {CAMERA_Z_OFFSET} (DEFAULT, flag kept for old commands)")
+    parser.add_argument("--fixed-z", dest="camera_z", action="store_false",
+                        help=f"use the fixed PICK_Z {PICK_Z} instead of the camera depth")
     parser.add_argument("--depth-frames", type=int, default=DEPTH_FRAMES,
                         help=f"camera frames whose depth is averaged (default {DEPTH_FRAMES}, 1 = off)")
     args = parser.parse_args()
     USE_CAMERA_Z = args.camera_z
     DEPTH_FRAMES = max(1, args.depth_frames)
     if USE_CAMERA_Z:
-        log(f"--camera-z: grip height = cup camera z + {CAMERA_Z_OFFSET}, not below {CAMERA_Z_FLOOR}")
+        log(f"Camera z (default): grip height = cup camera z + {CAMERA_Z_OFFSET}, not below {CAMERA_Z_FLOOR}")
+    else:
+        log(f"--fixed-z: grip height = PICK_Z {PICK_Z}")
 
     gateway = Gateway(args.gateway, load_token())
     store = CaptureStore(args.output)

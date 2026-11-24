@@ -436,6 +436,89 @@ test("batch review uses controller cups and destinations and has one batch confi
   assert.equal(JSON.parse(p.posts().find((item) => item.url === "/api/confirm").body).action, "goto_all");
 });
 
+test("dynamic batch review explicitly confirms all workspace cups with initial destinations", async () => {
+  const p = await page({ answer: suggestion("batch", { cup_ids: [2, 3] }), proposal: {
+    action: "goto_all", dynamic_batch: true, cup_ids: [2, 3], placements: [{ id: 9 }, { id: 10 }],
+    description: "Follow the current workspace after each placement, including new pickable cups.",
+  } });
+  await p.ask("Pick all cups");
+  const review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /Pick all workspace cups/);
+  assert.match(review, /Initial destinations: Cup 2 → P9 · Cup 3 → P10/);
+  assert.match(review, /moved and newly added cups/);
+  assert.equal(actionButton(p, "Confirm 2 cups"), undefined);
+  await actionButton(p, "Confirm Pick all").click();
+  const confirmations = p.posts().filter((item) => item.url === "/api/confirm");
+  assert.equal(confirmations.length, 1);
+  assert.equal(JSON.parse(confirmations[0].body).action, "goto_all");
+});
+
+test("assistant review distinguishes grid refresh and stationary waiting from source-only checks", async () => {
+  for (const gridCheck of [false, true]) {
+    const p = await page({ answer: suggestion("batch", { cup_ids: [2, 3] }), proposal: {
+      action: "goto_all", dynamic_batch: true, cup_ids: [2, 3], placements: [{ id: 9 }, { id: 10 }],
+      between_cup_check: true, between_cup_grid_check: gridCheck,
+    } });
+    await p.ask("Pick all cups");
+    const review = allText(p.dom["assistant-messages"]);
+    if (gridCheck) {
+      assert.match(review, /Camera-cleared cells can be reused/);
+      assert.match(review, /wait and refresh automatically, then resume when a cell is clear/);
+      assert.doesNotMatch(review, /evidence stays from the manual scan/);
+    } else {
+      assert.match(review, /refreshes source cups only/);
+      assert.match(review, /evidence stays from the manual scan/);
+      assert.doesNotMatch(review, /Camera-cleared cells can be reused|wait and refresh automatically/);
+    }
+  }
+});
+
+test("continuous assistant review binds empty-workspace Home and watching only to Pick all", async () => {
+  const motion = { continuous_batch: true, between_cup_grid_check: true, between_cup_check: true };
+  const p = await page({ answer: suggestion("batch", { cup_ids: [2, 3] }), state: { motion }, proposal: {
+    action: "goto_all", dynamic_batch: true, continuous_batch: true, cup_ids: [2, 3], placements: [{ id: 9 }, { id: 10 }],
+  } });
+  await p.ask("Pick all cups");
+  let review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /both arms go Home once and the camera keeps watching/);
+  assert.match(review, /full grid with cups still waiting does not send the arms Home/);
+  assert.match(review, /Home only when the source workspace becomes empty/);
+  assert.doesNotMatch(review, /Automatic home off/);
+  await actionButton(p, "Confirm Pick all").click();
+  await p.publish({ busy: true, batch: { state: "homing_when_empty", home_cycles: 0 },
+    progress: { completed: 14, total: 14 } });
+  assert.match(allText(p.dom["assistant-messages"]), /Workspace empty · moving both arms Home once/);
+  await p.publish({ busy: true, batch: { state: "waiting_for_cups", home_cycles: 1, arms_home: true },
+    progress: { completed: 14, total: 14 } });
+  review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /Watching for cups. Pick all is still active/);
+  assert.doesNotMatch(review, /14 \/ 14 steps/);
+  await p.publish({ busy: true, batch: { state: "waiting_for_cups", home_cycles: 1,
+    arms_home: false, completion_reason: "no_pickable_cups" }, progress: { completed: 14, total: 14 } });
+  review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /Cups are still detected, so the arms stay clear while the camera looks for a pickable cup/);
+  assert.doesNotMatch(review, /14 \/ 14 steps/);
+  assert.equal(p.posts().filter((item) => item.url === "/api/confirm").length, 1);
+
+  const single = await page({ answer: suggestion(), state: { motion }, proposal: { continuous_batch: false } });
+  await single.ask("Pick cup 2");
+  const singleReview = allText(single.dom["assistant-messages"]);
+  assert.match(singleReview, /Automatic home off/);
+  assert.doesNotMatch(singleReview, /Home only when|both arms go Home once/);
+  assert.ok(actionButton(single, "Confirm pick"));
+});
+
+test("camera-clear waiting position is described only when the controller enables it", async () => {
+  const p = await page({ answer: suggestion(), proposal: {
+    right_park_pose: { x: 400, y: -200, z: 300, rx: 0, ry: 180, rz: 0 },
+  } });
+  await p.ask("Pick cup 2");
+  const review = allText(p.dom["assistant-messages"]);
+  assert.match(review, /right arm waits at its camera-clear waiting position/);
+  assert.doesNotMatch(review, /taught pose|taught parking pose/);
+  assert.doesNotMatch(review, /arms remain at clearance poses/);
+});
+
 test("saved-cup matching automatically prepares a text-safe reference review", async () => {
   const injected = '<img src=x onerror="alert(1)">';
   const p = await page({ answer: suggestion("pick_saved", { message: injected }), proposal: { saved_cup: { name: injected, match_reason: "Astra found the white handle.", thumbnail_url: "/api/saved-image/cup_reference_1" } } });
@@ -455,6 +538,18 @@ test("real review includes the current scan and controller movement settings", a
   assert.match(text,/Acceleration: 50% · Cup flip: 20%/);
   assert.match(text,/Right receiving target: X 330, Y -115, Z 316 mm/); assert.match(text,/Offset: X 1, Y 2, Z 3 mm/);
   assert.equal(nodes(p.dom["assistant-messages"],"assistant-pick-scan")[0].open,true);
+});
+
+test("assistant review displays the refreshed photo while confirming the original selection capture", async () => {
+  const p = await page({ answer: suggestion(), state: { inventory: {
+    capture: "scan-1", image_capture: "between_cups-2", image_url: "/api/image/between_cups-2", cups: [{ id: 2 }],
+  } } });
+  await p.ask("Pick cup 2");
+  const scan = nodes(p.dom["assistant-messages"], "assistant-pick-scan")[0];
+  assert.equal(scan.children.find((child) => child.tag === "img").attributes.src, "/api/image/between_cups-2");
+  await actionButton(p, "Confirm pick").click();
+  const confirmation = p.posts().find((item) => item.url === "/api/confirm");
+  assert.equal(JSON.parse(confirmation.body).capture_id, "scan-1");
 });
 
 test("assistant review prefers proposal acceleration over current controller settings", async () => {
@@ -592,6 +687,26 @@ test("normal live motion recovery journaling remains progress until the controll
   await p.publish({busy:false,recovery_required:false,error:null,message:"Cup placed successfully."});
   assert.match(allText(p.dom["assistant-messages"]),/Cup placed successfully/);
   assert.equal(p.dom["assistant-input"].disabled,false);
+});
+
+test("assistant shows full-grid waiting and resumes progress without another confirmation", async () => {
+  const p = await page({ answer: suggestion("batch", { cup_ids: [2, 3] }), proposal: {
+    action: "goto_all", dynamic_batch: true, cup_ids: [2, 3], placements: [{ id: 9 }, { id: 10 }],
+    between_cup_check: true, between_cup_grid_check: true,
+  } });
+  await p.ask("Pick all cups");
+  await actionButton(p, "Confirm Pick all").click();
+  await p.publish({ busy: true, batch: { state: "waiting_for_grid", waiting_cup_ids: [3], pending_cups: [] },
+    progress: { completed: 7, total: 7 }, message: "Placement completed." });
+  let text = allText(p.dom["assistant-messages"]);
+  assert.match(text, /Waiting for a clear grid cell · 1 cup queued/);
+  assert.match(text, /batch resumes when a cell is clear/);
+  assert.doesNotMatch(text, /7 \/ 7 steps/);
+  await p.publish({ busy: true, batch: { state: "running", waiting_cup_ids: [], pending_cups: [3] },
+    progress: { completed: 8, total: 14 }, message: "Picking cup 3." });
+  text = allText(p.dom["assistant-messages"]);
+  assert.match(text, /Picking cup 3. · 8 \/ 14 steps/);
+  assert.equal(p.posts().filter((item) => item.url === "/api/confirm").length, 1);
 });
 
 test("an uncertain confirmation never sends a second confirmation", async () => {

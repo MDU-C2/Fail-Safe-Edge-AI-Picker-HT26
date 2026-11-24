@@ -98,6 +98,8 @@ class PickerHandler(BaseHTTPRequestHandler):
             agent = self.server.agent
             routes = {"/v1/health": agent.health, "/v1/state": agent.state,
                       "/v1/handoff": agent.last_handoff}
+            if callable(getattr(agent, "robot_pose", None)):
+                routes["/v1/robot-pose"] = agent.robot_pose
             if self.path in routes:
                 self.json_response(200, routes[self.path]())
                 return
@@ -190,6 +192,11 @@ def python_factory(args, *, runtime_paths=None, prefer_environment_token=False):
 
     def factory(controller):
         from web_app import hardware_factory
+        if getattr(args, "device_id", None) == "pi":
+            # A dormant service holds no model lock. Activation must exclude
+            # the armed standalone worker before either loads its local model.
+            from lynx.runtime_lock import NativeRuntimeLock
+            controller.attach_resource(NativeRuntimeLock(args.state_dir).acquire())
         # Existing hardware factory reads this private, process-local credential.
         if not prefer_environment_token or not os.environ.get("GATEWAY_TOKEN"):
             os.environ["GATEWAY_TOKEN"] = read_gateway_token(args.state_dir / "gateway-token")
@@ -203,10 +210,12 @@ def python_factory(args, *, runtime_paths=None, prefer_environment_token=False):
             inference_startup_timeout=90.0, inference_events=None,
             mac_timeout=5.0, pi_timeout=30.0, mac_probe_interval=3.0, mac_recovery_successes=3,
             verification_frames=1, strict_single_verification=True, scan_observations=1,
-            execution_lock_held=True, discover_operator_controls=True)
+            execution_lock_held=True, discover_operator_controls=True,
+            between_cup_check=getattr(args, "device_id", None) == "mac")
         return hardware_factory(options)(controller)
     factory.metadata = lambda: {"backend": "python", "model": args.model.name,
-                                "workflow": "v4_snapshot", "per_cup_capture": False, "depth_frames": args.depth_frames}
+                                "workflow": "workspace_between_cups" if getattr(args, "device_id", None) == "mac" else "v4_snapshot",
+                                "per_cup_capture": getattr(args, "device_id", None) == "mac", "depth_frames": args.depth_frames}
     factory.configure_motion = configure_motion
     return factory
 

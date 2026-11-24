@@ -1,4 +1,5 @@
 """Offline native web-factory lifecycle, evidence and dependency checks."""
+import copy
 import json
 from pathlib import Path
 import subprocess
@@ -10,6 +11,7 @@ import pytest
 
 from lynx.runtime import native_web_factory
 from lynx.tests.test_cli_capture import capture_rig
+from handover_plan import right_via_pose
 
 
 class Controller:
@@ -59,7 +61,7 @@ def native_rig(capture_rig, monkeypatch):
 
 def test_import_and_factory_creation_do_not_load_heavy_modules_or_open_resources():
     code = '''
-import importlib.abc, sys
+import importlib.abc, sys, tempfile
 from types import SimpleNamespace
 blocked = {'numpy','cv2','torch','ultralytics','depthai','fastapi','uvicorn','gateway','starlette'}
 class Guard(importlib.abc.MetaPathFinder):
@@ -74,30 +76,35 @@ assert not blocked.intersection(sys.modules)
 assert 'lynx.native_perception' not in sys.modules
 assert 'camera_client' not in sys.modules
 from unittest.mock import patch
-factory = lynx.runtime.native_web_factory(SimpleNamespace(state_dir='.', model='/missing'))
-with patch('lynx.model.Model.load', side_effect=ValueError('before resources')):
-    try:
-        factory(None)
-    except ValueError as error:
-        assert str(error) == 'before resources'
-    else:
-        raise AssertionError('Expected mocked model load failure')
+with tempfile.TemporaryDirectory() as state:
+    factory = lynx.runtime.native_web_factory(SimpleNamespace(state_dir=state, model='/missing'))
+    with patch('lynx.model.Model.load', side_effect=ValueError('before resources')):
+        try:
+            factory(None)
+        except ValueError as error:
+            assert str(error) == 'before resources'
+        else:
+            raise AssertionError('Expected mocked model load failure')
 assert not blocked.intersection(sys.modules)
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
-def test_default_factory_matches_deployed_single_pass_policy_without_taking_file_lock(native_rig, monkeypatch):
+def test_default_factory_enables_finite_refresh_with_native_worker_exclusion(native_rig, monkeypatch):
     rig = native_rig
     original_grid = rig.grid.path.read_bytes()
     factory = native_web_factory(rig.args)
     assert not rig.worker_start.called and not rig.camera_start.called
+    assert not (rig.grid.path.parent / "picker-native.lock").exists()
     session, language = factory(rig.controller)
     assert session.verification_frames == 1 and session.strict_single_verification is True
     assert session.max_result_age == 60 and session.camera_z is False
     assert session.home_after_cup is False
     assert session.motion_settings()["home_after_cup"] is False
+    assert session.between_cup_check is True and session.between_cup_grid_check is True
+    assert session.motion_settings()["continuous_batch"] is False
+    assert session.right_park_pose == right_via_pose()
     assert session.robot.dry_run
     assert session.placing_grid.path == rig.grid.path
     assert session.tag_offset == rig.calibration.offset
@@ -106,7 +113,7 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
     assert language.saved_cups()["enabled"] is False
     assert rig.camera.calls == 0 and not rig.worker.calls
     assert not (rig.grid.path.parent / "picker.lock").exists()
-    assert not list(rig.grid.path.parent.glob("*.lock"))
+    assert [path.name for path in rig.grid.path.parent.glob("*.lock")] == ["picker-native.lock"]
     assert rig.grid.path.read_bytes() == original_grid
     rig.camera_start.assert_called_once_with("http://127.0.0.1:8000/api/v1",
         {"Authorization": "Bearer offline-test-token"}, max_dimensions=(1920, 1080))
@@ -114,8 +121,9 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
                                            confidence=0.5, timeout=30.0)
     metadata = factory.metadata()
     assert metadata["ready"] and metadata["worker_running"]
-    assert metadata["policy"] == {"workflow": "v4_snapshot", "scan_observations": 1,
-        "verification_frames": 0, "per_cup_capture": False, "depth_frames": 5,
+    assert metadata["policy"] == {"workflow": "workspace_between_cups", "scan_observations": 1,
+        "verification_frames": 0, "per_cup_capture": True, "depth_frames": 5,
+        "between_cup_grid_check": True, "continuous_batch": False,
         "camera_z": False, "confidence_threshold": 0.5}
     assert metadata["model"]["sha256"] == rig.worker.model.sha256
     assert metadata["camera"] == rig.camera.K
@@ -127,6 +135,53 @@ def test_default_factory_matches_deployed_single_pass_policy_without_taking_file
     rig.controller.close()
     rig.worker.close.assert_called_once()
     assert factory.metadata()["state"] == "closed" and not factory.metadata()["ready"]
+
+
+def test_second_native_factory_is_excluded_before_model_load_and_reactivation_releases_lock(native_rig):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = native_rig
+    first = native_web_factory(rig.args)
+    first(rig.controller)
+    second = native_web_factory(rig.args)
+    with pytest.raises(RuntimeError, match="already uses this state"):
+        second(Controller())
+    assert rig.model_load.call_count == 1 and rig.worker_start.call_count == 1
+    rig.controller.close()
+    with NativeRuntimeLock(rig.args.state_dir):
+        pass
+    new_controller = Controller()
+    native_web_factory(rig.args)(new_controller)
+    assert rig.worker_start.call_count == 2
+    new_controller.close()
+
+
+def test_failed_native_initialization_releases_worker_exclusion(native_rig):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = native_rig
+    rig.model_load.side_effect = ValueError("Offline model checksum mismatch")
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        native_web_factory(rig.args)(rig.controller)
+    assert not rig.worker_start.called
+    with NativeRuntimeLock(rig.args.state_dir):
+        pass
+
+
+def test_unconfirmed_worker_shutdown_retains_exclusion_until_cleanup_succeeds(native_rig):
+    from lynx.runtime_lock import NativeRuntimeLock
+    rig = native_rig
+    factory = native_web_factory(rig.args)
+    factory(rig.controller)
+    rig.worker.close.side_effect = OSError("Offline child shutdown failed")
+    with pytest.raises(OSError, match="shutdown failed"):
+        rig.controller.close()
+    assert factory.metadata()["state"] == "close_failed"
+    with pytest.raises(RuntimeError, match="already uses this state"):
+        NativeRuntimeLock(rig.args.state_dir).acquire()
+    rig.worker.close.side_effect = None
+    rig.controller.close()
+    assert factory.metadata()["state"] == "closed"
+    with NativeRuntimeLock(rig.args.state_dir):
+        pass
 
 
 def test_configured_motion_and_camera_settings_are_frozen_and_saved_before_publish(native_rig):
@@ -263,6 +318,69 @@ def test_live_factory_preserves_explicit_mode_and_configures_only_requested_prof
     assert session.home_after_cup is False
     configure.assert_called_once_with(rig.args.controller_profile)
     assert rig.camera.calls == 0 and not rig.worker.calls
+    rig.controller.close()
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_native_execution_parks_refreshes_grid_and_finishes_finite_batch(native_rig, monkeypatch, batch):
+    rig = native_rig
+    observe = rig.worker.observe
+    class OfflineRobot:
+        dry_run = False
+        def __init__(self):
+            self.jobs = []
+        def execute_jobs(self, jobs, before_send=None, after_done=None):
+            for index, original in enumerate(jobs):
+                job = copy.deepcopy(original)
+                if before_send:
+                    job = before_send(index, job) or job
+                self.jobs.append(job)
+                if after_done:
+                    after_done(index, job)
+        def read_control_status(self):
+            return {"execution_state": "running", "controller_state": "motoron", "operation_mode": "AUTO"}
+    robot = OfflineRobot()
+    session, _ = native_web_factory(rig.args)(rig.controller)
+    session.robot = robot
+    def changing_workspace(*args):
+        result = observe(*args)
+        index = len(rig.worker.calls)
+        if index == 1 or index == 2:
+            # First cup is placed; a new cup is observed at a different source
+            # position, while the removed destination cup frees its old cell.
+            x = 450.0 if index == 1 else 550.0
+            base = result["objects"][0]
+            base.update(robot_x_mm=x, robot_y_mm=100.0, robot_z_mm=30.0)
+            base.pop("robot_z_frames_mm", None)
+            whole = dict(base, **{"class": "CUP", "detection_id": 1,
+                                  "bbox_xyxy": [1, 1, 6, 5]})
+            result["objects"] = [whole, base]
+        else:
+            result["objects"] = []
+        if index > 1:
+            assert robot.jobs[-1]["name"] == "right_park"
+            assert not session.recovery.required()
+        return result
+    monkeypatch.setattr(rig.worker, "observe", changing_workspace)
+    session.scan()
+    capture_id = session.inventory["capture"]
+    if batch:
+        session.execute_batch(capture_id=capture_id)
+        assert len(rig.worker.calls) == 3
+        assert session.batch_progress["state"] == "completed"
+        assert session.batch_progress["completion_reason"] == "workspace_empty"
+        assert session.batch_progress["completed_cups"] == [1, 2]
+        assert [job["name"] for job in robot.jobs[-2:]] == ["workspace_right_home", "workspace_left_home"]
+    else:
+        session.execute_selection(action="goto", capture_id=capture_id, cup_id=1)
+        assert len(rig.worker.calls) == 2
+        assert robot.jobs[-1]["name"] == "right_park"
+        assert not any("home" in job["name"] for job in robot.jobs)
+        assert session.inventory["cups"][-1]["x"] == 550.0
+        assert session.inventory["cups"][-1]["selectable"] is True
+    assert session.inventory["workspace_check"]["grid_checked"] is True
+    assert all(not place["occupied"] for place in session.placing_grid.snapshot()["locations"])
+    assert not session.motion_uncertain and not session.recovery.required()
     rig.controller.close()
 
 

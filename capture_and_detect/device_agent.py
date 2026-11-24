@@ -262,7 +262,7 @@ class DeviceAgent:
                     "handoff_blocked": self.store.receive_blocked() if hasattr(self.store, "receive_blocked") else False,
                     "handoff_block_reason": reason,
                     "handoff_notice": getattr(self.store, "handoff_notice", None),
-                    "features": {"phase_speeds": True},
+                    "features": {"phase_speeds": True, "pick_height": True, "robot_pose": True},
                     "metadata": self.factory.metadata() if callable(getattr(self.factory, "metadata", None)) else {}}
 
     def activate(self, body):
@@ -323,6 +323,22 @@ class DeviceAgent:
                 state["inventory"]["image_overlay"] = "native"
             return {"health": health, "state": state}
 
+    def robot_pose(self):
+        """Read the active controller's cached pose without acquiring control.
+
+        Keep the controller identity attached: its monotonic clock also dates
+        the completed cup steps. A handoff must never mix two worker clocks.
+        """
+        with self._lock:
+            controller = self.controller
+            read = getattr(controller, "robot_pose", None)
+            if self.transition or not callable(read):
+                return {"source": "unavailable", "arms": {"left": None, "right": None},
+                        "clock_id": None}
+            result = copy.deepcopy(read())
+            result["clock_id"] = controller.state().get("instance_id")
+            return result
+
     def submit(self, body, *, assistant_request_id=None, assistant_camera=False):
         with self._lock:
             if set(body) != {"boot_id", "owner_id", "generation", "operation", "payload"}:
@@ -332,6 +348,11 @@ class DeviceAgent:
                 raise WebError("The picker must be activated after restart.", 503)
             if self.transition and body["operation"] != "stop":
                 raise WebError("A device handoff is in progress.")
+            if body["operation"] == "pick_height":
+                payload = body["payload"]
+                if (not isinstance(payload, dict) or type(payload.get("camera_z")) is not bool
+                        or set(payload) != {"camera_z", "request_id"}):
+                    raise WebError("Pick height requires a boolean camera_z setting.", 422)
             if (assistant_request_id is not None or assistant_camera is not False):
                 if self.device_id != "mac" or self._astra is None:
                     raise WebError("Assistant actions require the configured local computer picker.")

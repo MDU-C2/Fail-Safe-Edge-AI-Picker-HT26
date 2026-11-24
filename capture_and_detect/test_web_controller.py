@@ -519,6 +519,149 @@ class WebControllerTests(unittest.TestCase):
         self.assertNotEqual(fresh["inventory"]["cups"][0]["status"], "corrupted")
         self.assertTrue(fresh["events"])
 
+    def test_dynamic_batch_publishes_updated_totals_even_without_historical_cup_rows(self):
+        capture = self.scan()
+        session = self.fixture.session
+        session.between_cup_check = True
+        self.fixture.robot.dry_run = False
+        cup = copy.deepcopy(session.inventory["cups"][0])
+        cup.update(id=4, execution={"state": "running", "total_steps": 7,
+                                    "completed_steps": ["open", "approach"]})
+        session.inventory["cups"] = [cup]
+        session.batch_progress = {"cup_ids": [1, 4], "completed_cups": [1], "pending_cups": [4],
+                                  "current_cup_id": 4, "state": "running", "revision": 2,
+                                  "planned_steps": {1: 5, 4: 7}}
+        self.controller._execution_capture = capture
+        self.controller._execution_totals = {1: 30, 2: 30}
+        self.controller.publish_session()
+        state = self.controller.state()
+        self.assertTrue(state["motion"]["dynamic_batch"])
+        self.assertEqual((state["progress"]["completed"], state["progress"]["total"]), (7, 12))
+        self.assertEqual(state["batch"]["pending_cups"], [4])
+        self.assertEqual(state["batch"]["revision"], 2)
+        # A later observation removes the unfinished cup and adds a different one.
+        cup.update(id=5)
+        cup.pop("execution")
+        session.batch_progress.update(cup_ids=[1, 5], pending_cups=[5], current_cup_id=5,
+                                      planned_steps={"1": 5, "5": 9}, revision=3)
+        self.controller.publish_session()
+        state = self.controller.state()
+        self.assertEqual((state["progress"]["completed"], state["progress"]["total"]), (5, 14))
+        self.assertEqual(state["batch"]["pending_cups"], [5])
+        session.batch_progress.update(completed_cups=[1, 5], pending_cups=[], state="completed",
+                                      completion_reason="workspace_empty")
+        self.controller.publish_session()
+        state = self.controller.state()
+        self.assertEqual((state["progress"]["completed"], state["progress"]["total"]), (14, 14))
+        self.assertEqual(state["batch"]["completion_reason"], "workspace_empty")
+
+    def test_dynamic_batch_proposal_is_explicit_but_single_selection_stays_single(self):
+        self.fixture.session.between_cup_check = True
+        capture = self.scan()
+        proposal = self.submit("batch", capture_id=capture)["proposal"]
+        self.assertTrue(proposal["dynamic_batch"])
+        self.assertIn("include new pickable cups", proposal["description"])
+        self.submit("cancel")
+        proposal = self.submit("select", capture_id=capture, cup_id=2, action="goto")["proposal"]
+        self.assertFalse(proposal["dynamic_batch"])
+        self.assertEqual(proposal["cup_ids"], [2])
+        self.assertNotIn("include new pickable cups", proposal["description"])
+
+    def test_configured_right_park_is_reviewed_and_counted_for_every_cup(self):
+        pose = {"x": 400, "y": -200, "z": 300, "rx": 0, "ry": 180, "rz": 0}
+        self.fixture.session._right_park_pose = pose
+        capture = self.scan()
+        proposal = self.submit("batch", capture_id=capture)["proposal"]
+        self.assertEqual(proposal["right_park_pose"], pose)
+        self.assertEqual(self.controller.state()["motion"]["right_park_pose"], pose)
+        self.assertIn("move the right arm to its camera-clear waiting position", proposal["description"])
+        state = self.submit("confirm", **{key: proposal[key] for key in ("token", "capture_id", "cup_id", "action")})
+        self.assertIsNone(state["error"])
+        self.assertEqual(sum(job["name"] == "right_park" for job in self.fixture.robot.jobs), 2)
+        self.assertEqual(state["progress"]["total"], len(self.fixture.robot.jobs))
+        self.assertEqual(state["progress"]["completed"], len(self.fixture.robot.jobs))
+
+    def test_grid_refresh_policy_is_forwarded_in_review_and_keeps_single_pick_scope(self):
+        session = self.fixture.session
+        session.between_cup_check = True
+        for enabled in (False, True):
+            with self.subTest(grid_refresh=enabled):
+                session.between_cup_grid_check = enabled
+                capture = self.scan()
+                state = self.submit("batch", capture_id=capture)
+                proposal = state["proposal"]
+                self.assertEqual(state["motion"]["between_cup_grid_check"], enabled)
+                self.assertEqual(state["motion"]["continuous_batch"], enabled)
+                self.assertTrue(proposal["between_cup_check"])
+                self.assertEqual(proposal["between_cup_grid_check"], enabled)
+                self.assertEqual(proposal["continuous_batch"], enabled)
+                if enabled:
+                    self.assertIn("Camera-cleared locations become available again", proposal["description"])
+                    self.assertIn("wait and refresh automatically", proposal["description"])
+                    self.assertIn("send both arms Home once", proposal["description"])
+                    self.assertIn("active until Stop", proposal["description"])
+                    self.assertNotIn("evidence stays from the manual scan", proposal["description"])
+                else:
+                    self.assertIn("refreshes source cups only", proposal["description"])
+                    self.assertNotIn("wait and refresh automatically", proposal["description"])
+                self.submit("cancel")
+                proposal = self.submit("select", capture_id=capture, cup_id=2, action="goto")["proposal"]
+                self.assertEqual(proposal["cup_ids"], [2])
+                self.assertFalse(proposal["dynamic_batch"])
+                self.assertFalse(proposal["continuous_batch"])
+                self.assertEqual(proposal["between_cup_grid_check"], enabled)
+                self.assertNotIn("wait and refresh automatically", proposal["description"])
+                self.assertNotIn("send both arms Home once", proposal["description"])
+                self.submit("cancel")
+
+    def test_waiting_for_grid_publishes_queued_cups_separately_from_dispatchable_work(self):
+        self.scan()
+        session = self.fixture.session
+        session.between_cup_check = session.between_cup_grid_check = True
+        session.batch_progress = {"state": "waiting_for_grid", "cup_ids": [1, 2],
+                                  "completed_cups": [1], "pending_cups": [], "waiting_cup_ids": [2],
+                                  "current_cup_id": None, "planned_steps": {1: 5},
+                                  "completion_reason": "grid_full", "revision": 2}
+        self.controller.publish_session()
+        state = self.controller.state()
+        self.assertEqual(state["batch"]["state"], "waiting_for_grid")
+        self.assertEqual(state["batch"]["waiting_cup_ids"], [2])
+        self.assertEqual(state["batch"]["pending_cups"], [])
+        self.assertTrue(state["batch"]["between_cup_grid_check"])
+        self.assertEqual(state["progress"]["step"], "waiting_for_grid")
+        self.assertIsNone(state["batch"]["cup_id"])
+        session.inventory["workspace_check"] = {"state": "capturing", "grid_checked": False}
+        self.controller.publish_session()
+        self.assertEqual(self.controller.state()["batch"]["state"], "waiting_for_grid")
+        for phase in ("homing_when_empty", "waiting_for_cups"):
+            session.inventory.pop("workspace_check", None)
+            session.batch_progress.update(state=phase, waiting_cup_ids=[], arms_home=phase == "waiting_for_cups",
+                home_cycles=1, idle_home={"state": "completed", "completed_steps": ["home_right", "home_left"],
+                                         "pending_job": None, "total_steps": 2})
+            self.controller.publish_session()
+            state = self.controller.state()
+            self.assertEqual(state["batch"]["state"], phase)
+            self.assertEqual(state["progress"]["step"], phase)
+            self.assertTrue(state["batch"]["continuous_batch"])
+            self.assertEqual(state["batch"]["arms_home"], phase == "waiting_for_cups")
+            self.assertEqual(state["batch"]["home_cycles"], 1)
+            self.assertEqual(state["batch"]["idle_home"]["completed_steps"], ["home_right", "home_left"])
+
+    def test_close_releases_stationary_batch_wait_before_joining_worker_without_robot_commands(self):
+        entered, finish = threading.Event(), threading.Event()
+        self.fixture.session.finish_batch_when_parked = Mock(side_effect=finish.set)
+        def wait_for_finish():
+            entered.set()
+            return finish.wait(timeout=2)
+        waiting = self.controller._worker.submit(wait_for_finish)
+        self.assertTrue(entered.wait(timeout=1))
+        self.controller.close()
+        self.assertTrue(waiting.result())
+        self.fixture.session.finish_batch_when_parked.assert_called_once_with()
+        self.assertEqual(self.fixture.robot.jobs, [])
+        self.controller.close()
+        self.fixture.session.finish_batch_when_parked.assert_called_once_with()
+
     def test_unregistered_or_old_scan_image_is_not_available(self):
         first = self.scan()
         self.assertEqual(self.controller.image(first), "offline.jpg")
@@ -549,7 +692,7 @@ class WebControllerTests(unittest.TestCase):
         self.assertFalse(state["recovery_required"])
         self.assertFalse(state["scan_usable"])
         self.assertEqual(self.fixture.robot.jobs, [])
-        self.assertIn("No robot command", state["message"])
+        self.assertIn("No robot movement", state["message"])
 
     def test_reserved_commands_cannot_home_recover_or_bypass_confirmation(self):
         self.scan()

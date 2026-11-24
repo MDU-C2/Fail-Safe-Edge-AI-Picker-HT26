@@ -45,6 +45,9 @@ class WebController:
         self._lock = threading.RLock()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cup-controller")
         self._stop_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cup-stop")
+        self._pose_lock = threading.Lock()  # 3D view telemetry, separate from command state
+        self._telemetry = None
+        self._steps_capture, self._steps_seen = None, {}  # 3D view: when each step was first seen
         self._normal_busy = self._stop_busy = False
         self._normal_operation = None
         self._generation = 0
@@ -139,6 +142,40 @@ class WebController:
         result["source"] = "Cached application state; not a live robot status query."
         return result
 
+    def robot_pose(self):
+        """Read-only arm telemetry for the 3D view; never touches controller state.
+
+        Live readings come from one shared RobotTelemetry reader (one gateway
+        connection, one request at a time, see robot_telemetry.py). This call
+        never waits for the gateway. Demo/dry-run reports the home pose, marked
+        as simulated.
+        """
+        with self._lock:
+            robot = getattr(self.session, "robot", None)
+            closed = self._closed
+            clock_id = self._state["instance_id"]
+        if robot is None or closed:
+            return {"source": "unavailable", "clock_id": clock_id, "arms": {"left": None, "right": None}}
+        if getattr(robot, "dry_run", False) is True:
+            from robot_client import RobotClient
+            joints = getattr(robot, "HOME_JOINTS", RobotClient.HOME_JOINTS)
+            angles = getattr(robot, "HOME_ARM_ANGLES", RobotClient.HOME_ARM_ANGLES)
+            home = lambda arm: {"joints": list(joints), "arm_angle": angles[arm], "gripper": None, "t": 0.0}
+            return {"source": "simulated", "clock_id": clock_id, "arms": {"left": home("left"), "right": home("right")},
+                    "now": time.monotonic()}
+        api, headers = getattr(robot, "api", None), getattr(robot, "headers", None)
+        if not isinstance(api, str) or not isinstance(headers, dict):
+            return {"source": "unavailable", "clock_id": clock_id, "arms": {"left": None, "right": None}}
+        with self._pose_lock:
+            if self._closed:
+                return {"source": "unavailable", "clock_id": clock_id, "arms": {"left": None, "right": None}}
+            if self._telemetry is None or self._telemetry.api != api.rstrip("/"):
+                if self._telemetry is not None:
+                    self._telemetry.close()
+                from robot_telemetry import RobotTelemetry
+                self._telemetry = RobotTelemetry(api, headers)
+            return {"source": "live", "clock_id": clock_id, **self._telemetry.snapshot()}
+
     @staticmethod
     def help():
         return {"message": COMMAND_HELP}
@@ -182,6 +219,32 @@ class WebController:
             with self._lock:
                 self._normal_busy, self._normal_operation = False, None
                 self._publish_busy()
+        runner = getattr(self.session, "failover", None)
+        if runner is not None and self._state["ready"] and not self._closed:
+            try:
+                runner.start_monitor(self.resume_failover)
+            except Exception as error:
+                self._update(ready=False, error=str(error), message="Failover monitoring could not start.")
+                self.event("Failover monitoring could not start.", "error")
+
+    def resume_failover(self, run_id):
+        """Schedule a coordinator-authorized continuation on the sole worker.
+
+        This internal callback is not exposed as a browser operation. Busy,
+        stopped or closed controllers reject it so monitoring can try later.
+        """
+        with self._lock:
+            if (not isinstance(run_id, str) or not 1 <= len(run_id) <= 128
+                    or self._closed or self.mode != "live" or not self._state["ready"]
+                    or self._state["busy"] or self._state["stop_requested"]
+                    or getattr(self.session, "failover", None) is None):
+                return False
+            self._normal_busy, self._normal_operation = True, "failover_resume"
+            self._clear_assistant_source()
+            self._update(error=None, proposal=None, message="Continuing the active batch on this computer…")
+            self._publish_busy()
+            self._worker.submit(self._run, "failover_resume", {"run_id": run_id}, self._generation)
+            return True
 
     def state(self):
         with self._lock:
@@ -215,6 +278,18 @@ class WebController:
             pass
         return None
 
+    def _public_motion(self, capture, cup_id, execution):
+        """Finished step names and when this dashboard first saw each one (time.monotonic,
+        the clock of the 3D view's joint readings), so the view can move a cup from
+        the table to a gripper at the right moment of its delayed arm playback."""
+        with self._lock:
+            if capture != self._steps_capture:
+                self._steps_capture, self._steps_seen = capture, {}
+            names = [job.get("name") for job in execution.get("completed_steps", []) if isinstance(job, dict)]
+            now = time.monotonic()
+            done_at = {name: self._steps_seen.setdefault((cup_id, name), now) for name in names if isinstance(name, str)}
+            return {"state": execution.get("state"), "completed_steps": names, "done_at": done_at}
+
     def publish_session(self, session=None):
         """Called by the worker after state changes, including persisted job steps."""
         session = session or self.session
@@ -236,11 +311,18 @@ class WebController:
         settings = session.motion_settings()
         phases = settings["effective_phase_speeds"]
         motion = {"speed": session.speed, "home_speed": session.home_speed,
+                  # The plans grip a cup at its scanned x/y plus this offset (3D view).
+                  "tag_offset_mm": [float(value) for value in session.tag_offset],
                   "home_after_cup": settings["home_after_cup"],
                   "workflow": settings.get("workflow", "v4_snapshot"),
+                  "between_cup_check": settings.get("between_cup_check", False),
+                  "dynamic_batch": settings.get("dynamic_batch", False),
+                  "continuous_batch": settings.get("continuous_batch", False),
+                  "right_park_pose": copy.deepcopy(settings.get("right_park_pose")),
+                  "between_cup_grid_check": settings.get("between_cup_grid_check", False),
                   "handover_motion": settings["handover_motion"],
                   "handover_plan": settings["handover_plan"],
-                  "camera_z": session.camera_z,
+                  "camera_z": session.camera_z, "pick_height_supported": True,
                   "flip_speed": phases["flip"],
                   "phase_speeds_supported": True,
                   "phase_speed_defaults": normalize_phase_speeds(),
@@ -250,6 +332,10 @@ class WebController:
                   "carry_max_acceleration": None if session.left_only else CARRY_MAX_ACC,
                   "flip_acceleration": FLIP_ACCELERATION,
                   "handover": settings["handover"]}
+        runner = getattr(session, "failover", None)
+        if getattr(runner, "supports_device_speeds", False) is True:
+            motion.update(device_speeds_supported=True,
+                          device_speeds=runner.device_speed_settings())
         grid = None
         if session.placing_grid is not None:
             try:
@@ -270,7 +356,8 @@ class WebController:
                 if completed:
                     reason = "This cup has already been processed from this scan."
                 visible = {key: copy.deepcopy(cup.get(key)) for key in
-                           ("id", "confidence", "pixel", "bbox_xyxy", "selectable", "status")}
+                           ("id", "confidence", "pixel", "bbox_xyxy", "selectable", "status",
+                            "robot_mm", "diameter")}
                 visible.update(selectable=bool(cup.get("selectable")) and not completed,
                                pick_available=bool(cup.get("selectable")) and reason is None,
                                blocked_reason=reason,
@@ -280,6 +367,10 @@ class WebController:
                                                   in ("teal", "white", "orange")))))
                 cups.append(visible)
                 execution = cup.get("execution")
+                # 3D view: which gripper holds the cup follows from the
+                # finished step names (grip_cup, right_grip, left_release, ...).
+                visible["motion"] = (self._public_motion(inventory.get("capture"), cup.get("id"), execution)
+                                     if isinstance(execution, dict) else None)
                 if execution:
                     completed = len(execution.get("completed_steps", []))
                     pending = self._pending_steps(execution)
@@ -294,34 +385,59 @@ class WebController:
                 completed_cups = batch.get("completed_cups", [])
                 public_batch = {"current": ids.index(current_id) + 1 if current_id in ids else 0,
                                 "total": len(ids), "cup_id": current_id,
-                                "completed_cups": list(completed_cups), "state": batch["state"]}
+                                "completed_cups": list(completed_cups), "state": batch["state"],
+                                "dynamic_batch": settings.get("dynamic_batch", False),
+                                "continuous_batch": settings.get("continuous_batch", False),
+                                "between_cup_grid_check": settings.get("between_cup_grid_check", False),
+                                "pending_cups": list(batch.get("pending_cups", [cup_id for cup_id in ids
+                                                                             if cup_id not in completed_cups])),
+                                "waiting_cup_ids": list(batch.get("waiting_cup_ids", [])),
+                                "arms_home": batch.get("arms_home", False),
+                                "home_cycles": batch.get("home_cycles", 0),
+                                "idle_home": {key: copy.deepcopy(batch["idle_home"][key]) for key in
+                                              ("state", "completed_steps", "pending_job", "total_steps")
+                                              if key in (batch.get("idle_home") or {})},
+                                "revision": batch.get("revision", 0),
+                                "completion_reason": batch.get("completion_reason")}
                 by_id = {cup["id"]: cup for cup in inventory["cups"]}
+                planned_steps = batch.get("planned_steps", {})
                 total = completed = 0
                 for cup_id in ids:
-                    cup = by_id[cup_id]
+                    cup = by_id.get(cup_id, {})
                     execution = cup.get("execution", {})
                     verified_jobs = cup.get("last_verification", {}).get("jobs", [])
-                    planned = (self._execution_totals.get(cup_id, 0)
-                               if self._execution_capture == inventory["capture"] else 0)
-                    total += execution.get("total_steps", planned or len(verified_jobs))
-                    completed += (len(verified_jobs) if session.robot.dry_run and cup_id in completed_cups
+                    planned = planned_steps.get(cup_id, planned_steps.get(str(cup_id)))
+                    if planned is None:
+                        planned = (self._execution_totals.get(cup_id, 0)
+                                   if self._execution_capture == inventory["capture"] else 0)
+                        planned = execution.get("total_steps", planned or len(verified_jobs))
+                    total += planned
+                    completed += (planned if cup_id in completed_cups
                                   else len(execution.get("completed_steps", [])))
                 current_execution = by_id.get(current_id, {}).get("execution", {})
                 pending = self._pending_steps(current_execution)
                 step = " + ".join(pending) or current_execution.get("last_completed_step")
+                if batch["state"] in ("waiting_for_grid", "waiting_for_cups", "homing_when_empty"):
+                    step = batch["state"]
                 progress = {"step": step or ("preview_complete" if batch["state"] == "previewed" else "checking_cup"),
                             "pending_steps": pending,
                             "completed": completed, "total": total, "state": batch["state"],
                             "batch": public_batch}
             image = inventory.get("images", {}).get("annotated")
+            image_capture = inventory.get("image_capture", inventory["capture"])
             if image:
-                images[inventory["capture"]] = image
+                images[image_capture] = image
             public_inventory = {key: inventory.get(key) for key in ("capture", "saved_at", "id_scope")}
+            public_inventory["image_capture"] = image_capture
+            if "workspace_check" in inventory:
+                public_inventory["workspace_check"] = copy.deepcopy(inventory["workspace_check"])
+                if inventory["workspace_check"].get("state") == "capturing":
+                    progress = dict(progress or {}, state="checking_workspace", step="checking_workspace")
             if "placement_observation" in inventory:
                 observation = inventory["placement_observation"]
                 public_inventory["placement_observation"] = {key: copy.deepcopy(observation[key]) for key in
                     ("frame_count", "applied", "message", "released_ids", "slots", "cup_summary") if key in observation}
-            public_inventory.update(cups=cups, image_url=(f"/api/image/{inventory['capture']}" if image else None))
+            public_inventory.update(cups=cups, image_url=(f"/api/image/{image_capture}" if image else None))
         proposal = None
         deadline = None
         if self.language is not None and self.language.pending:
@@ -335,6 +451,11 @@ class WebController:
                         "placements": [{key: copy.deepcopy(place[key]) for key in ("id", "x", "y", "z")}
                                        for place in (record.get("placement") or {}).get("locations", [])],
                         "excluded_cup_ids": list(record.get("excluded_cup_ids", [])),
+                        "dynamic_batch": record.get("dynamic_batch", False),
+                        "continuous_batch": record.get("continuous_batch", False),
+                        "between_cup_check": record.get("motion_settings", {}).get("between_cup_check", False),
+                        "between_cup_grid_check": record.get("motion_settings", {}).get("between_cup_grid_check", False),
+                        "right_park_pose": copy.deepcopy(record.get("motion_settings", {}).get("right_park_pose")),
                         "speed": record.get("speed", session.speed),
                         "home_speed": record.get("home_speed", session.home_speed),
                         "home_after_cup": record.get("motion_settings", {}).get("home_after_cup", session.home_after_cup),
@@ -415,7 +536,8 @@ class WebController:
                       tag_offset=self.session.tag_offset, speed=self.session.speed,
                       home_speed=self.session.home_speed, handover_offset=self.session.handover_offset,
                       camera_z=self.session.camera_z, phase_speeds=self.session.phase_speeds,
-                      home_after_cup=self.session.home_after_cup))
+                      home_after_cup=self.session.home_after_cup,
+                      right_park_pose=getattr(self.session, "right_park_pose", None)))
                       for cup_id, place in zip(ids, places)}
         self._execution_capture = record["capture_id"]
         self._execution_totals = totals
@@ -427,6 +549,8 @@ class WebController:
                   "confirm": {"capture_id", "cup_id", "action", "token"},
                   "cancel": set(), "recovery": {"acknowledged"}, "robot_status": set(), "speed": {"speed"},
                   "phase_speeds": {"pick_lift", "handover", "flip", "placement"},
+                  "device_speeds": {"primary", "secondary", "tertiary"},
+                  "pick_height": {"camera_z"},
                   "control_preview": {"action", "arm"}, "control_confirm": {"token", "acknowledged"},
                   "control_cancel": set(),
                   "release_locations": {"fingerprint", "acknowledged"},
@@ -487,6 +611,14 @@ class WebController:
         if operation == "phase_speeds":
             try:
                 normalize_phase_speeds({key: payload[key] for key in ("pick_lift", "handover", "flip", "placement")})
+            except (ValueError, TypeError, OverflowError) as error:
+                raise WebError(str(error), 422) from error
+        if operation == "pick_height" and type(payload["camera_z"]) is not bool:
+            raise WebError("Choose fixed height or camera depth.", 422)
+        if operation == "device_speeds":
+            try:
+                for role in ("primary", "secondary", "tertiary"):
+                    valid_speed(payload[role])
             except (ValueError, TypeError, OverflowError) as error:
                 raise WebError(str(error), 422) from error
         if operation == "control_confirm" and (payload["acknowledged"] is not True
@@ -569,6 +701,8 @@ class WebController:
                                   "cancel": "Cancelling the proposal…", "recovery": "Recording your acknowledgement…",
                                   "robot_status": "Reading controller status…", "speed": "Updating future movement speed…",
                                   "phase_speeds": "Updating future movement phase speeds…",
+                                  "device_speeds": "Saving speeds for the next batch…",
+                                  "pick_height": "Setting pickup height for the next batch…",
                                   "release_locations": "Releasing inspected placement locations…",
                                   "save_cup": "Saving a local cup reference…",
                                   "pick_saved": "Comparing the saved cup with the workspace snapshot…",
@@ -584,8 +718,34 @@ class WebController:
 
     def _run_stop(self):
         """Independent of the movement/model worker and its language lock."""
+        shared_done = threading.Event()
+        shared_failed = []
+        shared_stop_error = "The shared failover stop was not confirmed; other workers may still be armed."
+        runner = getattr(self.session, "failover", None)
+        if runner is not None:
+            def stop_shared():
+                try:
+                    runner.stop_batch()
+                except BaseException:
+                    shared_failed.append(True)
+                finally:
+                    shared_done.set()
+            try:
+                threading.Thread(target=stop_shared, name="cup-shared-stop", daemon=True).start()
+            except RuntimeError:
+                shared_failed.append(True)
+                shared_done.set()
+
+        def shared_failure():
+            # Physical Stop has already been dispatched before this bounded
+            # wait. A disconnected auxiliary service must not delay it.
+            if runner is not None and (not shared_done.wait(timeout=1.0) or shared_failed):
+                return shared_stop_error
+            return None
+
         try:
             result = self.session.request_stop()
+            shared_stop_error = shared_failure()
             dry_run = result.get("dry_run") is True
             stopped = result.get("stopped") is True
             state = "previewed" if dry_run else "confirmed" if stopped else "unconfirmed"
@@ -593,16 +753,21 @@ class WebController:
                 "Software stop previewed; no robot request sent. New commands remain blocked." if dry_run else
                 "The controller confirmed its software stop. Inspect the robot before recovery." if stopped else
                 "Software stop is unconfirmed. Use the robot's physical emergency stop if needed.")
+            if shared_stop_error:
+                message += " " + shared_stop_error
             with self._lock:
                 fields = {"stop": {"state": state, "dry_run": dry_run, "stopped": stopped, "message": message},
                           "message": message, "proposal": None, "scan_usable": False,
                           "recovery_required": True, "stop_requested": True}
-                if state == "unconfirmed":
+                if state == "unconfirmed" or shared_stop_error:
                     fields["error"] = message
                 self._update(**fields)
-                self.event(message, "warning" if state != "unconfirmed" else "error")
+                self.event(message, "warning" if state != "unconfirmed" and not shared_stop_error else "error")
         except BaseException as error:
+            shared_stop_error = shared_failure()
             message = f"Software stop is unconfirmed: {error}. Use the robot's physical emergency stop if needed."
+            if shared_stop_error:
+                message += " " + shared_stop_error
             self._update(stop={"state": "unconfirmed", "dry_run": self.mode != "live", "stopped": False, "message": message},
                          error=message, message=message, proposal=None, scan_usable=False,
                          recovery_required=True, stop_requested=True)
@@ -646,10 +811,15 @@ class WebController:
             result = None
             if operation not in ("control_confirm", "robot_status"):
                 self.controls.cancel()
-            if operation in ("speed", "phase_speeds", "control_preview", "control_confirm", "release_locations"):
+            if operation in ("speed", "phase_speeds", "device_speeds", "pick_height", "control_preview", "control_confirm", "release_locations"):
                 self.language.cancel()
             if operation == "start":
                 result = self.language.start()
+            elif operation == "failover_resume":
+                self.language.cancel()
+                result = self.session.failover.resume(payload["run_id"])
+                if isinstance(result, str):
+                    result = {"message": result}
             elif operation == "scan":
                 self.language.cancel()
                 result = {"kind": "inventory", "inventory": self.session.scan()}
@@ -685,15 +855,30 @@ class WebController:
                 result = {"message": "Proposal cancelled. No movement requested."}
             elif operation == "recovery":
                 self.language.cancel()
-                self.session.acknowledge_recovery()
+                recovery = self.session.acknowledge_recovery()
                 with self._lock:
                     self._check_generation(generation)
                     self._update(stop_requested=False, stop=None)
-                result = {"message": "Inspection acknowledged. No robot command sent. Scan again."}
+                result = (recovery if isinstance(recovery, dict) else
+                          {"message": "Inspection acknowledged. No robot movement sent. Scan again."})
             elif operation == "robot_status":
                 result = self.controls.refresh_status()
             elif operation == "speed":
-                result = self.controls.set_speed(payload["speed"])
+                runner = getattr(self.session, "failover", None)
+                if getattr(runner, "supports_device_speeds", False) is True:
+                    speeds = runner.device_speed_settings()
+                    speeds["primary"] = payload["speed"]
+                    result = runner.set_device_speeds(speeds)
+                else:
+                    result = self.controls.set_speed(payload["speed"])
+            elif operation == "device_speeds":
+                runner = getattr(self.session, "failover", None)
+                if getattr(runner, "supports_device_speeds", False) is not True:
+                    raise SelectionError("Separate device speeds require the automatic failover workflow.")
+                result = runner.set_device_speeds({role: payload[role]
+                    for role in ("primary", "secondary", "tertiary")})
+            elif operation == "pick_height":
+                result = self.session.set_pick_height(payload["camera_z"])
             elif operation == "phase_speeds":
                 result = self.session.set_phase_speeds({key: payload[key] for key in
                     ("pick_lift", "handover", "flip", "placement")})
@@ -771,7 +956,17 @@ class WebController:
                 return
             self._closed = True
             self._update(ready=False)
+        with self._pose_lock:
+            telemetry, self._telemetry = self._telemetry, None
+        if telemetry is not None:
+            telemetry.close()
         # Do not pretend closing a UI/server is a physical emergency stop.
+        runner = getattr(self.session, "failover", None)
+        if runner is not None:
+            runner.close()
+        finish_batch = getattr(self.session, "finish_batch_when_parked", None)
+        if callable(finish_batch):
+            finish_batch()
         self._worker.shutdown(wait=True, cancel_futures=False)
         self._stop_worker.shutdown(wait=True, cancel_futures=False)
         for resource in reversed(self._resources):

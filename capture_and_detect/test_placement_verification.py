@@ -114,18 +114,29 @@ class PlacementVerificationTests(unittest.TestCase):
                 self.assertFalse(any(slot.get("reserved") for slot in self.grid.snapshot()["locations"]))
 
     def test_edited_destination_geometry_requires_new_scan_even_with_new_preview(self):
-        for field in ("x", "y", "z", "cell_size_mm"):
+        for field in ("x", "y", "z"):
             with self.subTest(field=field):
                 self.grid = temporary_grid(self)
                 session = self.session()
                 value = json.loads(self.grid.path.read_text())
-                if field == "cell_size_mm": value[field] = 90
-                else: value["locations"][0][field] += 1
+                value["locations"][0][field] += 1
                 self.grid.path.write_text(json.dumps(value))
                 with self.assertRaisesRegex(SelectionError, "geometry changed"):
                     self.execute(session)
                 self.assertEqual(self.robot.jobs, [])
                 self.capture.assert_called_once_with("scan")
+
+    def test_cell_size_metadata_change_does_not_add_validation_or_interrupt_handover(self):
+        session = self.session()
+        value = json.loads(self.grid.path.read_text())
+        value["cell_size_mm"] = 90
+        self.grid.path.write_text(json.dumps(value))
+        self.execute(session)
+        self.assertEqual(self.robot.jobs[-1]["name"], "right_clear")
+        self.assertFalse(session.motion_uncertain)
+        self.assertFalse(session.stop_requested)
+        self.assertEqual(json.loads(self.grid.path.read_text())["cell_size_mm"], 90)
+        self.capture.assert_called_once_with("scan")
 
     def test_clear_dry_run_preserves_grid_and_records_the_saved_slot(self):
         self.robot.dry_run = True

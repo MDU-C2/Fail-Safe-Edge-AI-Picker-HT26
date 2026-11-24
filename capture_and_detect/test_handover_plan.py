@@ -23,9 +23,8 @@ class HandoverPlanTests(unittest.TestCase):
         jobs = self.plan()
         by_name = {job["name"]: job for job in jobs}
         self.assertEqual(len(jobs), len(by_name))
-        for first, second in (("left_open_start", "left_ready"),
-                              ("right_open_start", "right_via"),
-                              ("left_ready", "left_open"), ("left_open", "approach_cup"),
+        for first, second in (("right_open_start", "right_via"),
+                              ("left_open", "approach_cup"),
                               ("approach_cup", "grip_cup"),
                               ("grip_cup", "left_handover"), ("right_via", "left_handover"),
                               ("grip_cup", "right_beside"), ("right_via", "right_beside"),
@@ -33,14 +32,15 @@ class HandoverPlanTests(unittest.TestCase):
                               ("right_open", "right_take"), ("right_take", "right_grip"),
                               ("right_grip", "left_release"),
                               ("left_release", "left_clear"), ("left_release", "right_lower"),
+                              ("left_clear", "left_park"),
+                              ("right_retreat", "left_park"),
                               ("left_clear", "right_retreat"), ("right_lower", "right_retreat"),
                               ("right_retreat", "right_place"), ("right_place", "right_release"),
                               ("right_release", "right_clear")):
             with self.subTest(first=first, second=second):
                 self.assertIn(first, by_name[second]["after"])
         self.assertTrue(all(job["body"]["wait"] is True for job in jobs))
-        for name, arm, action in (("left_open_start", "left", "open"),
-                                  ("right_open_start", "right", "open"),
+        for name, arm, action in (("right_open_start", "right", "open"),
                                   ("left_open", "left", "open"), ("grip_cup", "left", "grip"),
                                   ("right_open", "right", "open"), ("right_grip", "right", "grip"),
                                   ("left_release", "left", "open"), ("right_release", "right", "open")):
@@ -51,15 +51,16 @@ class HandoverPlanTests(unittest.TestCase):
         self.assertEqual(jobs[-1]["name"], "right_clear")
 
     def test_smooth_branch_geometry_and_local_linear_segments(self):
-        # Literal flange targets from smooth-dual-arm-handover, rather than
-        # importing the planner's constants: this catches a drift in tuning.
+        # Literal flange targets from the upstream blended approach/parking
+        # plan, rather than imported constants: this catches drift in tuning.
         expected = {
-            "left_ready": [(400, 100, 450, 180, 0, 180, False, 0)],
-            "approach_cup": [(500, 100, 334, 180, 0, 180, False, 10),
+            "approach_cup": [(400, 100, 450, 180, 0, 180, False, 10),
+                             (500, 100, 334, 180, 0, 180, False, 10),
                              (500, 100, 229, 180, 0, 180, True, 0)],
             "left_handover": [(500, 100, 334, 180, 0, 180, True, 10),
                               (350, -100, 655, 180, 0, 180, False, 0)],
             "left_clear": [(350, -100, 690, 180, 0, 180, True, 0)],
+            "left_park": [(350, 400, 690, 180, 0, 180, False, 0)],
             "right_via": [(300, -300, 250, 0, 0, 0, False, 0)],
             "right_beside": [(330, -235, 281, 0, 0, 0, False, 0)],
             "right_take": [(330, -115, 281, 0, 0, 0, True, 3),
@@ -91,10 +92,12 @@ class HandoverPlanTests(unittest.TestCase):
                     initial = baseline[name]
                     changed = copy.deepcopy(job)
                     if name in ("approach_cup", "left_handover"):
-                        count = 2 if name == "approach_cup" else 1
-                        for index, point in enumerate(changed["body"]["points"][:count]):
+                        # The first approach point is the fixed ready pose.
+                        indices = (1, 2) if name == "approach_cup" else (0,)
+                        for index in indices:
+                            point = changed["body"]["points"][index]
                             self.assertEqual((point["x"], point["y"]), (385, 125))
-                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 1 else 334)
+                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 2 else 334)
                             point["x"], point["y"] = 500, 100
                     self.assertEqual(changed, initial)
         self.assertEqual(self.cup, original)
@@ -103,8 +106,8 @@ class HandoverPlanTests(unittest.TestCase):
         cup = dict(self.cup, rz=145, aperture=100, z=75)
         jobs = {job["name"]: job for job in handover_jobs(cup, place=self.place, camera_z=True)}
         approach = jobs["approach_cup"]["body"]["points"]
-        self.assertEqual([p["rz"] for p in approach], [145, 145])
-        self.assertEqual([p["z"] for p in approach], [334, 254])
+        self.assertEqual([p["rz"] for p in approach], [180, 145, 145])
+        self.assertEqual([p["z"] for p in approach], [450, 334, 254])
         lift = jobs["left_handover"]["body"]["points"]
         self.assertEqual([p["rz"] for p in lift], [145, 180])
         self.assertEqual(jobs["left_open"]["body"],
