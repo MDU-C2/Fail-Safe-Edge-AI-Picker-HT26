@@ -163,6 +163,43 @@ def test_no_or_unknown_token_says_what_to_give(
         assert "--token" in error
 
 
+def test_common_options_work_before_or_after_the_command(
+    strict_gateway: Gateway,
+) -> None:
+    environment = {key: value for key, value in os.environ.items() if key not in ("GATEWAY_TOKEN", "GATEWAY_URL")}
+
+    for arguments in (
+        ["--url", strict_gateway.api_url, "--token", token_for("diagnostics"), "control", "show"],
+        ["control", "show", "--url", strict_gateway.api_url, "--token", token_for("diagnostics")],
+        ["--url", strict_gateway.api_url, "control", "show", "--token", token_for("diagnostics")],
+    ):
+        result = subprocess.run(
+            [sys.executable, str(TOOL), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+            timeout=30,
+        )
+
+        assert succeeds(result).strip() == "free", arguments
+
+    #
+    # One given before the command is not reset by the command's
+    # own (suppressed) default.
+    #
+    result = subprocess.run(
+        [sys.executable, str(TOOL), "--token", token_for("diagnostics"), "--url", strict_gateway.api_url, "status"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        timeout=30,
+    )
+
+    assert "control free" in result.stdout, result.stderr
+
+
 def test_a_client_without_the_permission_is_told_which_one_is_needed(
     gateway: Gateway,
 ) -> None:

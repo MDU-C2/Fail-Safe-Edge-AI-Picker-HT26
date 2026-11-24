@@ -1347,12 +1347,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Tokens:" + __doc__.split("Tokens:", 1)[1].split("Robot jobs move", 1)[0],
     )
 
-    parser.add_argument("--target", choices=TARGETS, help="A known gateway (local, lynx, pi)")
-    parser.add_argument("--url", help=f"Gateway API base URL (default: GATEWAY_URL, else {TARGETS['local']})")
-    parser.add_argument("--token", default=os.environ.get("GATEWAY_TOKEN"), help="Bearer token (default: GATEWAY_TOKEN)")
-    parser.add_argument("--client", help="Client id in development mode (X-Dev-Client)")
-    parser.add_argument("--ca", help="CA certificate file for an https gateway")
-    parser.add_argument("-y", "--yes", action="store_true", help="Do not ask before changing the RAPID program")
+    add_common_options(parser, top=True)
 
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
@@ -1468,12 +1463,49 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     #
-    # -y also after the subcommand (rapid upload -y).
+    # The common options also after the command (status --token T,
+    # rapid upload -y).
     #
-    for changing in (upload, delete, restore, reset_home):
-        changing.add_argument("-y", "--yes", action="store_true", default=argparse.SUPPRESS, help="Do not ask first")
+    for command in leaf_parsers(parser):
+        add_common_options(command, top=False)
 
     return parser
+
+
+def add_common_options(
+    parser: argparse.ArgumentParser,
+    top: bool,
+) -> None:
+    """On the top parser with their defaults; on each command with
+    SUPPRESS, so one given before the command is not overwritten."""
+
+    def default(value):
+        return value if top else argparse.SUPPRESS
+
+    group = parser.add_argument_group("gateway and identity (before or after the command)")
+
+    group.add_argument("--target", choices=TARGETS, default=default(None), help="A known gateway (local, lynx, pi)")
+    group.add_argument("--url", default=default(None), help=f"Gateway API base URL (default: GATEWAY_URL, else {TARGETS['local']})")
+    group.add_argument("--token", default=default(os.environ.get("GATEWAY_TOKEN")), help="Bearer token (default: GATEWAY_TOKEN)")
+    group.add_argument("--client", default=default(None), help="Client id in development mode (X-Dev-Client)")
+    group.add_argument("--ca", default=default(None), help="CA certificate file for an https gateway")
+    group.add_argument("-y", "--yes", action="store_true", default=default(False), help="Do not ask before changing the RAPID program")
+
+
+def leaf_parsers(
+    parser: argparse.ArgumentParser,
+) -> Iterator[argparse.ArgumentParser]:
+    """The parsers of the commands themselves (rapid upload, status)."""
+
+    subcommands = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+
+    if not subcommands:
+        yield parser
+        return
+
+    for action in subcommands:
+        for child in dict.fromkeys(action.choices.values()):
+            yield from leaf_parsers(child)
 
 
 HANDLERS = {
