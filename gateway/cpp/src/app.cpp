@@ -54,7 +54,10 @@ App::App(
     Settings settings_value
 )
     : settings(std::move(settings_value)),
-      registry(settings.auth_clients_file),
+      registry(
+          settings.auth_clients_file,
+          settings.auth_clients
+      ),
       control(
           settings.control_lease_seconds,
           settings.control_contention_seconds,

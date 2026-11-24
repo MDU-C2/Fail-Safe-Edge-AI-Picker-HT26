@@ -196,6 +196,7 @@ Settings load_settings(
     load.string("api_prefix", settings.api_prefix);
     load.choice("security_mode", settings.security_mode, {"development", "strict"});
     load.string("auth_clients_file", settings.auth_clients_file);
+    load.string("auth_clients", settings.auth_clients);
 
     load.number("control_lease_seconds", settings.control_lease_seconds);
     load.number("control_contention_seconds", settings.control_contention_seconds);

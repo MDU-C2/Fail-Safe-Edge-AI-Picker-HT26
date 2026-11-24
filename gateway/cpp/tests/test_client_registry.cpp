@@ -126,6 +126,64 @@ TEST_F(ClientRegistryTest, DefaultIsTheFirstOfTheHighestPriority) {
     EXPECT_EQ(ClientRegistry(write(clients.dump())).default_client_id(), "b");
 }
 
+TEST_F(ClientRegistryTest, InlineClientsReplaceTheFile) {
+    const std::string clients =
+        "  low:5:robot.read:" + sha256_hex("low-token")
+        + " custom:42:robot.read,robot.control:" + sha256_hex("custom-token")
+        + "\tnone:-1::" + sha256_hex("none-token") + " ";
+
+    //
+    // The file is not read, so a missing one does not matter.
+    //
+    const ClientRegistry registry((directory / "missing.json").string(), clients);
+
+    const auto custom = registry.identity("custom", false);
+
+    ASSERT_TRUE(custom.has_value());
+    EXPECT_EQ(custom->permissions, (std::set<std::string>{"robot.read", "robot.control"}));
+    EXPECT_EQ(custom->control_priority, 42);
+
+    EXPECT_EQ(registry.default_client_id(), "custom");
+    EXPECT_EQ(registry.authenticate("low-token")->client_id, "low");
+    EXPECT_FALSE(registry.authenticate("wrong").has_value());
+
+    const auto none = registry.identity("none", false);
+
+    ASSERT_TRUE(none.has_value());
+    EXPECT_TRUE(none->permissions.empty());
+    EXPECT_EQ(none->control_priority, -1);
+}
+
+TEST_F(ClientRegistryTest, EmptyInlineClientsUseTheFile) {
+    const ClientRegistry registry(write(ordered_json{{"admin", entry("t", {"*"}, 1)}}.dump()), "");
+
+    EXPECT_TRUE(registry.identity("admin", false).has_value());
+}
+
+class InvalidInlineClients : public ClientRegistryTest, public ::testing::WithParamInterface<const char*> {};
+
+TEST_P(InvalidInlineClients, AreRejected) {
+    EXPECT_THROW(ClientRegistry((directory / "missing.json").string(), GetParam()), RegistryError);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ClientRegistry,
+    InvalidInlineClients,
+    ::testing::Values(
+        " ",
+        "x",
+        "x:1:robot.read",
+        "x:1:robot.read:",
+        ":1:robot.read:h",
+        "x:high:robot.read:h",
+        "x:1.5:robot.read:h",
+        "x::robot.read:h",
+        "x:1:robot.read,,camera.read:h",
+        "x:1:robot.read:h:extra",
+        "x:1:robot.read:h x:2:robot.read:h2"
+    )
+);
+
 TEST(RepositoryClientsFile, IsValid) {
     //
     // The tests run from the repository root; the Docker build

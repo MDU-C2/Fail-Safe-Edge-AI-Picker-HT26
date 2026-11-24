@@ -2,5 +2,4 @@
 # the Python image and the Westermo build of gateway/docker/DockerFile are unaffected.
 *
 !gateway/cpp
-!gateway/auth_clients.json
 gateway/cpp/build

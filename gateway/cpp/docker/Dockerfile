@@ -165,18 +165,15 @@ FROM scratch AS runtime
 #
 # WeOS app hosting starts /sbin/init unless told otherwise, so that
 # is where the binary lives. Settings come from GATEWAY_* variables
-# (or a mounted gateway/.env), the clients file from
-# GATEWAY_AUTH_CLIENTS_FILE.
+# (or a mounted gateway/.env). There is no clients file in the image,
+# so the clients can change without a new image: give them in
+# GATEWAY_AUTH_CLIENTS (as the Lynx app environment does) or mount a
+# file at GATEWAY_AUTH_CLIENTS_FILE; without either the gateway does
+# not start. A WeOS package keeps just the filesystem, not
+# ENTRYPOINT, so the app's cmd must give the arguments:
+# cmd "/sbin/init --host 0.0.0.0 --port 8000".
 #
 COPY --from=build /src/gateway/cpp/build/release-size/gateway /sbin/init
-
-#
-# The clients file at its default path (relative to /), as the Python
-# image has it; only token hashes. A WeOS package keeps just the
-# filesystem, not ENTRYPOINT, so the app's cmd must give the
-# arguments: cmd "/sbin/init --host 0.0.0.0 --port 8000".
-#
-COPY gateway/auth_clients.json /gateway/auth_clients.json
 
 WORKDIR /
 
