@@ -49,7 +49,7 @@ import time
 import requests
 
 
-DEFAULT_URL = "http://192.168.125.20:8000/api/v1"
+DEFAULT_URL = "http://169.254.125.202:8000/api/v1"
 DEFAULT_TOKEN = os.environ.get("GATEWAY_TOKEN", "")  # see client_tokens.json (local only)
 
 #
