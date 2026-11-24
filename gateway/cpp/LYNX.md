@@ -236,6 +236,30 @@ This matches the Pi's Python gateway, whose `gateway/.env` raised the top
 from the code default 600 to 700; before that the Lynx used the defaults
 (z up to 600).
 
+### Deployed 2026-11-24: 0.7.1 and the RAPID program
+
+0.7.1 (clients in the package, see [Clients](#clients)) replaced the
+0.7.0 deploy that had cut the clients line; `smoke` with the operator
+token passed (all checks, 99 % valid depth). Then the RAPID program of
+`rapid/` was loaded through the gateway (old modules saved to
+`rapid/backups/169.254.219.127-20261124-144014/`). The program on the
+robot had no watchdog variables yet, so the gateway had not written its
+session; started at once, the arms would have seen the session appear
+just after their start and gone home. Hence, for a program that gains
+the watchdog variables:
+
+```powershell
+python gateway/scripts/gatewayctl.py --target lynx --token <admin> -y rapid upload --no-start
+# until /health robot_controller.watchdog.connected is true (one heartbeat, ~1 s)
+python gateway/scripts/gatewayctl.py --target lynx --token <admin> rapid start --main
+```
+
+Neither arm went home; the primary tier took the lease and moved the
+left arm moments later. `deploy_lynx.ps1 -Save` did not save that day
+(the save line in the configuration session did not take effect); it
+now runs `copy running-config startup-config` as its own command and
+warns if the configs still differ.
+
 ## 5. Test
 
 `smoke` of [gateway/scripts/gatewayctl.py](../scripts/gatewayctl.py) checks a

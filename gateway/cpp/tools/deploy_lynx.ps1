@@ -181,12 +181,21 @@ $config = @(
 # writes the WHOLE running config, including anyone else's unsaved
 # changes on this shared switch, hence opt-in.
 #
-if ($Save) {
-    $config += "copy running-config startup-config"
-}
-
 Write-Host "Configuring app $App"
 Invoke-LynxSession $config | Select-String -Pattern "rror|nvalid|ailed|not found|Max number" | ForEach-Object { Write-Warning $_ }
+
+#
+# As its own command: appended to the configuration session above it
+# did not take effect (found 2026-11-24), so check it afterwards too.
+#
+if ($Save) {
+    Write-Host "Saving the running config to the startup config"
+    Invoke-Lynx "copy running-config startup-config" | Out-Null
+    $unsaved = Invoke-Lynx "diff running-config startup-config" -AllowFailure | Where-Object { $_ -match '^[-+][^-+]' }
+    if ($unsaved) {
+        Write-Warning "The running config still differs from the startup config after saving:`n$($unsaved -join "`n")"
+    }
+}
 
 #
 # The Lynx allows 5 apps; a sixth is refused ("Max number of apps
