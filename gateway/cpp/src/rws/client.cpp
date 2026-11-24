@@ -600,9 +600,12 @@ void RwsClient::stop() {
     //
     // The controller reports stopped a moment before the normal
     // tasks are; until then it refuses module changes and a
-    // program pointer reset. Background tasks keep running.
+    // program pointer reset. Background tasks keep running. Usually
+    // well under a second; 4 s stays inside the picker UI's 5 s
+    // request timeout, so it gets this answer rather than its own
+    // timeout.
     //
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
 
     const auto stopped = [this]() {
         if (execution_state() != "stopped") {
@@ -620,7 +623,7 @@ void RwsClient::stop() {
 
     while (!stopped()) {
         if (std::chrono::steady_clock::now() > deadline) {
-            throw RwsError(409, "RAPID did not stop within 10 s");
+            throw RwsError(409, "RAPID did not stop within 4 s");
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

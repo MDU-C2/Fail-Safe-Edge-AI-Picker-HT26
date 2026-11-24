@@ -41,6 +41,7 @@ Examples:
     gatewayctl.py move --arm right --rz 90                 # turn in place
     gatewayctl.py home --arm right ; gatewayctl.py grip --force 5 ; gatewayctl.py gripper-to 15
     gatewayctl.py rapid status
+    gatewayctl.py rapid start --main                       # after a Stop or collision mid-job (acknowledge it on the FlexPendant first)
     gatewayctl.py rapid upload                             # back up, stop, load rapid/, start
     gatewayctl.py rapid upload --task T_ROB_L --no-start
     gatewayctl.py --target local rapid upload --gripper-stub   # RobotStudio only
@@ -124,7 +125,7 @@ ARMS = ("left", "right")
 JOB_TIMEOUT_SECONDS = 90
 
 #
-# Stopping waits up to 10 s, starting up to 8 s in the gateway.
+# Stopping waits up to 4 s, starting up to 8 s in the gateway.
 #
 RAPID_TIMEOUT_SECONDS = 60
 
@@ -697,6 +698,20 @@ def replace_modules(
         print("Not started (start with: gatewayctl.py rapid start --main)")
 
 
+def pending_jobs(
+    gateway: Gateway,
+) -> list[str]:
+    """The arms whose job RAPID has not finished (move_request still
+    set: /robot/rws/status answers BUSY, also while RAPID is stopped).
+    An arm without the motion program (409) has none."""
+
+    return [
+        arm
+        for arm in ARMS
+        if gateway.get("/robot/rws/status", params={"arm": arm}, ok=(200, 409)).json().get("message") == "BUSY"
+    ]
+
+
 def has_smartgripper(
     gateway: Gateway,
 ) -> bool:
@@ -740,8 +755,25 @@ def command_rapid(
             if rapid_status(gateway)["execution_state"] == "running":
                 print("RAPID already running")
 
-            else:
-                start_rapid(gateway, reset_program_pointer=args.main)
+                return 0
+
+            #
+            # Continuing where RAPID stopped resumes the instruction it
+            # stopped in: after a Stop or a collision mid-job, that is
+            # the same motion again. From main the arm loop clears the
+            # job instead.
+            #
+            pending = [] if args.main or args.resume else pending_jobs(gateway)
+
+            if pending:
+                raise GatewayError(
+                    f"The {' and '.join(pending)} arm{'s have' if len(pending) > 1 else ' has'} an unfinished job "
+                    f"(RAPID was stopped mid-job, by Stop or a collision): continuing would run that motion again. "
+                    f"Use 'rapid start --main' (the job is dropped, the arm stays where it is), 'rapid restart' "
+                    f"or 'rapid reset'; --resume continues the job anyway"
+                )
+
+            start_rapid(gateway, reset_program_pointer=args.main)
 
         return 0
 
@@ -1358,8 +1390,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     actions.add_parser("status", help="Mode, motors, RAPID state and the modules of each task")
 
-    start = actions.add_parser("start", help="Start RAPID (AUTO only)")
-    start.add_argument("--main", action="store_true", help="Move the program pointer to main first")
+    start = actions.add_parser("start", help="Start RAPID (AUTO only); refused while an arm has an unfinished job")
+    resume = start.add_mutually_exclusive_group()
+    resume.add_argument("--main", action="store_true", help="Move the program pointer to main first (drops an unfinished job)")
+    resume.add_argument("--resume", action="store_true", help="Continue where RAPID stopped, also an unfinished job (the same motion again)")
 
     actions.add_parser("stop", help="Stop RAPID (halts any move at once)")
 

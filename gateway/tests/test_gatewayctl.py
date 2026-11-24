@@ -476,6 +476,45 @@ def test_rapid_program_and_arms_on_the_virtual_controller(
 
         assert "RAPID running (program pointer at main)" in output
 
+        #
+        # RAPID stopped mid-job (a Stop or a collision): a plain start
+        # would continue that motion, so it is refused; from main the
+        # job is dropped and the arm stays where it stopped.
+        #
+        diagnostics = robotstudio_gateway.client("diagnostics")
+
+        with admin_client.control():
+            moving = {"arm": "left", "x": 325, "y": 200, "z": 300, "speed": 10, "wait": False}
+
+            assert expect(admin_client.post("/robot/rws/move", json=moving), 200)["message"] == "STARTED"
+
+            time.sleep(1.5)
+
+            assert expect(admin_client.post("/robot/rapid/stop"), 200)["execution_state"] == "stopped"
+
+        assert expect(diagnostics.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] == "BUSY"
+
+        stopped_at = expect(diagnostics.get("/robot/arms/left/pose"), 200)
+
+        error = fails(run_tool(robotstudio_gateway, "primary", "rapid", "start"))
+
+        assert "left arm has an unfinished job" in error
+        assert "--main" in error
+
+        assert expect(diagnostics.get("/robot/rapid"), 200)["execution_state"] == "stopped"
+
+        output = tool("primary", "rapid", "start", "--main")
+
+        assert "RAPID running (program pointer at main)" in output
+
+        assert expect(diagnostics.get("/robot/rws/status", params={"arm": "left"}), 200)["message"] != "BUSY"
+
+        time.sleep(1.0)
+
+        now = expect(diagnostics.get("/robot/arms/left/pose"), 200)
+
+        assert all(abs(now[axis] - stopped_at[axis]) < 1.0 for axis in "xyz"), (stopped_at, now)
+
         output = tool("primary", "rapid", "stop")
 
         assert "RAPID stopped" in output

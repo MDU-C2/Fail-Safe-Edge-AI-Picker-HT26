@@ -211,7 +211,7 @@ public:
     );
 
     //
-    // Waits up to 10 s until the normal tasks have stopped, else
+    // Waits up to 4 s until the normal tasks have stopped, else
     // RwsError 409.
     //
     void stop();
