@@ -30,7 +30,7 @@ GATEWAY_ROBOT_HOST points at. Use the RobotStudio virtual controller
 (GATEWAY_ROBOT_HOST=127.0.0.1) unless you mean to move the real YuMi.
 Loading the program replaces every program module in T_ROB_L and
 T_ROB_R without a backup; on the real YuMi use
-rapid/rapidctl.py upload (it saves the old modules) and --no-load.
+gateway/scripts/gatewayctl.py rapid upload (it saves the old modules) and --no-load.
 
 Usage (from the repository root):
     python gateway/scripts/basic_client.py --client admin           # development mode
@@ -61,7 +61,7 @@ LOOP_INTERVAL_SECONDS = 1.0
 RAPID_DIR = Path(__file__).resolve().parents[2] / "rapid"
 
 #
-# The arm modules of the program in rapid/, as rapidctl.py
+# The arm modules of the program in rapid/, as gatewayctl.py rapid upload
 # loads them.
 #
 PROGRAM = {

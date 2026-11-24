@@ -324,7 +324,7 @@ def frame_array(r, dtype, planes=1):
 
 
 def zyx_angles(pose):
-    """NEW (copied from gateway/scripts/rws_move.py): (rx, ry, rz) in degrees of the pose's
+    """NEW (copied from gateway/scripts/rws_move.py, now gatewayctl.py): (rx, ry, rz) in degrees of the pose's
     quaternion, the inverse of RAPID's OrientZYX(rz, ry, rx)."""
     w, x, y, z = (pose[name] for name in ("q1", "q2", "q3", "q4"))
     rx = np.arctan2(2 * (y * z + w * x), 1 - 2 * (x * x + y * y))
@@ -954,7 +954,7 @@ class Picker:
                 return True
             except RobotError as e:
                 log(f"  STOP: going home failed: {e}")
-                if not self.ask_person("Move the arms clear (e.g. rws_move.py --home)"):
+                if not self.ask_person("Move the arms clear (e.g. gatewayctl.py home)"):
                     return False
 
     def auto_run(self, idle):

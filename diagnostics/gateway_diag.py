@@ -365,7 +365,7 @@ def duration(
 def quaternion_to_zyx(
     pose: dict,
 ) -> tuple[float, float, float]:
-    """rx, ry, rz in degrees, the meaning of RAPID OrientZYX(rz, ry, rx) (as in rws_move.py)."""
+    """rx, ry, rz in degrees, the meaning of RAPID OrientZYX(rz, ry, rx) (as in gateway/scripts/gatewayctl.py)."""
 
     w, x, y, z = (pose[name] for name in ("q1", "q2", "q3", "q4"))
 

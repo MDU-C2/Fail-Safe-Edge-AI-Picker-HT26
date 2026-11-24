@@ -3,6 +3,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "http/message.hpp"
 #include "rws/controller.hpp"
@@ -32,12 +33,64 @@ void check_source(
 );
 
 //
-// 404 for a task the controller does not have, 409 while RAPID
-// runs (the controller would only answer with an error code).
+// 404 for a task the controller does not have.
+//
+void require_task(
+    Controller& controller,
+    const std::string& task
+);
+
+//
+// require_task, and 409 while RAPID runs (the controller would
+// only answer with an error code).
 //
 void require_stopped_task(
     Controller& controller,
     const std::string& task
+);
+
+//
+// The name of a module loaded in a task as the controller spells
+// it (RAPID names are case-insensitive), else 404.
+//
+std::string require_loaded_module(
+    Controller& controller,
+    const std::string& task,
+    const std::string& module
+);
+
+//
+// Whether two RAPID values are the same, as the controller writes
+// them back: strings exactly, anything else without spaces and
+// case-insensitively ([0, 0, 0] is [0,0,0], true is TRUE).
+//
+bool same_rapid_value(
+    std::string_view a,
+    std::string_view b
+);
+
+struct RapidVariable {
+    std::string name;
+    std::string value;
+};
+
+//
+// Writes each variable in the task, then reads them all back: 502
+// (http::HttpError) if one does not hold the value written. A
+// missing variable or a value of the wrong type is the controller's
+// RwsError 400.
+//
+void write_variables(
+    Controller& controller,
+    const std::string& task,
+    const std::vector<RapidVariable>& variables
+);
+
+//
+// ISO-8859-1 bytes (as the controller stores modules) to UTF-8.
+//
+std::string latin1_to_utf8(
+    std::string_view latin1
 );
 
 //

@@ -137,6 +137,44 @@ TEST(RwsHeartbeat, ReportsAutoHomeOnceWhenItTurnsTrue) {
     EXPECT_EQ(reported.size(), 2u);
 }
 
+TEST(RwsHeartbeat, RestoreWritesTheSessionBackAfterAReset) {
+    FakeArmTasks controller;
+    add_watchdog(controller);
+
+    RwsHeartbeat heartbeat(controller, 5.0);
+
+    heartbeat.beat();
+
+    //
+    // POST /robot/rapid/reset: the declared values, then restore.
+    //
+    controller.set_symbol("gw_session", "0");
+    controller.set_symbol("gw_timeout", "0");
+
+    heartbeat.restore();
+
+    EXPECT_EQ(controller.symbol("gw_session"), std::to_string(heartbeat.session()));
+    EXPECT_EQ(controller.symbol("gw_timeout"), "5");
+
+    //
+    // The rounds after it do not write the session again.
+    //
+    heartbeat.beat();
+
+    EXPECT_EQ(count_writes(controller, "gw_session"), 2);
+}
+
+TEST(RwsHeartbeat, RestoreWritesNothingWhenOff) {
+    FakeArmTasks controller;
+    add_watchdog(controller);
+
+    RwsHeartbeat heartbeat(controller, 0.0);
+
+    heartbeat.restore();
+
+    EXPECT_TRUE(controller.written().empty());
+}
+
 TEST(RwsHeartbeat, ZeroTimeoutWritesNothing) {
     FakeArmTasks controller;
     add_watchdog(controller);

@@ -13,7 +13,7 @@ gateway.
 wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh wmopkg      # build  -> gateway/cpp/dist/gateway-cpp-0.5.0.wmopkg
 $env:LYNX_PASSWORD = "<Lynx admin password>"
 powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1   # import, configure, start, wait for /health
-python gateway/scripts/smoke_test.py --url http://169.254.219.127:8000/api/v1 --token <robot.control token> --read-token <camera.read token>
+python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token> smoke --read-token <camera.read token>
 ```
 
 The gateway is then at `http://169.254.219.127:8000/api/v1`, and at
@@ -202,7 +202,7 @@ from the code default 600 to 700; before that the Lynx used the defaults
 
 ## 5. Test
 
-[gateway/scripts/smoke_test.py](../scripts/smoke_test.py) checks a
+`smoke` of [gateway/scripts/gatewayctl.py](../scripts/gatewayctl.py) checks a
 running gateway without moving the robot: `/health`, `/openapi.json`,
 that a request without a token is refused, camera status, intrinsics,
 an RGB and a depth frame (format, size, valid depth), robot status and
@@ -211,8 +211,8 @@ the control lease (acquire, renew, release; `--read-only` skips it).
 object and reads it back.
 
 ```powershell
-python gateway/scripts/smoke_test.py --url http://169.254.219.127:8000/api/v1 `
-    --token <robot.control token> --read-token <camera.read token> [--write-calibration]
+python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token> `
+    smoke --read-token <camera.read token> [--write-calibration]
 ```
 
 Results on 2026-11-11 (gateway 0.3.0, real OAK at 1920x1080 / 4 fps):

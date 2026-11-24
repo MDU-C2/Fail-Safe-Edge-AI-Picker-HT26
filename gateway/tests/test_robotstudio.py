@@ -1487,3 +1487,191 @@ def test_legacy_tcp_commands_move_the_virtual_robot(
     assert run_command(admin, "900,0,300") == MOVE_FAILED
 
     assert_position(arm_pose(admin), TARGET)
+
+
+# ================================================================
+# RAPID program administration (C++ only)
+# ================================================================
+
+SHARED_VARS = RAPID_DIR / "SharedVars.mod"
+
+
+def declared_values(
+    module: Path = SHARED_VARS,
+) -> list[dict]:
+    """The PERS of a module with their declared values, as
+    gateway/scripts/gatewayctl.py sends them for a reset."""
+
+    return [
+        {"name": match.group(1), "value": match.group(2)}
+        for match in re.finditer(
+            r"^\s*PERS\s+\w+\s+(\w+)\s*:=\s*(.*?);",
+            module.read_text(encoding="iso-8859-1"),
+            re.MULTILINE,
+        )
+    ]
+
+
+@pytest.mark.cpp_only
+def test_module_source_is_read_back(
+    admin: Client,
+) -> None:
+    path = f"/robot/rapid/tasks/{TEST_TASK}/modules/{TEST_MODULE}"
+
+    source = TEST_SOURCE.replace("ENDMODULE", "    ! Grüße, 5 °\nENDMODULE")
+
+    try:
+        expect(admin.put(path, json={"source": source}), 200)
+
+        module = expect(admin.get(path.replace(TEST_MODULE, TEST_MODULE.lower())), 200)
+
+        assert module["task"] == TEST_TASK
+        assert module["module"] == TEST_MODULE
+        assert re.search(rf"^\s*MODULE\s+{TEST_MODULE}", module["source"], re.MULTILINE)
+        assert "Grüße, 5 °" in module["source"]
+
+        #
+        # robot.read is enough, also without the lease.
+        #
+        expect(admin.gateway.client("diagnostics").get(path), 200)
+
+    finally:
+        expect(admin.delete(path), 200)
+
+    expect(admin.get(path), 404)
+    expect(admin.get(f"/robot/rapid/tasks/T_NOPE/modules/{TEST_MODULE}"), 404)
+
+
+@pytest.mark.cpp_only
+def test_reset_writes_the_variables_and_restarts(
+    load_program: LoadProgram,
+) -> None:
+    admin = load_program(RWS_PROGRAM)
+
+    controller = Controller()
+
+    changed = [
+        {"name": "move_acc_left", "value": "50"},
+        {"name": "target_pos_left", "value": "[1, 2, 3]"},
+        {"name": "grip_cmd_left", "value": '"OPEN"'},
+    ]
+
+    rapid = expect(
+        admin.post("/robot/rapid/reset", json={"task": "T_ROB_L", "variables": changed, "start": False}),
+        200,
+    )
+
+    assert rapid["execution_state"] == "stopped"
+
+    assert controller.read_symbol("T_ROB_L", "move_acc_left") == "50"
+    assert controller.read_symbol("T_ROB_L", "target_pos_left") == "[1,2,3]"
+    assert controller.read_symbol("T_ROB_L", "grip_cmd_left") == '"OPEN"'
+
+    #
+    # Shared: the right arm's task sees the same variable.
+    #
+    assert controller.read_symbol("T_ROB_R", "move_acc_left") == "50"
+
+    rapid = expect(
+        admin.post("/robot/rapid/reset", json={"task": "T_ROB_L", "variables": declared_values()}),
+        200,
+    )
+
+    assert rapid["execution_state"] == "running"
+
+    assert controller.read_symbol("T_ROB_L", "move_acc_left") == "100"
+    assert controller.read_symbol("T_ROB_L", "target_pos_left") == "[0,0,0]"
+
+    #
+    # The program still works after it.
+    #
+    assert rws_home(admin) == DONE
+
+    #
+    # A variable the program does not have: the controller's 404,
+    # passed on.
+    #
+    detail = expect(
+        admin.post(
+            "/robot/rapid/reset",
+            json={"task": "T_ROB_L", "variables": [{"name": "no_such_variable", "value": "0"}], "start": False},
+        ),
+        404,
+    )["detail"]
+
+    assert detail.startswith("Robot controller")
+
+
+@pytest.mark.cpp_only
+def test_reset_keeps_the_watchdog_session(
+    queue_program: Gateway,
+    tmp_path: Path,
+) -> None:
+    """A reset writes gw_session back to 0; the gateway writes its own
+    session again before RAPID starts, so the arms do not take the
+    next heartbeat for a gateway restart and go home."""
+
+    controller = Controller()
+
+    with watchdog_gateway(tmp_path / "watchdog") as gateway:
+        #
+        # Its start sends the arms home; then send the left one away.
+        #
+        wait_for_auto_home(controller)
+
+        admin = gateway.client("admin")
+
+        with admin.control():
+            assert rws_move(admin, TARGET) == DONE
+
+            session = controller.read_symbol("T_ROB_L", "gw_session")
+
+            assert session != "0"
+
+            rapid = expect(
+                admin.post("/robot/rapid/reset", json={"task": "T_ROB_L", "variables": declared_values()}),
+                200,
+            )
+
+            assert rapid["execution_state"] == "running"
+
+            assert controller.read_symbol("T_ROB_L", "gw_session") == session
+            assert float(controller.read_symbol("T_ROB_L", "gw_timeout")) == HEARTBEAT_TIMEOUT_SECONDS
+
+            time.sleep(HEARTBEAT_TIMEOUT_SECONDS + 1.5)
+
+            for arm in ARMS:
+                assert arm_symbol(controller, "auto_home", arm) == "FALSE"
+
+            assert_position(arm_pose(admin), TARGET)
+
+            assert watchdog_health(gateway)["connected"] is True
+
+
+@pytest.mark.cpp_only
+def test_start_reports_a_program_that_does_not_run(
+    admin: Client,
+) -> None:
+    backup = save_program(admin)
+
+    try:
+        #
+        # A task without main: the controller refuses the program
+        # pointer reset (404, passed on). A start it accepts without
+        # running would be the gateway's own 409.
+        #
+        replace_program(admin, {"T_ROB_L": {TEST_MODULE: TEST_SOURCE}, "T_ROB_R": {}})
+
+        response = admin.post("/robot/rapid/start", json={"reset_program_pointer": True})
+
+        assert response.status_code in (404, 409), response.text
+        assert response.json()["detail"].startswith(("Robot controller", "RAPID did not start")), response.text
+
+        rapid = expect(admin.get("/robot/rapid"), 200)
+
+        assert rapid["execution_state"] == "stopped"
+
+    finally:
+        admin.post("/robot/rapid/stop")
+
+        replace_program(admin, backup)

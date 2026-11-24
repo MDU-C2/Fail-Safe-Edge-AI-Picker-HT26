@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
@@ -72,6 +73,16 @@ public:
     //
     void beat();
 
+    //
+    // Writes gw_timeout and this gateway's gw_session now (nothing
+    // when off). After the variables were reset to their declared
+    // values, and before RAPID starts: the arm tasks take the
+    // session they see at the start as this gateway's, so a session
+    // written only later would look like a gateway restart and send
+    // the arms home. Throws RwsError.
+    //
+    void restore();
+
     State state() const;
 
     std::uint32_t session() const {
@@ -94,7 +105,7 @@ private:
 
     std::uint32_t session_;
     std::uint32_t counter_ = 0;
-    bool session_written_ = false;
+    std::atomic<bool> session_written_ = false;
 
     mutable std::mutex mutex_;
     std::condition_variable wake_;

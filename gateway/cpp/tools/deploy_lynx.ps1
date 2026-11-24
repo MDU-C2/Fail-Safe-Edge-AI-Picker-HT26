@@ -23,7 +23,7 @@
       5. restart the app and wait for /health.
     Nothing else on the Lynx is changed; images of older versions stay.
     The Lynx allows 5 apps; the script stops if the app cannot be created.
-    Test afterwards: python gateway/scripts/smoke_test.py --url http://<lynx>:8000/api/v1
+    Test afterwards: python gateway/scripts/gatewayctl.py --url http://<lynx>:8000/api/v1 --token <token> smoke
 #>
 param(
     [string]$Lynx = "169.254.219.127",
