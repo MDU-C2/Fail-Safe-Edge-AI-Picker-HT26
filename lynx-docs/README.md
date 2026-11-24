@@ -11,6 +11,8 @@ and `show` commands on **2026-11-11**.
 - [COMMANDS.md](COMMANDS.md) — the full WeOS CLI command reference and how to use it.
 - [DEPLOY.md](DEPLOY.md) — how to build, import, configure and run any app on the Lynx
   (the C++ gateway's deployment is [gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md)).
+- [DIGITAL-IO.md](DIGITAL-IO.md) — the digital input and relay output: specs, reading
+  the input over SNMP, and using it as an on/off switch in an app.
 - [command-tree.txt](command-tree.txt) — raw `tree` output: every command and config node.
 - `running-config.sanitized.json` — the device's live config as of 2026-11-11, with the
   admin password hash and SNMP community strings redacted. **Kept local only — it is
