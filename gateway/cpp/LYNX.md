@@ -188,7 +188,7 @@ separated by commas.
 admin:1000:*:<sha256> primary:300:robot.read,robot.control,camera.read:<sha256> ...
 ```
 
-To change a client or token (hash from `python gateway/scripts/generate_token.py <client>`):
+To change a client or token (hash from `python gateway/scripts/gatewayctl.py token new <client>`):
 
 - edit `gateway/auth_clients.json` and run the deploy script again (it
   converts the file; the package itself does not change), or
