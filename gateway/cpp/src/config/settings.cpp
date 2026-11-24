@@ -224,6 +224,7 @@ Settings load_settings(
     load.number("rws_default_speed", settings.rws_default_speed);
     load.number("rws_default_acceleration", settings.rws_default_acceleration);
     load.number("rws_default_ramp", settings.rws_default_ramp);
+    load.number("rws_heartbeat_timeout", settings.rws_heartbeat_timeout);
 
     return settings;
 }

@@ -990,14 +990,19 @@ def queue_program(
 
         backup = save_program(admin)
 
-        replace_program(admin, program_sources(RWS_PROGRAM))
-
-        expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
-
-        assert rws_home(admin) == DONE
-        assert rws_home(admin, "right") == DONE
-
     try:
+        #
+        # Inside the try, so the saved program comes back also when
+        # this one does not load or start.
+        #
+        with admin.control():
+            replace_program(admin, program_sources(RWS_PROGRAM))
+
+            expect(admin.post("/robot/rapid/start", json={"reset_program_pointer": True}), 200)
+
+            assert rws_home(admin) == DONE
+            assert rws_home(admin, "right") == DONE
+
         yield robotstudio_gateway
 
     finally:
@@ -1219,6 +1224,202 @@ def test_failed_queue_blocks_new_queues_until_cleared(
         expect(primary.post("/robot/rws/queue", json={"steps": [QUEUE_HOME]}), 202)
 
         assert wait_for_queue(primary)["state"] == "done"
+
+
+# ================================================================
+# Gateway watchdog: the arms go home without the gateway
+# ================================================================
+
+#
+# Short, so the test does not wait long; the Lynx uses 5.
+#
+HEARTBEAT_TIMEOUT_SECONDS = 3.0
+
+ARMS = ("left", "right")
+
+
+@contextmanager
+def watchdog_gateway(
+    directory: Path,
+) -> Iterator[Gateway]:
+    """A second gateway on the virtual controller, feeding the arm
+    tasks' watchdog: each one is a gateway (re)start to RAPID."""
+
+    directory.mkdir()
+
+    gateway = Gateway(
+        directory,
+        "strict",
+        {
+            "GATEWAY_CAMERA_PROVIDER": "mock",
+            "GATEWAY_ROBOT_PROVIDER": "mock",
+            "GATEWAY_ROBOT_HOST": "127.0.0.1",
+            "GATEWAY_RWS_PORT": str(ROBOTSTUDIO_RWS_PORT),
+            "GATEWAY_RWS_HEARTBEAT_TIMEOUT": str(HEARTBEAT_TIMEOUT_SECONDS),
+        },
+    )
+
+    gateway.start()
+
+    try:
+        yield gateway
+
+    finally:
+        gateway.stop()
+
+
+def arm_symbol(
+    controller: Controller,
+    name: str,
+    arm: str,
+) -> str:
+    return controller.read_symbol("T_ROB_L" if arm == "left" else "T_ROB_R", f"{name}_{arm}")
+
+
+def wait_for_auto_home(
+    controller: Controller,
+    arms: tuple[str, ...] = ARMS,
+) -> None:
+    """Until the arms went home on their own and are idle again."""
+
+    deadline = time.monotonic() + 30
+
+    while not all(
+        arm_symbol(controller, "auto_home", arm) == "TRUE"
+        and arm_symbol(controller, "move_request", arm) == "FALSE"
+        for arm in arms
+    ):
+        assert time.monotonic() < deadline, "the arms did not go home on their own"
+
+        time.sleep(0.1)
+
+
+def watchdog_health(
+    gateway: Gateway,
+) -> dict:
+    return expect(gateway.client("diagnostics").get("/health"), 200)["robot_controller"]["watchdog"]
+
+
+@pytest.mark.cpp_only
+def test_arms_go_home_when_the_gateway_is_lost_or_restarts(
+    queue_program: Gateway,
+    tmp_path: Path,
+) -> None:
+    controller = Controller()
+    admin = queue_program.client("admin")
+
+    #
+    # queue_program's gateway writes no heartbeat, so far the
+    # watchdog is off; both arms are home.
+    #
+    home = {arm: arm_pose(admin, arm) for arm in ARMS}
+
+    def assert_home() -> None:
+        for arm in ARMS:
+            assert_position(arm_pose(admin, arm), tuple(home[arm][axis] for axis in "xyz"))
+
+    def move_away() -> None:
+        assert rws_move(admin, TARGET) == DONE
+        assert rws_move(admin, RIGHT_TARGET, arm="right") == DONE
+
+    def assert_away() -> None:
+        assert_position(arm_pose(admin), TARGET)
+        assert_position(arm_pose(admin, "right"), RIGHT_TARGET)
+
+    with admin.control():
+        #
+        # A gateway start sends the arms home (here from home).
+        #
+        with watchdog_gateway(tmp_path / "first") as first:
+            wait_for_auto_home(controller)
+
+            health = watchdog_health(first)
+
+            assert health["enabled"] is True
+            assert health["connected"] is True
+            assert health["timeout_seconds"] == HEARTBEAT_TIMEOUT_SECONDS
+            assert health["error"] is None
+
+            #
+            # A job clears auto_home; while the heartbeat runs the
+            # arms stay where they were sent.
+            #
+            move_away()
+
+            for arm in ARMS:
+                assert arm_symbol(controller, "auto_home", arm) == "FALSE"
+
+            time.sleep(HEARTBEAT_TIMEOUT_SECONDS + 1.5)
+
+            assert_away()
+            assert watchdog_health(first)["auto_home"] == {"left": False, "right": False}
+
+            lost = time.monotonic()
+
+        #
+        # The gateway is gone: after the timeout the arms go home.
+        #
+        wait_for_auto_home(controller)
+
+        assert time.monotonic() - lost >= HEARTBEAT_TIMEOUT_SECONDS - 1.5
+
+        assert_home()
+
+        #
+        # Once only: sent away again without a heartbeat, they stay.
+        #
+        move_away()
+
+        time.sleep(HEARTBEAT_TIMEOUT_SECONDS + 1.5)
+
+        assert_away()
+
+        #
+        # A gateway restart sends them home at once, heartbeat or not.
+        #
+        with watchdog_gateway(tmp_path / "second") as second:
+            wait_for_auto_home(controller)
+
+            assert_home()
+
+            deadline = time.monotonic() + 5
+
+            while watchdog_health(second)["auto_home"] != {"left": True, "right": True}:
+                assert time.monotonic() < deadline
+
+                time.sleep(0.2)
+
+            #
+            # Both arms holding (a handover): neither goes home.
+            #
+            move_away()
+
+            for arm in ARMS:
+                assert expect(admin.post("/robot/rws/gripper", json={"arm": arm, "action": "grip"}), 200) == DONE
+
+        with watchdog_gateway(tmp_path / "third"):
+            time.sleep(HEARTBEAT_TIMEOUT_SECONDS / 2)
+
+            for arm in ARMS:
+                assert arm_symbol(controller, "holding", arm) == "TRUE"
+                assert arm_symbol(controller, "auto_home", arm) == "FALSE"
+
+            assert_away()
+
+            #
+            # The right one lets go: a lost gateway now sends both
+            # home, the left one with what it holds.
+            #
+            assert expect(admin.post("/robot/rws/gripper", json={"arm": "right", "action": "open"}), 200) == DONE
+
+        wait_for_auto_home(controller)
+
+        assert_home()
+
+        assert arm_symbol(controller, "holding", "left") == "TRUE"
+        assert arm_symbol(controller, "holding", "right") == "FALSE"
+
+        assert expect(admin.post("/robot/rws/gripper", json={"arm": "left", "action": "open"}), 200) == DONE
 
 
 def send_command(

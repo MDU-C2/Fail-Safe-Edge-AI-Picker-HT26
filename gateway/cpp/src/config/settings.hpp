@@ -71,6 +71,15 @@ struct Settings {
     double rws_default_speed = 50.0;
     double rws_default_acceleration = 100.0;
     double rws_default_ramp = 100.0;
+
+    //
+    // C++ only. Seconds without the gateway's RWS heartbeat after
+    // which an idle arm goes home on its own (rws/heartbeat.hpp); a
+    // gateway start also sends the arms home. 0 = off: no heartbeat
+    // is written. Off by default, since the default robot host is
+    // the real YuMi; the Lynx deployment sets 5.
+    //
+    double rws_heartbeat_timeout = 0.0;
 };
 
 class SettingsError : public std::runtime_error {

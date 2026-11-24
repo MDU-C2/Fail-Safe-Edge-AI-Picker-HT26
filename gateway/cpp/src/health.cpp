@@ -55,11 +55,34 @@ Json camera_health(
     };
 }
 
+//
+// The arm tasks' gateway watchdog, as the heartbeat last saw it (no
+// RWS call here).
+//
+Json watchdog_health(
+    const App& app
+) {
+    const auto state = app.heartbeat.state();
+
+    auto known = [](const std::optional<bool>& value) {
+        return value ? Json(*value) : Json(nullptr);
+    };
+
+    return Json{
+        {"enabled", state.enabled},
+        {"timeout_seconds", app.settings.rws_heartbeat_timeout},
+        {"connected", state.connected},
+        {"auto_home", Json{{"left", known(state.auto_home[0])}, {"right", known(state.auto_home[1])}}},
+        {"error", state.error ? Json(*state.error) : Json(nullptr)},
+    };
+}
+
 Json robot_controller_health(
     App& app
 ) {
     const bool moving = app.motion.is_moving() || app.queue.running();
     const char* queue_state = rws::queue_state_name(app.queue.snapshot().state);
+    const Json watchdog = watchdog_health(app);
 
     try {
         //
@@ -78,6 +101,7 @@ Json robot_controller_health(
             {"rapid_execution_state", execution_state},
             {"move_in_progress", moving},
             {"queue_state", queue_state},
+            {"watchdog", watchdog},
             {"error", nullptr},
         };
 
@@ -90,6 +114,7 @@ Json robot_controller_health(
             {"rapid_execution_state", nullptr},
             {"move_in_progress", moving},
             {"queue_state", queue_state},
+            {"watchdog", watchdog},
             {"error", error.message},
         };
     }

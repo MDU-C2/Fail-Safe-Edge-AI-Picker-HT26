@@ -6,6 +6,17 @@ MODULE LeftArm
   VAR robtarget pTarget;
   VAR jointtarget jTarget;                     ! CHANGED: joint angles found by Reachable
 
+  ! Gateway watchdog (see SharedVars): the last heartbeat and session
+  ! seen, the time since the heartbeat last changed, whether it changed
+  ! at all since RAPID started, whether its loss was handled, and
+  ! whether the current job is the arm's own auto-home.
+  VAR num hbLast;
+  VAR num hbSession;
+  VAR clock hbClock;
+  VAR bool hbSeen;
+  VAR bool hbLost;
+  VAR bool autoJob;
+
   PROC main()
     ! Clear requests left over from an earlier run (PERS keeps its values)
     move_request_left := FALSE;
@@ -13,6 +24,13 @@ MODULE LeftArm
     use_rot_left := FALSE;
     grip_cmd_left := "";
     path_len_left := 0;
+    hbLast := gw_heartbeat;
+    hbSession := gw_session;
+    hbSeen := FALSE;
+    hbLost := FALSE;
+    autoJob := FALSE;
+    ClkReset hbClock;
+    ClkStart hbClock;
 
     ConfJ \Off;
     ConfL \Off;                                 ! path MoveL: take the configuration closest to the current one
@@ -22,7 +40,15 @@ MODULE LeftArm
     TPWrite "Left arm ready";
 
     WHILE TRUE DO
-      WaitUntil move_request_left = TRUE;
+      WHILE NOT move_request_left DO           ! idle: watch the gateway meanwhile
+        WaitTime 0.1;
+        Watchdog;
+      ENDWHILE
+      IF autoJob THEN
+        autoJob := FALSE;
+      ELSE
+        auto_home_left := FALSE;              ! a job from outside: the arm is no longer where it went on its own
+      ENDIF
       AccSet move_acc_left, move_ramp_left;
 
       IF go_home_left THEN
@@ -30,14 +56,17 @@ MODULE LeftArm
         move_ok_left := AtHome();
       ELSEIF grip_cmd_left = "GRIP" THEN
         g_GripIn \holdForce:=grip_force_left;
+        holding_left := TRUE;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSEIF grip_cmd_left = "OPEN" THEN
         g_GripOut;
+        holding_left := FALSE;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSEIF grip_cmd_left = "MOVE" THEN
         g_MoveTo grip_pos_left;
+        holding_left := FALSE;
         grip_cmd_left := "";
         move_ok_left := TRUE;
       ELSEIF path_len_left > 0 THEN
@@ -120,6 +149,52 @@ MODULE LeftArm
 
     PathAccLim FALSE, FALSE;
     move_ok_left := TRUE;
+  ENDPROC
+
+  ! Gateway watchdog, called every 0.1 s while the arm is idle. A new
+  ! session means the gateway restarted; a heartbeat unchanged for
+  ! gw_timeout seconds means it is gone. Either way the arm goes home.
+  PROC Watchdog()
+    IF gw_session <> hbSession THEN
+      hbSession := gw_session;
+      Beat;
+      AutoHome "Gateway restarted";
+    ELSEIF gw_heartbeat <> hbLast THEN
+      Beat;
+    ELSEIF hbSeen AND hbLost = FALSE AND gw_timeout > 0 AND ClkRead(hbClock) > gw_timeout THEN
+      hbLost := TRUE;
+      AutoHome "Gateway lost";
+    ENDIF
+  ENDPROC
+
+  PROC Beat()
+    hbLast := gw_heartbeat;
+    hbSeen := TRUE;
+    hbLost := FALSE;
+    ClkReset hbClock;
+    ClkStart hbClock;
+  ENDPROC
+
+  ! Starts a home job of the arm's own, at v50, as if it had been sent:
+  ! move_request makes the gateway and CommServer see the arm busy. Not
+  ! again until another job has run, and not while both arms hold
+  ! something (a cup in a handover would be torn apart).
+  PROC AutoHome(string reason)
+    IF auto_home_left RETURN;
+    IF holding_left AND holding_right THEN
+      TPWrite reason + ": both arms hold, left arm stays";
+      RETURN;
+    ENDIF
+    TPWrite reason + ": left arm going home";
+    move_speed_left := [50, 500, 5000, 1000];
+    move_acc_left := 100;
+    move_ramp_left := 100;
+    go_home_left := TRUE;
+    grip_cmd_left := "";
+    path_len_left := 0;
+    auto_home_left := TRUE;
+    autoJob := TRUE;
+    move_request_left := TRUE;
   ENDPROC
 
   ! GoHomeLeft can stop early if blocked, so check where the arm ended up.

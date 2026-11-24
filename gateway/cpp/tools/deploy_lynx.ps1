@@ -39,6 +39,9 @@ param(
     # package: see "Safe zone" in gateway/cpp/LYNX.md.
     [string]$SafeZoneMin = "[180,-400,50]",
     [string]$SafeZoneMax = "[800,500,700]",
+    # Seconds without the gateway's RWS heartbeat before an idle arm goes
+    # home on its own; a gateway start also sends the arms home. 0 = off.
+    [string]$HeartbeatTimeout = "5",
     [int]$Port = 8000,
     [int]$ServePort = 8099,
     [switch]$Autostart,
@@ -154,6 +157,7 @@ $config = @(
     "environment GATEWAY_CALIBRATION_FILE /state/calibration.json",
     "environment GATEWAY_RWS_SAFE_ZONE_MIN $SafeZoneMin",
     "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
+    "environment GATEWAY_RWS_HEARTBEAT_TIMEOUT $HeartbeatTimeout",
     "enable",
     $(if ($Autostart) { "autostart" } else { "no autostart" }),
     "leave"
