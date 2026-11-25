@@ -225,6 +225,7 @@ def test_factory_loads_sidecar_only_for_enabled_between_cup_checks(factory_rig, 
     from web_app import hardware_factory
     rig = factory_rig
     rig.args.between_cup_check = enabled
+    rig.args.right_park = enabled
     with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
         session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.between_cup_check is enabled
@@ -257,6 +258,7 @@ def test_factory_passes_real_right_via_preset_only_when_checks_enabled(factory_r
     path = save(Path(rig.args.placing_grid).parent, preset_record)
     original = path.read_bytes()
     rig.args.between_cup_check = enabled
+    rig.args.right_park = enabled
     session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.between_cup_check is enabled
     assert session.between_cup_grid_check is enabled
@@ -276,6 +278,47 @@ def test_invalid_enabled_sidecar_prevents_robot_client_creation(factory_rig):
         hardware_factory(rig.args)(rig.controller)
     rig.create_robot.assert_not_called()
     rig.args.between_cup_check = False
+    rig.args.right_park = False
     session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.right_park_pose is None
     assert session.between_cup_grid_check is False
+
+
+def test_right_park_flag_loads_the_sidecar_without_workspace_checks(factory_rig):
+    from web_app import hardware_factory
+    rig = factory_rig
+    rig.args.between_cup_check = False
+    rig.args.right_park = True
+    with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_called_once_with(Path(rig.args.placing_grid).with_suffix(".right-park.json"), GATEWAY)
+    assert session.right_park_pose == POSE
+    assert session.between_cup_check is False          # only the waiting position, no extra checks
+    assert session.between_cup_grid_check is False
+
+
+def test_shipped_outside_tray_waiting_position_loads_and_is_behind_the_grid():
+    import json
+    from camera_parking import load_right_park_pose
+    here = Path(__file__).resolve().parent
+    pose = load_right_park_pose(here / "placing_grid_outside_tray.right-park.json", "http://192.168.125.20:8000/")
+    grid = json.loads((here / "placing_grid_outside_tray.json").read_text())
+    cell = grid["cell_size_mm"]
+    near_edge = min(place["x"] for place in grid["locations"]) - cell / 2
+    assert pose == {"x": 200, "y": -380, "z": 250, "rx": 0, "ry": 0, "rz": 0}
+    assert pose["x"] < near_edge   # behind the grid's near edge, toward the robot
+
+
+def test_waiting_position_is_on_by_default_on_every_platform(factory_rig):
+    import web_app
+    from web_app import hardware_factory
+    assert web_app.argparse.ArgumentParser  # web_app parses --right-park/--no-right-park
+    rig = factory_rig
+    rig.args.between_cup_check = False
+    if hasattr(rig.args, "right_park"):
+        del rig.args.right_park            # not given on the command line
+    with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_called_once()
+    assert session.right_park_pose == POSE
+    assert session.between_cup_check is False

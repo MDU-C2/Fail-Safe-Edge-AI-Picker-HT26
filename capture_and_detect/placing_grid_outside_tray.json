@@ -41,7 +41,7 @@
       "x": 450,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 10,

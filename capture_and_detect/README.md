@@ -831,7 +831,7 @@ movement to finish. The review and progress include this waiting-position move o
 configured. Home after every cup remains a separate, explicitly enabled mode;
 the continuous run's Home on an empty workspace does not enable that setting.
 
-The Mac workspace-check mode reads an optional `.right-park.json` sidecar next to
+The live dashboard reads an optional `.right-park.json` sidecar next to
 the selected grid, for example `placing_grid_outside_tray.right-park.json`. The
 `right_via` preset uses the existing upright right-arm waiting position: the
 shared `R_VIA` coordinates and `RIGHT_UP` orientation from the handover plan.
@@ -851,9 +851,12 @@ Existing explicit position files remain supported as an alternative: omit
 include `controller_pose` metadata for `arm: "right"`, `tool: "tool0"`,
 `wobj: "wobj0"` and `coordinate: "Wobj"`. The configured gateway and applicable
 position/frame validation still apply. A missing sidecar keeps the existing
-finish above the placement destination. Only Mac workspace-check mode loads this
-configuration; Pi/Lynx, direct non-macOS dashboards and terminal workflows retain
-their existing movement defaults.
+finish above the placement destination. The dashboard loads it on every platform
+by default. `--no-right-park` turns it off, except in the Mac workspace-check mode,
+which always uses it. Terminal workflows keep their existing movement defaults. `placing_grid_outside_tray.right-park.json` puts the right
+arm at x 200, y -380, z 250 (gripper up), behind the grid and out of the camera's
+view of it. The grid reaches y -425 mm, past the safe zone's y -400, so the arm
+cannot wait to the right of the grid.
 
 Any failure stops the batch before another cup is dispatched. Successful picks
 leave any remaining cups available for the next request.
@@ -1249,11 +1252,19 @@ GET requests.
 - The joint chain is `rax_1, rax_2, eax_a, rax_3, rax_4, rax_5, rax_6`: the arm
   angle is physically the third joint. The gripper value is each finger's travel
   in mm, the same as `handover_plan` uses it.
+- The left gripper has the custom cup fingers (`DownFingerV5.STL`, the same
+  part twice, turned 180 degrees about the gripper axis). The build bolts them on
+  exactly at the standard finger's screw holes. Like the standard fingers, they
+  cross over the centre, with each jaw on the gripper's centre line. Each jaw
+  moves out 1 mm per gripper position: 72 mm across the outside of the jaws at
+  position 0 and 122 mm at 25 (measured: 75 and 125). The right gripper keeps
+  the standard servo fingers.
 - The table top is drawn at z = 0 in the base frame, the same as `--grid-table-z`
   (default 0 mm). The lowest 100 mm of the YuMi base sits below it.
 - Model assets live in `web_static/3d/`. To rebuild them from new RobotStudio
   exports (each Link body of both arms + Base + gripper, all joints at 0, binary
-  STL in mm), run `python capture_and_detect/tools/build_yumi_model.py <stl-dir>`
+  STL in mm), run `python capture_and_detect/tools/build_yumi_model.py <stl-dir>
+  --left-finger DownFingerV5.STL`
   (`pip install trimesh fast_simplification scipy`). The script finds which arm
   each link belongs to from the geometry and refuses to write if a link is far
   from its joint. `three-bundle.min.js` is three.js r187 (MIT) and can be rebuilt

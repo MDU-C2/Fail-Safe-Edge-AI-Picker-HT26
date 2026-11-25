@@ -29,9 +29,6 @@ const FINGER_M_PER_MM = 0.001;
 const CUP_HEIGHT_M = 0.095;
 const CUP_DEFAULT_BASE_M = 0.07;    // base diameter when the scan has none
 const CUP_RIM_SCALE = 1.25;        // rim radius / base radius
-// A held cup sits centred between the fingers, its end 20 mm into them:
-// cup centre this far out along the gripper axis (fingertips at 0.136 m).
-const CUP_GRIP_CENTRE_M = 0.136 - 0.020 + CUP_HEIGHT_M / 2;
 const CELL_SIZE_M = 0.074;         // 80 mm grid pitch, drawn with a small gap
 const CAMERA_HOME = { position: [1.55, -0.95, 0.85], target: [0.32, 0, 0.1] };
 const BASE_FOV = 40;          // vertical, degrees, on panels at least WIDE_ASPECT wide
@@ -112,15 +109,21 @@ async function loadModel() {
       joints.push(joint);
       parent = joint;
     });
+    // Each arm's own gripper (the left one has custom cup fingers): body, and
+    // fingers that slide along their axis by 1 mm per gripper position.
+    const gripper = manifest.grippers[arm];
     const mount = fixedFrame(manifest.gripper_mount);
-    mount.add(meshFrom(buffer, manifest, "gripper"));
-    const fingers = Object.entries(manifest.fingers).map(([name, axis]) => {
-      const finger = meshFrom(buffer, manifest, name);
-      mount.add(finger);
+    mount.add(meshFrom(buffer, manifest, gripper.body));
+    const fingers = gripper.fingers.map(({ part, matrix, axis }) => {
+      const seat = fixedFrame(matrix);
+      const finger = meshFrom(buffer, manifest, part);
+      seat.add(finger);
+      mount.add(seat);
       return { mesh: finger, axis: new Vector3(...axis), current: 0, target: 0 };
     });
     parent.add(mount);
-    arms[arm] = { mount, joints, fingers, track: new JointTrack({ maxGap: MAX_GAP_S }), shown: false };
+    arms[arm] = { mount, joints, fingers, gripCentre: gripper.cup_grip_centre_m,
+                  track: new JointTrack({ maxGap: MAX_GAP_S }), shown: false };
   }
   robot.visible = false;   // until the first reading: never show a made-up pose
   return { robot, manifest };
@@ -328,7 +331,7 @@ function moveCup(entry, holder) {
     // gripper), so the turnover leaves it upright. Snapping drops any scan or
     // handover offset, so the cup lands on its placement cell.
     arms[holder].mount.add(entry.group);
-    entry.group.position.set(0, 0, CUP_GRIP_CENTRE_M);
+    entry.group.position.set(0, 0, arms[holder].gripCentre);
     entry.group.rotation.set(holder === "left" ? 0 : Math.PI, 0, Math.PI / 2);
   } else if (entry.group.parent !== cupLayer) {
     model.robot.updateMatrixWorld(true);

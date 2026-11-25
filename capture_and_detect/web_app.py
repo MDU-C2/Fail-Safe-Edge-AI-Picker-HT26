@@ -395,7 +395,11 @@ def hardware_factory(args):
             controller.publish_session()
         between_cup_check = getattr(args, "between_cup_check", platform.system() == "Darwin")
         right_park_pose = None
-        if between_cup_check:
+        # The right arm's camera-clear waiting position, on every platform by
+        # default (--no-right-park turns it off outside the Mac workspace
+        # checks). A grid without a .right-park.json sidecar keeps the normal
+        # finish either way.
+        if between_cup_check or getattr(args, "right_park", True) is not False:
             from camera_parking import load_right_park_pose
             right_park_pose = load_right_park_pose(Path(args.placing_grid).with_suffix(".right-park.json"),
                                                   args.gateway)
@@ -453,6 +457,9 @@ def main(argv=None):
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")
     parser.add_argument("--output", help="Capture directory, or separate dashboard cache in managed-device mode")
     parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration_grid.json"))
+    parser.add_argument("--right-park", action=argparse.BooleanOptionalAction, default=True,
+                        help="after each cup, move the right arm to the camera-clear waiting position in "
+                             "<placing-grid>.right-park.json when that file exists (default: on)")
     parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"),
                         help="Placement JSON shared with terminal mode; occupancy is preserved")
     parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table in mm (default 0)")

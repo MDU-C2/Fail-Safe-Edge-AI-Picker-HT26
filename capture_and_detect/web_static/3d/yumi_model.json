@@ -311,17 +311,124 @@
   0.007,
   1.0
  ],
- "fingers": {
-  "finger_tip_neg": [
-   -1,
-   0,
-   0
-  ],
-  "finger_tip_pos": [
-   1,
-   0,
-   0
-  ]
+ "grippers": {
+  "left": {
+   "body": "gripper",
+   "fingers": [
+    {
+     "part": "left_finger",
+     "matrix": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ],
+     "axis": [
+      -1,
+      0,
+      0
+     ]
+    },
+    {
+     "part": "left_finger",
+     "matrix": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      -0.0,
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ],
+     "axis": [
+      -1,
+      0,
+      0
+     ]
+    }
+   ],
+   "cup_grip_centre_m": 0.1815,
+   "source": "DownFingerV5.stl"
+  },
+  "right": {
+   "body": "gripper",
+   "fingers": [
+    {
+     "part": "finger_tip_neg",
+     "matrix": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ],
+     "axis": [
+      -1,
+      0,
+      0
+     ]
+    },
+    {
+     "part": "finger_tip_pos",
+     "matrix": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ],
+     "axis": [
+      1,
+      0,
+      0
+     ]
+    }
+   ],
+   "cup_grip_centre_m": 0.1575
+  }
  },
  "parts": {
   "body": {
@@ -483,6 +590,15 @@
    "positions": 2901108,
    "normals": 2919624,
    "indices": 2924256,
+   "index_count": 7500,
+   "index_type": "uint16"
+  },
+  "left_finger": {
+   "color": "#a9aeb3",
+   "vertices": 1980,
+   "positions": 2939256,
+   "normals": 2963016,
+   "indices": 2968956,
    "index_count": 7500,
    "index_type": "uint16"
   }
