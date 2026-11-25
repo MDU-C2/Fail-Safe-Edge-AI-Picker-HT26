@@ -10,7 +10,14 @@
 
 namespace gw {
 
-ClientRegistry::ClientRegistry(
+namespace {
+
+constexpr const char* INLINE_SOURCE = "GATEWAY_AUTH_CLIENTS";
+
+//
+// ordered_json keeps the clients in the order given.
+//
+nlohmann::ordered_json read_file(
     const std::string& filename
 ) {
     std::ifstream file(filename, std::ios::binary);
@@ -23,9 +30,6 @@ ClientRegistry::ClientRegistry(
 
     content << file.rdbuf();
 
-    //
-    // ordered_json keeps the file order of the clients.
-    //
     nlohmann::ordered_json data;
 
     try {
@@ -40,6 +44,112 @@ ClientRegistry::ClientRegistry(
     if (!data.is_object()) {
         throw RegistryError("Auth clients file must contain a JSON object: " + filename);
     }
+
+    return data;
+}
+
+std::vector<std::string> split(
+    const std::string& text,
+    char separator
+) {
+    std::vector<std::string> parts;
+    std::string part;
+    std::istringstream stream(text);
+
+    while (std::getline(stream, part, separator)) {
+        parts.push_back(part);
+    }
+
+    //
+    // getline drops a trailing empty field ("a:b:" gives two).
+    //
+    if (!text.empty() && text.back() == separator) {
+        parts.emplace_back();
+    }
+
+    return parts;
+}
+
+//
+// The one-line form (see client_registry.hpp) as the file's JSON,
+// so both go through the same checks.
+//
+nlohmann::ordered_json parse_inline(
+    const std::string& text
+) {
+    nlohmann::ordered_json data = nlohmann::ordered_json::object();
+
+    std::istringstream stream(text);
+    std::string client;
+
+    while (stream >> client) {
+        const std::vector<std::string> fields = split(client, ':');
+
+        const auto invalid = [&] {
+            return RegistryError(
+                format(
+                    "Auth client '%s' in %s must be id:control_priority:permissions:token_hash",
+                    fields.empty() ? "" : fields[0].c_str(),
+                    INLINE_SOURCE
+                )
+            );
+        };
+
+        if (fields.size() != 4 || fields[0].empty() || fields[3].empty()) {
+            throw invalid();
+        }
+
+        long long priority = 0;
+        std::size_t used = 0;
+
+        try {
+            priority = std::stoll(fields[1], &used);
+
+        } catch (const std::exception&) {
+            throw invalid();
+        }
+
+        if (used != fields[1].size()) {
+            throw invalid();
+        }
+
+        if (data.contains(fields[0])) {
+            throw RegistryError(
+                format("Auth client '%s' is listed twice in %s", fields[0].c_str(), INLINE_SOURCE)
+            );
+        }
+
+        std::vector<std::string> permissions;
+
+        for (const std::string& permission : split(fields[2], ',')) {
+            if (permission.empty()) {
+                throw invalid();
+            }
+
+            permissions.push_back(permission);
+        }
+
+        data[fields[0]] = {
+            {"token_hash", fields[3]},
+            {"permissions", permissions},
+            {"control_priority", priority},
+        };
+    }
+
+    return data;
+}
+
+}  // namespace
+
+ClientRegistry::ClientRegistry(
+    const std::string& filename,
+    const std::string& inline_clients
+) {
+    const bool from_inline = !inline_clients.empty();
+
+    const nlohmann::ordered_json data = from_inline ? parse_inline(inline_clients) : read_file(filename);
+
+    const std::string source = from_inline ? INLINE_SOURCE : filename;
 
     for (const auto& [client_id, client] : data.items()) {
         const bool valid =
@@ -64,7 +174,30 @@ ClientRegistry::ClientRegistry(
                 format(
                     "Auth client '%s' in %s must have 'token_hash', 'permissions' and 'control_priority'",
                     client_id.c_str(),
-                    filename.c_str()
+                    source.c_str()
+                )
+            );
+        }
+
+        //
+        // A SHA-256 as the gateway computes it: 64 lowercase hex
+        // digits. Anything else can never match a token, so a cut
+        // value (WeOS keeps only 63 characters of an app environment
+        // value) would otherwise lock every client out silently.
+        //
+        const std::string token_hash = client["token_hash"].get<std::string>();
+
+        const bool hash_valid =
+            token_hash.size() == 64
+            && token_hash.find_first_not_of("0123456789abcdef") == std::string::npos;
+
+        if (!hash_valid) {
+            throw RegistryError(
+                format(
+                    "Auth client '%s' in %s: token_hash must be 64 lowercase hex digits (a SHA-256), got %zu characters",
+                    client_id.c_str(),
+                    source.c_str(),
+                    token_hash.size()
                 )
             );
         }
@@ -72,7 +205,7 @@ ClientRegistry::ClientRegistry(
         clients_.push_back(
             Client{
                 client_id,
-                client["token_hash"].get<std::string>(),
+                token_hash,
                 client["permissions"].get<std::vector<std::string>>(),
                 client["control_priority"].get<long long>(),
             }
@@ -80,7 +213,7 @@ ClientRegistry::ClientRegistry(
     }
 
     if (clients_.empty()) {
-        throw RegistryError("Auth clients file has no clients: " + filename);
+        throw RegistryError("No auth clients in " + source);
     }
 
     const Client* highest = &clients_.front();

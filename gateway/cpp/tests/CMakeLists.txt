@@ -12,6 +12,7 @@ add_executable(
     test_rws_heartbeat.cpp
     test_rws_motion.cpp
     test_rws_queue.cpp
+    test_rws_rapid.cpp
     test_validate.cpp
     test_settings.cpp
     test_util.cpp

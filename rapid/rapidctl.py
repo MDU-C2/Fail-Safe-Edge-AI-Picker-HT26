@@ -1,4 +1,10 @@
 """
+LEGACY (since 2026-11-24): use gateway/scripts/gatewayctl.py rapid ...,
+which does the same through the gateway (admin token) instead of
+straight to the controller, so it keeps working once the robot is on
+its own network. This script stays for now but is not extended; its
+reset leaves gw_session at 0 (the gateway's reset writes it back).
+
 Manage the RAPID program on the YuMi over Robot Web Services (RWS 1.0,
 RobotWare 6): status, start, stop, restart, reset, speed, upload,
 delete, backup, restore. Defaults to the REAL robot at 192.168.125.1; use

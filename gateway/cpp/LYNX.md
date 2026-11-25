@@ -13,12 +13,12 @@ gateway.
 wsl -d Ubuntu-22.04 -u root -- gateway/cpp/dev.sh wmopkg      # build  -> gateway/cpp/dist/gateway-cpp-0.5.0.wmopkg
 $env:LYNX_PASSWORD = "<Lynx admin password>"
 powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1   # import, configure, start, wait for /health
-python gateway/scripts/smoke_test.py --url http://169.254.219.127:8000/api/v1 --token <robot.control token> --read-token <camera.read token>
+python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token> smoke --read-token <camera.read token>
 ```
 
 The gateway is then at `http://169.254.219.127:8000/api/v1`, and at
 `http://192.168.125.20:8000/api/v1` on the robot subnet (strict mode,
-the clients of `gateway/auth_clients.json`).
+the clients of `gateway/auth_clients.json`, see [Clients](#clients)).
 
 > The Lynx is shared lab hardware. Deploying adds an image and one app
 > (`gateway`); it changes nothing else. Only one process can hold the
@@ -30,15 +30,16 @@ the clients of `gateway/auth_clients.json`).
 | | |
 |---|---|
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
-| Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only) |
+| Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only, see [Clients](#clients)) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` (from the deploy script since 0.6.0; the 0.6.0 build deployed on 2026-11-23 predates it) and an empty `GATEWAY_AUTH_CLIENTS` (so the package's clients file is used, see [Clients](#clients)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
 calibration, lives on the `/state` share (external media); it survives
-restarts and redeploys. Settings are environment variables on the app;
-there is no `.env` in the image.
+restarts and redeploys. Settings are environment variables on the
+app (no `.env` in the image), so they change without a new package; the
+clients are in the package (see [Clients](#clients)).
 
 ## 1. Build the package
 
@@ -169,6 +170,41 @@ Invoke-RestMethod http://169.254.219.127:8000/api/v1/health
 | Change a setting | `configure` → `app-hosting` → `app gateway` → `environment GATEWAY_<NAME> <value>` → `leave`, then `app-hosting restart gateway` |
 | New version | `dev.sh wmopkg`, then the deploy script (or import + `app-hosting label gateway-cpp-<new> gatewaycpp` + `app-hosting reload gatewaycpp`) |
 | Calibration file | `/state/calibration.json` in the app = `external/app/gateway/state` on the Lynx |
+| Clients / tokens | `gateway/auth_clients.json` in the package: edit, build, deploy (see [Clients](#clients)) |
+
+### Clients
+
+The clients are **in the package**: `gateway/auth_clients.json` (token
+hashes only) as it is when the package is built, at
+`/gateway/auth_clients.json` in the image. To change a client or a
+token (hash from `python gateway/scripts/gatewayctl.py token new <client>`),
+edit that file, build a new package (`dev.sh wmopkg`, ideally with a new
+version) and deploy it. The plaintext tokens stay in
+`client_tokens.json` on the laptop.
+
+> **Limitation: WeOS keeps only 63 characters of an app environment
+> value.** Anything longer is cut without an error, at configuration
+> time. The gateway can also take its clients from
+> `GATEWAY_AUTH_CLIENTS` (one line: clients separated by spaces, each
+> `id:control_priority:permissions:token_hash`), and 0.7.0 was first
+> deployed that way on 2026-11-24: the ~600-character line was stored as
+> its first 63 characters, the admin entry with its hash cut to 50 hex
+> digits, and the gateway started with no client any token could match
+> (every request 401). A single SHA-256 is already 64 hex digits, so no
+> client fits in one value, hence the clients file in the package again.
+> There is no other way to get a file to the app either (scp to the Lynx
+> is off, WeOS's `file` commands handle only images, configs and logs,
+> the image has no shell). Keep every other app environment value under
+> 64 characters too (the safe zone and the other settings are far below).
+
+Since then the gateway refuses a `token_hash` that is not 64 lowercase
+hex digits, in the file and in `GATEWAY_AUTH_CLIENTS`, so a cut value
+stops it at startup (`show log app-gateway.log` names the client and the
+source) instead of locking everyone out. The deploy script sets
+`GATEWAY_AUTH_CLIENTS` to an empty value on the app, which makes the
+gateway use the clients file (and clears the cut line of that first
+deploy). `GATEWAY_AUTH_CLIENTS` and `GATEWAY_AUTH_CLIENTS_FILE` still
+replace the baked-in file elsewhere (Docker, tests).
 
 ### Safe zone
 
@@ -200,9 +236,33 @@ This matches the Pi's Python gateway, whose `gateway/.env` raised the top
 from the code default 600 to 700; before that the Lynx used the defaults
 (z up to 600).
 
+### Deployed 2026-11-24: 0.7.1 and the RAPID program
+
+0.7.1 (clients in the package, see [Clients](#clients)) replaced the
+0.7.0 deploy that had cut the clients line; `smoke` with the operator
+token passed (all checks, 99 % valid depth). Then the RAPID program of
+`rapid/` was loaded through the gateway (old modules saved to
+`rapid/backups/169.254.219.127-20261124-144014/`). The program on the
+robot had no watchdog variables yet, so the gateway had not written its
+session; started at once, the arms would have seen the session appear
+just after their start and gone home. Hence, for a program that gains
+the watchdog variables:
+
+```powershell
+python gateway/scripts/gatewayctl.py --target lynx --token <admin> -y rapid upload --no-start
+# until /health robot_controller.watchdog.connected is true (one heartbeat, ~1 s)
+python gateway/scripts/gatewayctl.py --target lynx --token <admin> rapid start --main
+```
+
+Neither arm went home; the primary tier took the lease and moved the
+left arm moments later. `deploy_lynx.ps1 -Save` did not save that day
+(the save line in the configuration session did not take effect); it
+now runs `copy running-config startup-config` as its own command and
+warns if the configs still differ.
+
 ## 5. Test
 
-[gateway/scripts/smoke_test.py](../scripts/smoke_test.py) checks a
+`smoke` of [gateway/scripts/gatewayctl.py](../scripts/gatewayctl.py) checks a
 running gateway without moving the robot: `/health`, `/openapi.json`,
 that a request without a token is refused, camera status, intrinsics,
 an RGB and a depth frame (format, size, valid depth), robot status and
@@ -211,8 +271,8 @@ the control lease (acquire, renew, release; `--read-only` skips it).
 object and reads it back.
 
 ```powershell
-python gateway/scripts/smoke_test.py --url http://169.254.219.127:8000/api/v1 `
-    --token <robot.control token> --read-token <camera.read token> [--write-calibration]
+python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token> `
+    smoke --read-token <camera.read token> [--write-calibration]
 ```
 
 Results on 2026-11-11 (gateway 0.3.0, real OAK at 1920x1080 / 4 fps):

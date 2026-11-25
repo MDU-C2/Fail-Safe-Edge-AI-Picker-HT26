@@ -200,7 +200,7 @@ void check_source(
     }
 }
 
-void require_stopped_task(
+void require_task(
     Controller& controller,
     const std::string& task
 ) {
@@ -219,10 +219,93 @@ void require_stopped_task(
     if (!known) {
         throw HttpError(404, "Unknown task " + task + ", the controller has " + names);
     }
+}
+
+void require_stopped_task(
+    Controller& controller,
+    const std::string& task
+) {
+    require_task(controller, task);
 
     if (controller.execution_state() != "stopped") {
         throw HttpError(409, "RAPID is running, stop it before changing modules");
     }
+}
+
+std::string require_loaded_module(
+    Controller& controller,
+    const std::string& task,
+    const std::string& module
+) {
+    for (const auto& name : controller.program_modules(task)) {
+        if (iequals(name, module)) {
+            return name;
+        }
+    }
+
+    throw HttpError(404, "Module " + module + " is not loaded in " + task);
+}
+
+bool same_rapid_value(
+    std::string_view a,
+    std::string_view b
+) {
+    if (!a.empty() && a.front() == '"') {
+        return a == b;
+    }
+
+    const auto normal = [](std::string_view value) {
+        std::string result;
+
+        for (const char c : value) {
+            if (c != ' ') {
+                result.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(c))));
+            }
+        }
+
+        return result;
+    };
+
+    return normal(a) == normal(b);
+}
+
+void write_variables(
+    Controller& controller,
+    const std::string& task,
+    const std::vector<RapidVariable>& variables
+) {
+    for (const auto& variable : variables) {
+        controller.write_symbol(task, variable.name, variable.value);
+    }
+
+    for (const auto& variable : variables) {
+        const std::string now = controller.read_symbol(task, variable.name);
+
+        if (!same_rapid_value(now, variable.value)) {
+            throw HttpError(502, variable.name + " is " + now + " after writing " + variable.value);
+        }
+    }
+}
+
+std::string latin1_to_utf8(
+    std::string_view latin1
+) {
+    std::string result;
+
+    result.reserve(latin1.size());
+
+    for (const char c : latin1) {
+        const auto byte = static_cast<unsigned char>(c);
+
+        if (byte < 0x80) {
+            result.push_back(c);
+        } else {
+            result.push_back(static_cast<char>(0xc0 | (byte >> 6)));
+            result.push_back(static_cast<char>(0x80 | (byte & 0x3f)));
+        }
+    }
+
+    return result;
 }
 
 Json read_status(

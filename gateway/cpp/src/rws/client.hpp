@@ -193,10 +193,27 @@ public:
         const std::string& name
     );
 
+    //
+    // The source of a loaded module as the controller saves it
+    // (ISO-8859-1 bytes, PERS with their current values).
+    //
+    std::string module_source(
+        const std::string& task,
+        const std::string& name
+    );
+
+    //
+    // Retries the program pointer reset for 5 s, then waits up to
+    // 3 s for RAPID to run: RwsError 409 if it does not.
+    //
     void start(
         bool reset_program_pointer
     );
 
+    //
+    // Waits up to 4 s until the normal tasks have stopped, else
+    // RwsError 409.
+    //
     void stop();
 
     const std::string& base_url() const {

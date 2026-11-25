@@ -1492,7 +1492,7 @@
             "data": {
               "type": "tm.Actor",
               "name": "Operator",
-              "description": "A person using the gateway's scripts (rws_move.py, basic_client.py, capture_and_detect.py) with the operator token, priority 100.",
+              "description": "A person using the gateway's scripts (gatewayctl.py, basic_client.py, capture_and_detect.py) with the operator token, priority 100.",
               "outOfScope": false,
               "reasonOutOfScope": "",
               "hasOpenThreats": true,
@@ -1884,7 +1884,7 @@
                   "severity": "Low",
                   "type": "Information disclosure",
                   "description": "The hashes are in git and in every image. Unsalted SHA-256 hashes of guessable tokens could be reversed offline.",
-                  "mitigation": "Implemented: generate_token.py creates 256-bit random tokens, which cannot be found from their hashes in practice.",
+                  "mitigation": "Implemented: gatewayctl.py token new creates 256-bit random tokens, which cannot be found from their hashes in practice.",
                   "modelType": "STRIDE",
                   "new": false,
                   "number": 68,

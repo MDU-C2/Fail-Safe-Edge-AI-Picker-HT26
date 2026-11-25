@@ -92,7 +92,7 @@ Reading the robot (no lease needed):
     GET /robot/rapid                                  RAPID state and loaded modules
 
 The RAPID program from rapid/ must be running on the controller
-(python rapid/rapidctl.py status / upload). Which robot moves depends
+(python gateway/scripts/gatewayctl.py rapid status / rapid upload). Which robot moves depends
 on the gateway: the one on the Raspberry Pi drives the real YuMi.
 
 The old POST /robot/command (raw CommServer text such as

@@ -30,6 +30,13 @@ struct Settings {
 
     std::string auth_clients_file = "gateway/auth_clients.json";
 
+    //
+    // C++ only. The clients on one line, replacing the file when not
+    // empty (format in security/client_registry.hpp); the Lynx app
+    // environment sets it, since the image has no clients file.
+    //
+    std::string auth_clients;
+
     double control_lease_seconds = 5.0;
     double control_contention_seconds = 3.0;
     double control_startup_grace_seconds = 5.0;

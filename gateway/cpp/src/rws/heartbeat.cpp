@@ -177,6 +177,17 @@ void RwsHeartbeat::set_error(
     state_.error = message;
 }
 
+void RwsHeartbeat::restore() {
+    if (timeout_seconds_ <= 0) {
+        return;
+    }
+
+    controller_.write_symbol(TASK, "gw_timeout", format_g(timeout_seconds_));
+    controller_.write_symbol(TASK, "gw_session", std::to_string(session_));
+
+    session_written_ = true;
+}
+
 RwsHeartbeat::State RwsHeartbeat::state() const {
     const std::lock_guard lock(mutex_);
 

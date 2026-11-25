@@ -18,6 +18,14 @@ namespace gw {
 // Loaded once at startup; a missing or malformed file throws
 // RegistryError so the gateway does not start.
 //
+// GATEWAY_AUTH_CLIENTS, when set, replaces the file (C++ only): the
+// same clients on one line, so they fit a WeOS app environment
+// value, which cannot hold JSON's quotes. Clients are separated by
+// spaces, each one id:control_priority:permissions:token_hash with
+// the permissions separated by commas (may be empty), e.g.
+//
+//   admin:1000:*:9f86d0... diagnostics:10:robot.read,camera.read:5e88...
+//
 
 class RegistryError : public std::runtime_error {
 public:
@@ -26,8 +34,12 @@ public:
 
 class ClientRegistry {
 public:
+    //
+    // From inline_clients if it is not empty, else from the file.
+    //
     explicit ClientRegistry(
-        const std::string& filename
+        const std::string& filename,
+        const std::string& inline_clients = ""
     );
 
     //

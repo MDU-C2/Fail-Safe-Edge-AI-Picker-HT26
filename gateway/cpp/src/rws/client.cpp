@@ -1,6 +1,8 @@
 #include "rws/client.hpp"
 
+#include <chrono>
 #include <exception>
+#include <thread>
 
 #include <curl/curl.h>
 
@@ -518,22 +520,114 @@ void RwsClient::unload_module(
     );
 }
 
+std::string RwsClient::module_source(
+    const std::string& task,
+    const std::string& name
+) {
+    //
+    // The controller saves the module to a file in $TEMP, which is
+    // then read back; no mastership needed, also while RAPID runs.
+    //
+    const std::string file = "gateway_" + task + "_" + name;
+
+    const std::lock_guard lock(mutex_);
+
+    post(
+        "/rw/rapid/modules/" + name,
+        {{"task", task}, {"action", "save"}},
+        {{"name", file}, {"path", "$TEMP"}}
+    );
+
+    return request("GET", "/fileservice/$TEMP/" + file + ".mod").body;
+}
+
 void RwsClient::start(
     bool reset_program_pointer
 ) {
-    const std::lock_guard lock(mutex_);
+    {
+        const std::lock_guard lock(mutex_);
 
-    if (reset_program_pointer) {
-        const Mastership mastership(*this);
+        if (reset_program_pointer) {
+            //
+            // Right after a stop the controller refuses this for a
+            // moment, although it reports RAPID stopped.
+            //
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 
-        post("/rw/rapid/execution", {{"action", "resetpp"}});
+            while (true) {
+                try {
+                    const Mastership mastership(*this);
+
+                    post("/rw/rapid/execution", {{"action", "resetpp"}});
+
+                    break;
+
+                } catch (const RwsError& error) {
+                    if (!error.status || std::chrono::steady_clock::now() > deadline) {
+                        throw;
+                    }
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+        }
+
+        post("/rw/rapid/execution", {{"action", "start"}}, START_ARGUMENTS);
     }
 
-    post("/rw/rapid/execution", {{"action", "start"}}, START_ARGUMENTS);
+    //
+    // A program with errors (a missing module, say) is accepted
+    // but does not run.
+    //
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+
+    while (execution_state() != "running") {
+        if (std::chrono::steady_clock::now() > deadline) {
+            throw RwsError(
+                409,
+                "RAPID did not start; the program probably has errors (see the FlexPendant "
+                "event log), or the program pointer is lost (start with reset_program_pointer)"
+            );
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
 }
 
 void RwsClient::stop() {
     post("/rw/rapid/execution", {{"action", "stop"}}, {{"stopmode", "stop"}});
+
+    //
+    // The controller reports stopped a moment before the normal
+    // tasks are; until then it refuses module changes and a
+    // program pointer reset. Background tasks keep running. Usually
+    // well under a second; 4 s stays inside the picker UI's 5 s
+    // request timeout, so it gets this answer rather than its own
+    // timeout.
+    //
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+
+    const auto stopped = [this]() {
+        if (execution_state() != "stopped") {
+            return false;
+        }
+
+        for (const auto& task : tasks()) {
+            if (task.value("type", "") == "norm" && task.value("excstate", "") == "star") {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    while (!stopped()) {
+        if (std::chrono::steady_clock::now() > deadline) {
+            throw RwsError(409, "RAPID did not stop within 4 s");
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
 }
 
 }  // namespace gw::rws

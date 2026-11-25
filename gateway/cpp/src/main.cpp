@@ -6,7 +6,8 @@
 //
 // Run from the repository root, like the Python gateway: settings
 // come from GATEWAY_* variables and gateway/.env, the clients from
-// GATEWAY_AUTH_CLIENTS_FILE (default gateway/auth_clients.json).
+// GATEWAY_AUTH_CLIENTS, else GATEWAY_AUTH_CLIENTS_FILE (default
+// gateway/auth_clients.json).
 //
 
 #include <csignal>

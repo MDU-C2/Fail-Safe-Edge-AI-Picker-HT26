@@ -159,6 +159,83 @@ def test_control_with_lease_reaches_controller(
         expect(admin.post("/robot/rapid/stop"), 503)
 
 
+@pytest.mark.cpp_only
+def test_module_source_needs_read_permission_only(
+    gateway: Gateway,
+) -> None:
+    path = "/robot/rapid/tasks/T_ROB_L/modules/SharedVars"
+
+    #
+    # No lease: reaches the (unreachable) controller.
+    #
+    detail = expect(gateway.client("diagnostics").get(path), 503)["detail"]
+
+    assert detail.startswith("Robot controller unreachable")
+
+    expect(gateway.client("diagnostics").get("/robot/rapid/tasks/T-ROB/modules/SharedVars"), 422)
+    expect(gateway.client("diagnostics").get("/robot/rapid/tasks/T_ROB_L/modules/1Module"), 422)
+
+
+RESET_BODY = {
+    "task": "T_ROB_L",
+    "variables": [
+        {"name": "move_request_left", "value": "FALSE"},
+        {"name": "target_pos_left", "value": "[0, 0, 0]"},
+    ],
+}
+
+
+@pytest.mark.cpp_only
+@pytest.mark.parametrize(
+    "client_id",
+    ["primary", "secondary", "tertiary"],
+)
+def test_only_admin_resets_rapid_variables(
+    gateway: Gateway,
+    client_id: str,
+) -> None:
+    expect(gateway.client("diagnostics").post("/robot/rapid/reset", json=RESET_BODY), 403)
+
+    model = gateway.client(client_id)
+
+    with model.control():
+        expect(model.post("/robot/rapid/reset", json=RESET_BODY), 403)
+
+    admin = gateway.client("admin")
+
+    expect(admin.post("/robot/rapid/reset", json=RESET_BODY), 409)
+
+    with admin.control():
+        expect(admin.post("/robot/rapid/reset", json=RESET_BODY), 503)
+
+
+@pytest.mark.cpp_only
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"variables": RESET_BODY["variables"]},
+        {"task": "T_ROB_L"},
+        {"task": "T_ROB_L", "variables": []},
+        {"task": "T-ROB", "variables": RESET_BODY["variables"]},
+        {"task": "T_ROB_L", "variables": [{"name": "1bad", "value": "0"}]},
+        {"task": "T_ROB_L", "variables": [{"name": "move_acc_left", "value": ""}]},
+        {"task": "T_ROB_L", "variables": [{"name": "move_acc_left", "value": 100}]},
+        {"task": "T_ROB_L", "variables": [{"name": "move_acc_left"}]},
+        {"task": "T_ROB_L", "variables": ["move_acc_left"]},
+        {"task": "T_ROB_L", "variables": [{"name": f"v{i}", "value": "0"} for i in range(501)]},
+    ],
+)
+def test_rapid_reset_is_validated_before_contacting_controller(
+    gateway: Gateway,
+    body: dict,
+) -> None:
+    admin = gateway.client("admin")
+
+    with admin.control():
+        expect(admin.post("/robot/rapid/reset", json=body), 422)
+
+
 # ================================================================
 # Moves over RWS
 # ================================================================

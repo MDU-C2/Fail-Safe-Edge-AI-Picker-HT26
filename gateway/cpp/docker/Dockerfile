@@ -165,16 +165,20 @@ FROM scratch AS runtime
 #
 # WeOS app hosting starts /sbin/init unless told otherwise, so that
 # is where the binary lives. Settings come from GATEWAY_* variables
-# (or a mounted gateway/.env), the clients file from
-# GATEWAY_AUTH_CLIENTS_FILE.
+# (or a mounted gateway/.env). A WeOS package keeps just the
+# filesystem, not ENTRYPOINT, so the app's cmd must give the
+# arguments: cmd "/sbin/init --host 0.0.0.0 --port 8000".
 #
 COPY --from=build /src/gateway/cpp/build/release-size/gateway /sbin/init
 
 #
-# The clients file at its default path (relative to /), as the Python
-# image has it; only token hashes. A WeOS package keeps just the
-# filesystem, not ENTRYPOINT, so the app's cmd must give the
-# arguments: cmd "/sbin/init --host 0.0.0.0 --port 8000".
+# The clients file at its default path (relative to /); only token
+# hashes. It is in the image because the Lynx cannot take the clients
+# any other way: WeOS keeps only 63 characters of an app environment
+# value, too short for GATEWAY_AUTH_CLIENTS (one SHA-256 alone is 64
+# hex digits), and there is no way to put a file onto the app's
+# share. Changing a token therefore needs a new package. Elsewhere
+# GATEWAY_AUTH_CLIENTS or GATEWAY_AUTH_CLIENTS_FILE still replace it.
 #
 COPY gateway/auth_clients.json /gateway/auth_clients.json
 

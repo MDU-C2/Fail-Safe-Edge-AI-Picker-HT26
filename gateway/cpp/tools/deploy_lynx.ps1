@@ -19,11 +19,13 @@
       2. `file app import` it on the Lynx;
       3. move the image label (gatewaycpp) to it;
       4. define/update the app (image, cmd, host network, /state share,
-         GATEWAY_* environment, including the safe zone);
+         GATEWAY_* environment, including the safe zone; the clients
+         come from gateway/auth_clients.json inside the package, and a
+         GATEWAY_AUTH_CLIENTS left on the app is removed);
       5. restart the app and wait for /health.
     Nothing else on the Lynx is changed; images of older versions stay.
     The Lynx allows 5 apps; the script stops if the app cannot be created.
-    Test afterwards: python gateway/scripts/smoke_test.py --url http://<lynx>:8000/api/v1
+    Test afterwards: python gateway/scripts/gatewayctl.py --url http://<lynx>:8000/api/v1 --token <token> smoke
 #>
 param(
     [string]$Lynx = "169.254.219.127",
@@ -62,6 +64,14 @@ if (-not $Version) {
 }
 
 $package = "gateway-cpp-$Version.wmopkg"
+
+#
+# The clients are baked into the package (gateway/auth_clients.json at
+# build time), not set in the app environment: WeOS keeps only 63
+# characters of an environment value, and GATEWAY_AUTH_CLIENTS needs
+# about 600 (one SHA-256 alone is 64). A value cut there locked every
+# client out on 2026-11-24 (see "Clients" in gateway/cpp/LYNX.md).
+#
 
 if (-not (Test-Path (Join-Path $dist $package))) {
     throw "$dist\$package missing: build it with gateway/cpp/dev.sh wmopkg $Version"
@@ -158,6 +168,9 @@ $config = @(
     "environment GATEWAY_RWS_SAFE_ZONE_MIN $SafeZoneMin",
     "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
     "environment GATEWAY_RWS_HEARTBEAT_TIMEOUT $HeartbeatTimeout",
+    # Empty (not "no environment", which may fail silently once it is
+    # gone): an empty value makes the gateway use the clients file.
+    "environment GATEWAY_AUTH_CLIENTS",
     "enable",
     $(if ($Autostart) { "autostart" } else { "no autostart" }),
     "leave"
@@ -168,12 +181,21 @@ $config = @(
 # writes the WHOLE running config, including anyone else's unsaved
 # changes on this shared switch, hence opt-in.
 #
-if ($Save) {
-    $config += "copy running-config startup-config"
-}
-
 Write-Host "Configuring app $App"
 Invoke-LynxSession $config | Select-String -Pattern "rror|nvalid|ailed|not found|Max number" | ForEach-Object { Write-Warning $_ }
+
+#
+# As its own command: appended to the configuration session above it
+# did not take effect (found 2026-11-24), so check it afterwards too.
+#
+if ($Save) {
+    Write-Host "Saving the running config to the startup config"
+    Invoke-Lynx "copy running-config startup-config" | Out-Null
+    $unsaved = Invoke-Lynx "diff running-config startup-config" -AllowFailure | Where-Object { $_ -match '^[-+][^-+]' }
+    if ($unsaved) {
+        Write-Warning "The running config still differs from the startup config after saving:`n$($unsaved -join "`n")"
+    }
+}
 
 #
 # The Lynx allows 5 apps; a sixth is refused ("Max number of apps

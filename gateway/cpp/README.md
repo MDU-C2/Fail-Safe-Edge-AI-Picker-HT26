@@ -36,7 +36,7 @@ gateway/cpp/dev.sh wmopkg             # WeOS package for the Lynx -> gateway/cpp
 
 Deploying to the Westermo Lynx (build, import, start, test) is in
 [LYNX.md](LYNX.md): `dev.sh wmopkg`, then `tools/deploy_lynx.ps1` on
-the lab laptop, then `gateway/scripts/smoke_test.py`.
+the lab laptop, then `gateway/scripts/gatewayctl.py --target lynx smoke`.
 
 `dev.sh pytest --robotstudio` runs the RobotStudio tests against the
 C++ binary. The containers use host networking, and WSL needs
@@ -85,8 +85,13 @@ the working directory):
 gateway/cpp/build/dev/gateway --host 127.0.0.1 --port 8000
 ```
 
-The runtime image holds only the binary, at `/sbin/init` (where WeOS
-app hosting starts an app). Give it a clients file:
+The runtime image holds the binary, at `/sbin/init` (where WeOS app
+hosting starts an app), and `gateway/auth_clients.json` as it was at
+build time (the Lynx needs it there: WeOS keeps only 63 characters of an
+app environment value, see [LYNX.md](LYNX.md#clients)). Another clients
+file, or C++ only one line in `GATEWAY_AUTH_CLIENTS` (clients separated
+by spaces, each `id:control_priority:permissions:token_hash`), replaces
+it:
 
 ```sh
 docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.json:ro \
@@ -222,7 +227,7 @@ the `gw_*`, `holding_*`, `auto_home_*` PERS in `rapid/SharedVars.mod`.
 - RAPID checks only while an arm is idle, so a job always finishes
   first. An arm goes home when the heartbeat has not changed for
   `gw_timeout` s (only once it changed since RAPID started, so
-  RobotStudio tests and `rapidctl.py` are unaffected) or at once
+  RobotStudio tests and a RAPID reset are unaffected) or at once
   when `gw_session` changes, i.e. on every gateway start.
 - The home is an ordinary job of the arm's own: RAPID writes v50,
   `AccSet 100, 100` and `go_home`, sets `auto_home_<arm>` and then
@@ -243,7 +248,12 @@ the `gw_*`, `holding_*`, `auto_home_*` PERS in `rapid/SharedVars.mod`.
   is published when an arm's `auto_home` turns TRUE.
 - Edge: a gateway started while RAPID is stopped writes its session
   before RAPID starts, so that start does not home the arms.
-  `rapidctl.py reset` sets `holding_*` back to FALSE.
+  A RAPID reset (`POST /robot/rapid/reset`, `gatewayctl.py rapid
+  reset`) sets `holding_*` back to FALSE and `gw_session` to 0; the
+  gateway writes its own session (and `gw_timeout`) back before RAPID
+  starts again, so the arms do not take the reset for a gateway
+  restart. The legacy `rapidctl.py reset` does not, which leaves
+  `gw_session` at 0 until the gateway restarts.
 
 ## Migration status
 
@@ -256,7 +266,7 @@ the `gw_*`, `holding_*`, `auto_home_*` PERS in `rapid/SharedVars.mod`.
 | M4 | ~~`POST /robot/command`~~ | dropped: the C++ gateway has no legacy command API by design (`legacy_command` tests and `test_robot_tcp`/`test_real_robot_legacy` are skipped for it; `test_failover` now acts through `POST /calibration` and runs against both) |
 | M5 | RWS arms, RAPID, motion routes, safe zone | done: `test_rws` (HTTP part), C++ ports of its motion/status unit tests, `--robotstudio` (18 passed against the virtual YuMi) |
 | M6 | OAK producer on a minimal depthai-core build, reconnect | works with the real camera: same intrinsics and depth as the Python gateway on the same scene (valid depth 71 → 95 % over the first 5 s, median 851 mm), `test_camera_contract` passes; C++ port of `test_oak_reconnect`. RAM down from 198 MB to 43 MB peak (see "Memory with the camera"). Open: `test_depth_has_valid_pixels` failed twice (it reads depth about a second after the camera boots, when C++ still gives all zeros; whether Python passes it from a cold start is unchecked); the camera reported a crash dump when the C++ gateway closed it |
-| M7 | arm64 `.wmopkg`, running on the Lynx | done for the Lynx-3510 (arm64, WeOS 5.30): `dev.sh wmopkg` (12 MB package), `tools/deploy_lynx.ps1`, runs under WeOS's default seccomp/AppArmor with the real camera, `smoke_test.py` passes ([LYNX.md](LYNX.md)). armv7 not needed for this Lynx |
+| M7 | arm64 `.wmopkg`, running on the Lynx | done for the Lynx-3510 (arm64, WeOS 5.30): `dev.sh wmopkg` (12 MB package), `tools/deploy_lynx.ps1`, runs under WeOS's default seccomp/AppArmor with the real camera, the smoke test (then `smoke_test.py`, now `gatewayctl.py smoke`) passes ([LYNX.md](LYNX.md)). armv7 not needed for this Lynx |
 
 ## Measurements
 
