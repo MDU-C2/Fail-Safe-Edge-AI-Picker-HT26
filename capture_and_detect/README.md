@@ -1233,6 +1233,10 @@ GET requests.
   a monotone cubic (`web_static/3d/pose_interpolation.js`). The motion is smooth
   and never overshoots a reading. Across a gap of more than 1 s it holds the
   last reading and then jumps, rather than drawing motion nobody measured.
+- **Full screen** (next to Reset view) shows the 3D view on its own. It uses the
+  browser's full screen, or fills the window where the browser does not allow
+  that (iPhone Safari). The status badge stays visible; Esc or **Exit full
+  screen** returns.
 - Cups are drawn as plain tapered cups, base up as they stand in the tray.
   They are drawn where the plans grip them: the scanned x/y plus `tag_offset`, published as
   `motion.tag_offset_mm`. A picked cup snaps between the fingers of the gripper

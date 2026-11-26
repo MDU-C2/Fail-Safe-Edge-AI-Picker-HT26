@@ -459,3 +459,15 @@ html { background:#f4f6f3; color:#243d35; }
 .scene-toggle input{accent-color:#2f6454;width:15px;height:15px}
 .scene-panel>.fine-print{margin:10px 24px 18px}
 @media(max-width:580px){.scene-heading{flex-direction:column;padding:19px 18px 14px}.scene-canvas-host{margin:0 10px;height:50vh;min-height:300px}.scene-footer{flex-direction:column;align-items:stretch;padding:12px 18px 0}.scene-controls{justify-content:space-between}.scene-panel>.fine-print{margin:10px 18px 16px}}
+
+/* 3D view full screen: the browser's own full screen where allowed, otherwise
+   the view fills the window (e.g. iPhone Safari, which only allows video). */
+.scene-overlay{position:absolute;top:12px;left:12px;right:12px;z-index:2;display:none;justify-content:space-between;align-items:center;gap:10px;pointer-events:none}
+.scene-overlay>*{pointer-events:auto}
+.scene-canvas-host:fullscreen .scene-overlay,.scene-panel.scene-expanded .scene-overlay{display:flex}
+.scene-exit-full{font:inherit;font-size:12px;font-weight:600;padding:8px 13px;border-radius:7px;border:1px solid #cfd5c9;background:rgba(255,255,255,.92);color:#2f4a3c;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.scene-exit-full:hover{background:#fff}
+.scene-exit-full:focus-visible{outline:2px solid #2f6454;outline-offset:2px}
+.scene-canvas-host:fullscreen{width:100vw;height:100vh;margin:0;border:0;border-radius:0}
+.scene-panel.scene-expanded .scene-canvas-host{position:fixed;inset:0;z-index:1000;margin:0;width:100vw;height:100vh;height:100dvh;min-height:0;border:0;border-radius:0}
+body.scene-expanded-open{overflow:hidden}

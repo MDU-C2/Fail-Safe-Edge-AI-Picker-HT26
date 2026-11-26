@@ -40,6 +40,10 @@ const host = document.getElementById("scene-canvas-host");
 const statusText = document.getElementById("scene-status");
 const statusBadge = document.getElementById("scene-badge");
 const resetButton = document.getElementById("scene-reset-view");
+const fullButton = document.getElementById("scene-full-screen");
+const exitFullButton = document.getElementById("scene-exit-full");
+const overlayBadge = document.getElementById("scene-badge-overlay");
+const scenePanel = host?.closest(".scene-panel");
 const cupToggle = document.getElementById("scene-show-cups");
 const gridToggle = document.getElementById("scene-show-grid");
 
@@ -52,10 +56,56 @@ const clock = new ClockSync();
 const arms = {};   // arm -> { joints: [Object3D x7], track: JointTrack, shown, fingers: [...] }
 
 function setStatus(badge, text, tone) {
-  statusBadge.textContent = badge;
-  statusBadge.dataset.tone = tone;
+  for (const element of [statusBadge, overlayBadge]) {
+    if (!element) continue;
+    element.textContent = badge;        // the overlay copy stays visible in full screen
+    element.dataset.tone = tone;
+  }
   statusText.textContent = text;
 }
+
+// ---------------------------------------------------------- full screen ----
+
+function isFullScreen() {
+  return document.fullscreenElement === host || Boolean(scenePanel?.classList.contains("scene-expanded"));
+}
+
+function syncFullScreenButton() {
+  if (!fullButton) return;
+  const full = isFullScreen();
+  fullButton.textContent = full ? "Exit full screen" : "Full screen";
+  fullButton.setAttribute("aria-pressed", String(full));
+}
+
+async function enterFullScreen() {
+  if (host.requestFullscreen && document.fullscreenEnabled !== false) {
+    try {
+      await host.requestFullscreen({ navigationUI: "hide" });
+      return;
+    } catch { /* not allowed here: fill the window instead */ }
+  }
+  scenePanel?.classList.add("scene-expanded");
+  document.body.classList.add("scene-expanded-open");
+  syncFullScreenButton();
+  exitFullButton?.focus();
+}
+
+function exitFullScreen() {
+  const wasExpanded = scenePanel?.classList.contains("scene-expanded");
+  if (document.fullscreenElement === host) document.exitFullscreen?.().catch(() => {});
+  scenePanel?.classList.remove("scene-expanded");
+  document.body.classList.remove("scene-expanded-open");
+  syncFullScreenButton();
+  if (wasExpanded) fullButton?.focus();
+}
+
+fullButton?.addEventListener("click", () => (isFullScreen() ? exitFullScreen() : enterFullScreen()));
+exitFullButton?.addEventListener("click", exitFullScreen);
+document.addEventListener("fullscreenchange", syncFullScreenButton);
+document.addEventListener("keydown", (event) => {
+  // Esc already leaves the browser's own full screen; do the same for the window-filling mode.
+  if (event.key === "Escape" && scenePanel?.classList.contains("scene-expanded")) exitFullScreen();
+});
 
 // ---------------------------------------------------------------- model ----
 
@@ -518,6 +568,7 @@ async function start() {
 }
 
 function onVisibility() {
+  if (panel.hidden && isFullScreen()) exitFullScreen();   // switched to another tab
   const visible = !panel.hidden && document.visibilityState === "visible";
   if (visible && !started) start();
   else setRunning(visible);
