@@ -244,7 +244,7 @@ $reply | ConvertTo-Json -Depth 4
 # full), so check the version that actually started.
 #
 if ($reply.version -ne $Version) {
-    Write-Warning "The Lynx runs $($reply.version), not $Version: the label $Label did not move (show app-hosting images)"
+    Write-Warning "The Lynx runs $($reply.version), not ${Version}: the label $Label did not move (show app-hosting images)"
     exit 1
 }
 

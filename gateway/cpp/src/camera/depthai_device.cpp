@@ -4,16 +4,22 @@
 //
 // The pipeline of gateway/camera/oak_producer.py:
 //
-//   CAM_A  -> BGR888p at width x height, undistorted ---+--> Sync "rgb"
-//                                         inputAlignTo  |
+//   CAM_A -> BGR888p at width x height [-> ImageManip undistort] -+--> Sync "rgb"
+//                                                    inputAlignTo |
 //   CAM_B, CAM_C -> GRAY8 640x400 -> StereoDepth (ROBOTICS, LR check)
-//                                         depth --------+--> Sync "depth"
+//                                                    depth -------+--> Sync "depth"
 //
 // Sync pairs RGB and depth within 100 ms; the host queue keeps only
-// the newest pair (size 1, non-blocking). Depth is aligned to CAM_A,
-// so rgb[v, u] and depth[v, u] are the same point. With
-// GATEWAY_CAMERA_UNDISTORT (default on) CAM_A is undistorted on the
-// camera and depth is aligned to the undistorted image.
+// the newest pair (size 1, non-blocking).
+//
+// StereoDepth always gives undistorted (pinhole) depth. With
+// GATEWAY_CAMERA_UNDISTORT (default on) an ImageManip undistorts the
+// RGB on the camera, so rgb[v, u] and depth[v, u] are the same point
+// across the whole image. Camera::requestOutput's enableUndistortion
+// does not: on this OAK (RVC2, depthai 3.10) it only marks the frame
+// as undistorted and leaves the pixels raw (found 2026-11-26). Without
+// it the RGB is raw and matches the depth only near the centre (the
+// lens moves the corners by up to ~190 px at 1920x1080).
 //
 
 #include <chrono>
@@ -137,17 +143,25 @@ private:
 
     //
     // The intrinsics of the frames as published, from the first
-    // frame's transformation (size, crop and undistortion included);
-    // depth is aligned to CAM_A, so they also apply to the depth
-    // frames. Undistorted frames have no distortion left; otherwise
-    // it is CAM_A's from the device calibration.
+    // frame's transformation: its K includes the sensor mode's
+    // scaling and crop (CalibrationHandler::getCameraIntrinsics for
+    // the output size does not, and was 5 % off at 1920x1080), and
+    // its distortion is zeros once undistorted, CAM_A's otherwise.
     //
     CameraIntrinsics read_intrinsics() {
-        bool timed_out = false;
+        //
+        // Peeked, not taken: the pair stays queued for the producer, so
+        // a frame is ready as soon as the camera is reported open.
+        //
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
-        const auto group = queue_->get<dai::MessageGroup>(std::chrono::seconds(10), timed_out);
+        std::shared_ptr<dai::MessageGroup> group;
 
-        const auto rgb = (timed_out || !group) ? nullptr : group->get<dai::ImgFrame>("rgb");
+        while (!(group = queue_->front<dai::MessageGroup>()) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        const auto rgb = group ? group->get<dai::ImgFrame>("rgb") : nullptr;
 
         if (!rgb) {
             throw std::runtime_error("No frame from the OAK camera to read its intrinsics from");
@@ -173,20 +187,11 @@ private:
         intrinsics.cx = intrinsics.matrix[0][2];
         intrinsics.cy = intrinsics.matrix[1][2];
 
-        if (config_.undistort) {
-            intrinsics.distortion_model = "perspective";
-            intrinsics.distortion.assign(14, 0.0);
-
-            return intrinsics;
-        }
-
-        const auto calibration = device_->readCalibration();
-
-        for (const float coefficient : calibration.getDistortionCoefficients(dai::CameraBoardSocket::CAM_A)) {
+        for (const float coefficient : transformation.getDistortionCoefficients()) {
             intrinsics.distortion.push_back(coefficient);
         }
 
-        switch (calibration.getDistortionModel(dai::CameraBoardSocket::CAM_A)) {
+        switch (transformation.getDistortionModel()) {
             case dai::CameraModel::Perspective:
                 intrinsics.distortion_model = "perspective";
                 break;
@@ -219,9 +224,20 @@ private:
             std::make_pair<uint32_t, uint32_t>(config_.width, config_.height),
             dai::ImgFrame::Type::BGR888p,
             dai::ImgResizeMode::CROP,
-            fps,
-            config_.undistort
+            fps
         );
+
+        if (config_.undistort) {
+            auto undistort = pipeline_->create<dai::node::ImageManip>();
+
+            undistort->initialConfig->setUndistort(true);
+            undistort->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
+            undistort->setMaxOutputFrameSize(config_.width * config_.height * 3);
+
+            rgb_output->link(undistort->inputImage);
+
+            rgb_output = &undistort->out;
+        }
 
         // --------------------------------------------------------
         // Stereo cameras and depth
