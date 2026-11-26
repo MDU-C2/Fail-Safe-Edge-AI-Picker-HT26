@@ -20,3 +20,4 @@ capture_and_detect/data
 /output/
 /capture_and_detect/.placing_grid*.json.lock
 /capture_and_detect/.placing_grid*.json.controller.lock
+a.out
