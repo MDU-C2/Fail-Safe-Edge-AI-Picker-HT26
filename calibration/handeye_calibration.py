@@ -16,12 +16,19 @@ Depth is not used for the camera pose; instead the same pictures are used to fit
 correction  Z_true = depth_scale * depth + depth_offset, by comparing the stereo depth at
 every board corner with the corner's true distance from the board pose.
 
-The gripper points down (vertical) in every pose, tilted about 15-20 degrees. Mount the board so
-its printed side faces up towards the camera, and so the arm doesn't hide it from the camera.
+Procedure (the same as test_handeye_poses.py, the dry run): HOME, then GRIP_POSE where the gripper
+opens and asks once before gripping the board (Y = grip, n = stop), START_POSE, the poses, END_POSE,
+and RELEASE_POSE where it asks before releasing. Those two questions come also with --auto. The arm
+moves slowly (MOVE) and waits SETTLE seconds at every pose before taking pictures.
 
-Either arm can hold the board (--arm left or right, default left). The right arm's poses are
-the left arm's mirrored to the other side (y -> -y), with the same gripper orientations. Both
-arms give the camera in the same base frame (wobj0).
+POSES give where the MIDDLE OF THE BOARD should be, in the work area, and the gripper orientation.
+The flange target is worked out from BOARD_REACH (flange to the middle of the board, along the
+fingers). All orientations are variations of (90, 0, 90): gripper horizontal, fingers forward, board
+facing up; a few turn the gripper 90 degrees inward so the board turns in its own plane.
+
+Either arm can hold the board (--arm left or right, default left). The right arm's poses are the
+left arm's mirrored to the other side (y -> -y, turns mirrored too). Both arms give the camera in
+the same base frame (wobj0). The camera mount checks were done for the left arm only.
 
 Usage:
     py handeye_calibration.py --board        write charuco_board.png to print (300 dpi, 100 %)
@@ -29,6 +36,7 @@ Usage:
     py handeye_calibration.py --arm right    right arm instead
     py handeye_calibration.py --auto         run all poses without stopping, then solve
     py handeye_calibration.py --fit handeye_runs/session_20261116_110000   solve a saved run
+    py handeye_calibration.py --url http://169.254.219.127:8000/api/v1    another gateway address
 """
 import argparse
 import json
@@ -38,7 +46,9 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+import requests
 
+import camera_calibration as cc
 from camera_calibration import (acquire_control, capture, get_intrinsics, orient_zyx,
                                 release_control, robot_job)
 
@@ -49,32 +59,59 @@ MARKER_MM = 22.0                 # side of one marker inside a white square, mm
 DICTIONARY = cv2.aruco.DICT_5X5_100   # a different family from the AprilTag on the gripper
 MIN_CORNERS = 10                 # fewer than this and the pose is skipped
 
-SETTLE = 1.0                     # s to wait after the robot reports DONE
+SETTLE = 3.0                     # s to wait at every pose, so the arm and the board stop shaking
 FRAMES = 4                       # frames per pose; the first is discarded
 
-# FLANGE (tool0) poses: x, y, z mm and rx, ry, rz degrees, wobj0. (180, 0, 180) is the gripper
-# vertical, pointing straight down. Tilts of about 15-20 degrees around all three axes give the
-# solve the rotation it needs. The flange stays at z 300 or higher, so fingers and board (about
-# 160 mm below the flange) stay clear of the table even when tilted. START and END are high,
-# only for getting in and out.
-START_POSE = (420, 80, 420, 180, 0, 180)
-END_POSE = (500, 80, 420, 180, 0, 180)
+GATEWAY_URL = "http://169.254.219.127:8000/api/v1"   # robot and camera; overrides camera_calibration.py
+MOVE = {"speed": 100, "acceleration": 50, "ramp": 50}     # TCP mm/s, % and %
+GRIP_FORCE = 20                  # N, the SmartGripper's maximum
+
+# Flange (tool0) poses, x y z mm, rx ry rz degrees (RAPID OrientZYX(rz, ry, rx)), wobj0, only for
+# handing over the board and getting in and out, all in the normal orientation (90, 0, 90).
+GRIP_POSE = (360, -180, 250, 90, 0, 90)
+RELEASE_POSE = (360, 340, 250, 90, 0, 90)
+START_POSE = (360, -180, 320, 90, 0, 90)
+END_POSE = (360, 340, 320, 90, 0, 90)
+
+BOARD_REACH = 280                # mm from the flange to the middle of the board, along the fingers
+
+# Calibration poses: MIDDLE OF THE BOARD x, y, z and the gripper orientation rx, ry, rz.
+# rx 80-100 keeps the fingers at most 10 degrees down, low poses use rx 90; ry rolls and rz turns the
+# gripper (+-20). The 90 degree turns point the fingers inward. The flange stays at x 190 or more,
+# z 100 or more, and within about 150 mm of the camera mount (y 69) at x 340 or less; the order
+# (one side, the middle, the other side) never sweeps across in front of the mount.
 POSES_LEFT = [
-    (340, -180, 300, 180, 0, 180), (340, 80, 300, 200, 0, 180),    (340, 340, 300, 180, 20, 180),
-    (340, 340, 380, 180, 0, 160),  (340, 80, 380, 165, -15, 190),  (340, -180, 380, 195, 15, 170),
-    (420, -180, 300, 180, -20, 180), (420, 80, 300, 180, 0, 200),  (420, 340, 300, 160, 0, 180),
-    (420, 340, 380, 195, -15, 190), (420, 80, 380, 180, 20, 170),  (420, -180, 380, 165, 15, 180),
-    (500, -180, 300, 180, 0, 180), (500, 80, 300, 200, 0, 180),    (500, 340, 300, 180, 20, 180),
-    (500, 340, 380, 180, 0, 160),  (500, 80, 380, 165, -15, 190),  (500, -180, 380, 195, 15, 170),
-    (580, -180, 300, 180, -20, 180), (580, 80, 300, 180, 0, 200),  (580, 340, 300, 160, 0, 180),
-    (580, 340, 380, 195, -15, 190), (580, 80, 380, 180, 20, 170),  (580, -180, 380, 165, 15, 180),
+    (660, -150, 160, 90, 20, 90),  (660, -150, 110, 90, 0, 110),  (660, -150, 240, 80, -15, 100),
+    (560, -150, 240, 100, 15, 90), (560, -150, 110, 90, 15, 90),  (560, -150, 160, 90, -20, 110),
+    (480, -150, 160, 80, 0, 100),  (480, -150, 240, 90, 0, 90),
+    (340, 30, 160, 90, 0, 180),    (340, 30, 240, 90, 15, 170),       # turned 90 degrees inward (left)
+    (480, 80, 240, 100, -15, 90),  (480, 80, 160, 90, 20, 90),    (480, 80, 110, 90, -15, 90),
+    (540, 80, 160, 80, 15, 90),    (540, 80, 240, 90, 0, 90),     (600, 80, 240, 100, 0, 90),
+    (600, 80, 160, 90, 20, 90),    (600, 80, 110, 90, 0, 90),
+    (340, 110, 160, 90, 0, 0),     (340, 110, 240, 90, -15, 10),      # turned 90 degrees inward (right)
+    (480, 330, 240, 90, 0, 70),    (480, 330, 160, 80, -15, 80),  (560, 330, 160, 100, 15, 90),
+    (560, 330, 110, 90, 10, 70),   (560, 330, 240, 90, -20, 90),  (660, 330, 240, 90, 0, 70),
+    (660, 330, 110, 90, -15, 90),  (660, 330, 160, 80, 0, 80),
 ]
 
 
 def mirror(pose):
-    """Left-arm pose -> the same pose on the right arm's side (y -> -y), same orientation."""
+    """Left-arm pose -> the mirror image on the right arm's side: y -> -y, roll and turn mirrored."""
     x, y, z, rx, ry, rz = pose
-    return (x, -y, z, rx, ry, rz)
+    return (x, -y, z, rx, -ry, 180 - rz)
+
+
+def flange_for_board(pose):
+    """Board-middle pose -> flange pose: BOARD_REACH back along the fingers (the tool's z axis)."""
+    x, y, z, rx, ry, rz = pose
+    fx, fy, fz = np.array([x, y, z], float) - BOARD_REACH * orient_zyx(rx, ry, rz)[:, 2]
+    return (round(float(fx), 1), round(float(fy), 1), round(float(fz), 1), rx, ry, rz)
+
+
+def set_gateway(url):
+    """Use this gateway address for both robot and camera (camera_calibration's functions)."""
+    cc.ROBOT_URL = cc.CAMERA_URL = url.rstrip("/")
+    print(f"Gateway: {cc.ROBOT_URL}")
 
 
 ARM = "left"                     # set by --arm
@@ -271,11 +308,58 @@ def poses_for_arm():
 
 def move_flange(pose):
     x, y, z, rx, ry, rz = pose
-    return robot_job("move", {"arm": ARM, "x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
+    return robot_job("move", {"arm": ARM, **MOVE, "x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
 
 
 def home_arm():
-    return robot_job("home", {"arm": ARM})
+    return robot_job("home", {"arm": ARM, **MOVE})
+
+
+def side(pose):
+    """A left-arm pose as it is used for ARM (mirrored for the right arm)."""
+    return pose if ARM == "left" else mirror(pose)
+
+
+def gripper(action):
+    """open or grip, through POST /robot/rws/gripper. True if the gripper reports DONE."""
+    body = {"arm": ARM, "action": action}
+    if action == "grip":
+        body["force"] = GRIP_FORCE
+    try:
+        r = requests.post(f"{cc.ROBOT_URL}/robot/rws/gripper", headers=cc.HEADERS, json=body,
+                          timeout=cc.ROBOT_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"  gripper {action}  ->  {e}")
+        return False
+    reply = r.json()["message"] if r.ok else f"HTTP {r.status_code}: {r.text}"
+    print(f"  gripper {action}  ->  {reply}")
+    return reply == "DONE"
+
+
+def confirm(question, default=True):
+    """Always asks, also with --auto. Enter gives the default."""
+    answer = input(f"{question} [{'Y/n' if default else 'y/N'}]: ").strip().lower()
+    return default if not answer else answer in ("y", "yes")
+
+
+def take_board():
+    """Go to GRIP_POSE, open the gripper, and grip the board after one question. False to stop."""
+    pose = side(GRIP_POSE)
+    print(f"Going to the grip pose {pose}")
+    if not move_flange(pose) or not gripper("open"):
+        return False
+    return confirm("Place the board between the fingers. Grip it?") and gripper("grip")
+
+
+def give_back_board():
+    """Go to RELEASE_POSE and open the gripper, after confirming that someone holds the board."""
+    pose = side(RELEASE_POSE)
+    print(f"Going to the release pose {pose}")
+    move_flange(pose)
+    if confirm("Hold the board. Release it now?"):
+        gripper("open")
+    else:
+        print("  Board kept in the gripper.")
 
 
 def measure(folder, n):
@@ -311,25 +395,29 @@ def run(auto):
         return auto or input(f"Enter = {what}, q = stop: ").strip().lower() != "q"
 
     lease = acquire_control()
-    if not ask(f"go HOME ({ARM} arm)") or not home_arm() or not ask(f"start pose {start}") or not move_flange(start):
+    if not ask(f"go HOME ({ARM} arm)") or not home_arm() or not take_board() \
+            or not ask(f"start pose {start}") or not move_flange(start):
         release_control(lease)
         raise SystemExit("Stopped before the first pose")
 
     for n, pose in enumerate(poses, 1):
-        if not ask(f"pose {n}/{len(poses)} {pose}"):
+        if not ask(f"pose {n}/{len(poses)}, board at {pose[:3]}, rot {pose[3:]}"):
             break
-        if not move_flange(pose):
+        flange = flange_for_board(pose)
+        if not move_flange(flange):
             print(f"  pose {n}: robot did not reach it, skipped")
             continue
         time.sleep(SETTLE)
         det = measure(folder, n)
         print(f"  pose {n}: " + (f"{len(det['ids'])} board corners" if det else "board NOT found"))
-        session["samples"].append({"image": n, "flange": list(pose), "board": det})
+        session["samples"].append({"image": n, "flange": list(flange), "board_target": list(pose),
+                                   "board": det})
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
 
     print(f"Going to the end pose {end}")
     move_flange(end)
+    give_back_board()
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
     solve(folder)
@@ -353,8 +441,10 @@ if __name__ == "__main__":
     parser.add_argument("--fit", metavar="SESSION_FOLDER", help="solve a saved run, no robot")
     parser.add_argument("--board", action="store_true", help="write the board image to print")
     parser.add_argument("--arm", choices=("left", "right"), default="left", help="arm that holds the board")
+    parser.add_argument("--url", default=GATEWAY_URL, help="gateway address")
     args = parser.parse_args()
     ARM = args.arm
+    set_gateway(args.url)
 
     if args.board:
         write_board()

@@ -8,14 +8,11 @@ What it does, in one run:
      and END_POSE are only for getting in and out safely: no pictures, not in the fit.
      Step by step (Enter before every move) unless --auto.
   3. At each pose: waits for the arm to settle, grabs several colour + depth frames, finds
-     the AprilTag on the gripper and reads its depth. The first frame is thrown away, so a
-     stale depth frame from before the move is never used.
+     the AprilTag on the gripper and reads its depth. All frames are combined.
   4. Saves every image and the pose it belongs to in calibration_runs/session_<time>/,
      so images and poses can never get out of step.
   5. Fits  p_robot = scale * R @ p_cam + t  and prints the error per pose, both on the
      fit and on poses left out of it ("unseen"), then saves calibration.json.
-  6. If some poses are flagged (unseen error over twice the median), fits once more
-     without them and saves that as calibration.json instead.
 
 The robot is moved through the gateway's RWS API (POST /robot/rws/home and
 /robot/rws/move, see gateway/scripts/client_template.py), so the RAPID program in
@@ -42,8 +39,8 @@ import cv2
 import numpy as np
 import requests
 
-CAMERA_URL = "http://169.254.125.202:8000/api/v1"   # camera gateway: rgb, depth, intrinsics
-ROBOT_URL = "http://169.254.125.202:8000/api/v1"        # robot API: control, RWS jobs (or --robot-url)
+CAMERA_URL = "http://169.254.219.127:8000/api/v1"   # camera gateway: rgb, depth, intrinsics
+ROBOT_URL = "http://169.254.219.127:8000/api/v1"        # robot API: control, RWS jobs (or --robot-url)
 HEADERS = {"Authorization": "Bearer BAD_TOKEN_OPERATOR", "X-Dev-Client": "operator"}
 ROBOT_TIMEOUT = 90               # s, longer than the gateway's own 60 s job timeout
 # Sent with every move and home (the gateway sets the arm's speed per job; left out it is 50 mm/s, 100 %)
@@ -60,20 +57,21 @@ CALIB_ROT = (90, 0, 90)
 # START_POSE and END_POSE are high, right above the first and last pose, so the gripper turns
 # into CALIB_ROT well above the table and leaves straight up. Not measured, not in the fit.
 START_POSE = (470, 420, 200)
-END_POSE = (580, -10, 200)
+END_POSE = (530, 310, 200)
 
-# The 20 measured poses: x 360-690, y -230 to 420, z 70-130. Each step goes to a neighbouring point.
+# The 20 measured poses: x 360-690, y -230 to 420, z 70-130, inside the left arm's reach
+# (x 800, and x 690 at the y edges, gave "move failed"). Each step goes to a neighbouring point.
 POSES = [
-    (470, 420, 110), (360, 420, 90), (360, 200, 70), (360, -10, 130), (410, -230, 90),
+    (470, 420, 110), (360, 420, 90), (360, 200, 70), (420, -10, 130), (420, -180, 90),
     (470, -230, 130), (470, -10, 70), (470, 200, 110), (580, 200, 90), (580, 420, 70),
-    (630, 310, 130), (525, 310, 90), (625, 200, 110), (690, 200, 70), (690, -10, 110),
-    (635, -120, 70), (525, -120, 130), (470, -120, 90), (580, -230, 110), (580, -10, 130),
+    (620, 420, 130), (690, 200, 110), (690, -10, 70), (620, -160, 90), (580, -230, 110),
+    (580, -10, 130), (530, -120, 70), (530, 90, 110), (640, 90, 130), (530, 310, 90),
 ]
 
 TAG_ID = 0
-TAG_OFFSET = (-122, 0.0, 40.0)     # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT (was -115; -7 from pick tests)
+TAG_OFFSET = (-122.0, 0.0, 20.0)   # tag centre minus gripper TCP, mm, robot frame, in CALIB_ROT
 SETTLE = 1.0                     # s to wait after the robot reports DONE
-FRAMES = 4                       # frames per pose; the first is discarded, the rest are combined
+FRAMES = 4                       # frames per pose, all combined
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -220,13 +218,11 @@ def to_camera(u, v, z, k):
 
 
 def measure(folder, n):
-    """Grab FRAMES frames, drop the first, combine the rest. Saves the last pair as image n."""
+    """Grab FRAMES frames and combine them. Saves the last pair as image n."""
     rgb = depth = None
     found = []
-    for i in range(FRAMES):
+    for _ in range(FRAMES):
         rgb, depth = capture()
-        if i == 0:
-            continue                       # may still be from before the move
         c = find_tag(rgb)
         z = tag_depth(c, depth) if c is not None else None
         if z is not None:
@@ -277,7 +273,6 @@ def solve(folder, exclude=()):
         unseen_xyz.append(si * Ri @ cam[i] + ti - rob[i])
     unseen_xyz = np.array(unseen_xyz)          # predicted minus real, mm, robot frame
     unseen = np.linalg.norm(unseen_xyz, axis=1)
-    flagged = [s["image"] for s, u in zip(samples, unseen) if u > 2 * np.median(unseen)]
 
     print(f"\n{'image':>5}  {'pose':>18}  {'fit':>8}  {'unseen':>8}  {'dx':>6}  {'dy':>6}  {'dz':>6}  {'depth':>7}")
     for s, e, u, d, p in zip(samples, err, unseen, unseen_xyz, cam):
@@ -303,15 +298,6 @@ def solve(folder, exclude=()):
     print(f"Saved calibration.json (in the session folder and next to this script)")
     if TAG_OFFSET == (0.0, 0.0, 0.0):
         print("TAG_OFFSET is (0, 0, 0): positions are off by the tag-to-TCP distance until it is measured.")
-    return flagged
-
-
-def solve_clean(folder, exclude=()):
-    """Fit, then fit again without the flagged poses. The second fit is the one saved."""
-    flagged = solve(folder, exclude)
-    if flagged:
-        print(f"\nRefitting without the flagged poses {flagged}:")
-        solve(folder, set(exclude) | set(flagged))
 
 
 # Robot run
@@ -348,7 +334,7 @@ def run(auto):
         time.sleep(SETTLE)
         tag = measure(folder, n)
         print(f"  pose {n}: " + (f"tag at ({tag['u']:.0f}, {tag['v']:.0f}) px, depth {tag['z']:.0f} mm, "
-                                 f"{tag['frames']}/{FRAMES - 1} frames" if tag else "tag or depth NOT found"))
+                                 f"{tag['frames']}/{FRAMES} frames" if tag else "tag or depth NOT found"))
         session["samples"].append({"image": n, "pose": list(pose), "tag": tag})
         with open(os.path.join(folder, "session.json"), "w") as f:
             json.dump(session, f, indent=2)
@@ -357,7 +343,7 @@ def run(auto):
     goto(END_POSE, CALIB_ROT)
     release_control(lease)
     print(f"\nImages and poses saved in {folder}")
-    solve_clean(folder)
+    solve(folder)
 
 
 if __name__ == "__main__":
@@ -371,6 +357,6 @@ if __name__ == "__main__":
         ROBOT_URL = args.robot_url.rstrip("/")
 
     if args.fit:
-        solve_clean(args.fit, set(args.exclude))
+        solve(args.fit, set(args.exclude))
     else:
         run(args.auto)
