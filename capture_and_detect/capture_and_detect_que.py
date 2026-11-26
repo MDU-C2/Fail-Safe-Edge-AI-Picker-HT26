@@ -119,7 +119,7 @@ GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 850               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 300               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # legacy left-only moves; smooth paths use handover_plan's settings
 RAMP = 100                 # legacy left-only ramp; smooth paths use handover_plan's settings
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
