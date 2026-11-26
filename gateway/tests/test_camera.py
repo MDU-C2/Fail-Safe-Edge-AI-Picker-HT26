@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
+import requests
 
 from gateway.tests.conftest import mock_settings
 from gateway.tests.support import Gateway, expect
@@ -145,6 +146,10 @@ def test_distortion(
     # The mock has an ideal lens: OpenCV's model, 14 zeros.
     #
     assert distortion == {"model": "perspective", "coefficients": [0.0] * 14}
+
+    openapi = requests.get(f"{strict_gateway.url}/openapi.json", timeout=10).json()
+
+    assert "/api/v1/camera/distortion" in openapi["paths"]
 
 
 def test_stale_frames_are_refused(

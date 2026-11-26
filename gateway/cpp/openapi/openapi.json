@@ -405,6 +405,61 @@
         }
       }
     },
+    "/api/v1/camera/distortion": {
+      "get": {
+        "tags": [
+          "camera"
+        ],
+        "summary": "Get the RGB camera lens distortion",
+        "operationId": "get_camera_distortion_api_v1_camera_distortion_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraDistortion"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "description": "CAM_A's distortion model and coefficients from the device calibration (C++ gateway only). The RGB and depth frames are not undistorted; the coefficients apply to normalised coordinates, so they go with GET /camera/intrinsics at any frame size."
+      }
+    },
     "/api/v1/camera/rgb": {
       "get": {
         "tags": [
@@ -2782,6 +2837,35 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "CameraDistortion": {
+        "title": "CameraDistortion",
+        "type": "object",
+        "required": [
+          "model",
+          "coefficients"
+        ],
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string",
+            "enum": [
+              "perspective",
+              "fisheye",
+              "equirectangular",
+              "radial_division"
+            ],
+            "description": "DepthAI's camera model; perspective is OpenCV's pinhole model (cv2.undistortPoints), fisheye cv2.fisheye."
+          },
+          "coefficients": {
+            "title": "Coefficients",
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "OpenCV order: k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4, tx, ty."
+          }
+        }
       }
     },
     "securitySchemes": {
