@@ -237,4 +237,15 @@ while ($true) {
 }
 
 $reply | ConvertTo-Json -Depth 4
+
+#
+# A label move that does not take effect leaves the old image running
+# with no error from the Lynx (seen 2026-11-26, with its internal flash
+# full), so check the version that actually started.
+#
+if ($reply.version -ne $Version) {
+    Write-Warning "The Lynx runs $($reply.version), not $Version: the label $Label did not move (show app-hosting images)"
+    exit 1
+}
+
 Write-Host "Gateway $Version running on the Lynx: http://${Lynx}:$Port"
