@@ -32,21 +32,22 @@ and `show` commands on **2026-11-11**.
 
 ## How to reach it
 
-`vlan1` has two IPv4 addresses:
+Three VLANs since 2026-11-25 (before, one flat `vlan1`):
 
 ```
-169.254.219.127/16   link-local (DHCP is configured but gets no answer, so it falls back to this)
-192.168.125.20/24    static, on the robot subnet (added 2026-11-11)
+vlan1   eth1, eth2, eth5..eth10   169.254.219.127/16 (link-local) + 192.168.125.20/24 (static)
+vlan10  eth3 ("camera")           169.254.1.200/26   the OAK 169.254.1.223
+vlan20  eth4 ("robot")            192.168.125.2/30   the YuMi 192.168.125.1
 ```
 
-The YuMi is cabled to the Lynx but only answers on `192.168.125.1`, so
-the static address is what lets the Lynx (and apps on it with
-`netns host-os`, like the gateway) reach the robot. It was added with
-`configure` → `iface vlan1` → `inet static 192.168.125.20/24` → `leave`
-and saved with `copy running-config startup-config` (2026-11-11). The laptop's "Ethernet 2"
-has both `169.254.125.10/16` and `192.168.125.10/24`, so it reaches the
-Lynx on either address. Management services enabled: **SSH (22), HTTP
-(80), HTTPS (443), Telnet (23), SNMP**.
+IP forwarding is off, so only the Lynx itself and apps on it with
+`netns host-os` (the gateway) reach the camera and the robot. Manage the
+Lynx and reach the gateway on `169.254.219.127` or `192.168.125.20` as
+before. Details, the commands and what it broke: "Network isolation" in
+[gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md#network-isolation).
+**The configuration is not saved** (internal flash full, see there):
+do not reboot the Lynx. Management
+services enabled: **SSH (22), HTTP (80), HTTPS (443), Telnet (23), SNMP**.
 
 ### SSH in
 
