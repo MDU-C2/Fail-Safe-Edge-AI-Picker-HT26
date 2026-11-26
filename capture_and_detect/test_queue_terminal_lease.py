@@ -11,6 +11,8 @@ from unittest.mock import Mock
 
 import requests
 
+import pick_order
+
 
 SOURCE = Path(__file__).with_name("capture_and_detect_que.py")
 
@@ -59,6 +61,7 @@ def load_terminal():
         "depth_average": types.SimpleNamespace(capture_averaged=Mock()),
         "log": Mock(), "print_objects": Mock(), "find_cups": Mock(),
         "load_places": Mock(), "save_places": Mock(), "handover_jobs": Mock(),
+        "next_cup": pick_order.next_cup, "count_neighbours": pick_order.count_neighbours,
     }
     wanted = {"Gateway", "RobotError", "Picker", "Handover", "plan_to_queue_steps"}
     nodes = [node for node in ast.parse(SOURCE.read_text()).body

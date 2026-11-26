@@ -101,6 +101,7 @@ from ultralytics import YOLO
 
 import depth_average                               # depth of several frames, mask edge left out
 from handover_plan import handover_jobs
+from pick_order import count_neighbours, next_cup   # fewest neighbours first (collision)
 
 # ================================================================
 # Settings
@@ -852,7 +853,7 @@ class Handover:
 def load_model():
     """NCNN on the Lynx (the Lynx container sets PICKER_DEVICE=lynx), best.pt elsewhere."""
     lynx = os.environ.get("PICKER_DEVICE", "").lower() == "lynx"
-    path = HERE / ("best_ncnn_model" if lynx else "best.pt")
+    path = HERE / ("best_ncnn_model" if lynx else "bestExtended.pt")
     if not path.exists():
         raise SystemExit(f"Model not found: {path}\n"
                          f"Put best.pt and best_ncnn_model/ in the same folder as capture_and_detect.py.")
@@ -1144,7 +1145,7 @@ class Picker:
         self.store.save_cups(cups, stamp)
         log(f"{len(cups)} cup(s) saved to cups.json")
         placed = 0
-        while self.move_one(cups, stamp):          # all cups of this capture, most certain first
+        while self.move_one(cups, stamp):          # all cups of this capture, fewest neighbours first
             placed += 1
         if placed and not self.gateway.lost.is_set() and not any(c["status"] == "failed" for c in cups):
             self.go_home()                         # all done: home once, not between cups
@@ -1343,9 +1344,9 @@ class Picker:
             log(f"  STOP: going home failed: {e}")
 
     def move_one(self, cups, stamp):
-        """Hand over the first cup that is still "waiting" (the most certain reachable one).
+        """Hand over the "waiting" cup with the fewest neighbours (pick_order.py; tie: most certain).
         True if it was placed, False if there was none left or it failed (then stop)."""
-        cup = next((c for c in cups if c["status"] == "waiting"), None)
+        cup = next_cup(cups)
         if cup is None:
             return False
         try:
@@ -1362,6 +1363,7 @@ class Picker:
                 return False
         what = "left arm only" if self.left_only else f"hand-over, place at location {place['id']}"
         log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} base Ø{cup['diameter']} mm -> {what}")
+        log(f"  cup {cup['id']}: {count_neighbours(cup, cups)} neighbour(s) within 2 x 5 cm")
         cup["status"] = "moving"
         self.store.save_cups(cups, stamp)
         placed = False
