@@ -323,15 +323,20 @@ against the real YuMi, DepthAI tools and `pytest --oak` against the
 real OAK, and the camera apps `yololivetest`/`yolowebtest` (own network
 namespace, `OAK_TARGET`). Plug into eth4 or eth3 for direct access.
 
-> **Not saved (2026-11-25).** `copy run start` fails with "No space left
-> on device": the internal `Config` partition (14 MB jffs2) is 99 %
-> full, and the startup config on it is cut off after ~4 KB (no ports,
-> VLANs, addresses or gateway app), most likely by the failed 11-24
-> save. Do not reboot the Lynx until a save works. Cause not found yet:
-> images and app shares are on the SD card, logs go to pipes, and
-> `file cfg dir` fails on the full partition; `shell` is "Access
-> denied". Full running-config backups are kept off the repository
-> (they hold secrets).
+> **Saved on 2026-11-26** (startup config = running config, 27 KB,
+> with the VLANs and the gateway app). From 2026-11-25 it could not be
+> saved: the internal `Config` partition (14 MB jffs2, `show media`) was
+> 99 % full and the startup config on it cut off after ~4 KB. The cause
+> was the picker's 47 MB `lynx-picker-0.2.9` installed on 2026-11-17 as
+> a WeOS *system package* (`package install`, listed by `show package`
+> with version "Unknown"), which writes to the internal flash, not as
+> an app image (`file app import`, SD card). `package remove
+> lynx-picker-0.2.9` freed it (99 % → 6 %; the list entry stays,
+> "Operation not permitted", Persistent: No). The full flash also made
+> `app-hosting label` fail silently, so a deploy kept the old image
+> running (the deploy script now checks the version). Install app
+> images with `file app import` only. Full running-config backups are
+> kept off the repository (they hold secrets).
 
 A laptop with Tailscale: its adapter also claims `169.254.0.0/16` (even
 when disconnected), so Windows sends traffic for `169.254.219.127` there;
