@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gateway_cpp
-    VERSION 0.7.1
+    VERSION 0.8.0
     LANGUAGES C CXX
 )
 

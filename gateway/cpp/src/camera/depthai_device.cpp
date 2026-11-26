@@ -4,17 +4,20 @@
 //
 // The pipeline of gateway/camera/oak_producer.py:
 //
-//   CAM_A  -> BGR888p at width x height ----------------+--> Sync "rgb"
+//   CAM_A  -> BGR888p at width x height, undistorted ---+--> Sync "rgb"
 //                                         inputAlignTo  |
 //   CAM_B, CAM_C -> GRAY8 640x400 -> StereoDepth (ROBOTICS, LR check)
 //                                         depth --------+--> Sync "depth"
 //
 // Sync pairs RGB and depth within 100 ms; the host queue keeps only
 // the newest pair (size 1, non-blocking). Depth is aligned to CAM_A,
-// so rgb[v, u] and depth[v, u] are the same point.
+// so rgb[v, u] and depth[v, u] are the same point. With
+// GATEWAY_CAMERA_UNDISTORT (default on) CAM_A is undistorted on the
+// camera and depth is aligned to the undistorted image.
 //
 
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 #include <depthai/depthai.hpp>
@@ -36,8 +39,6 @@ public:
         : config_(config) {
         device_ = connect(connect_timeout_seconds);
 
-        intrinsics_ = read_intrinsics();
-
         build_pipeline();
 
         pipeline_->start();
@@ -45,6 +46,8 @@ public:
         if (config_.warmup_seconds > 0) {
             std::this_thread::sleep_for(std::chrono::duration<double>(config_.warmup_seconds));
         }
+
+        intrinsics_ = read_intrinsics();
     }
 
     ~DepthaiDevice() override {
@@ -133,23 +136,31 @@ private:
     }
 
     //
-    // CAM_A intrinsics from the device calibration, converted to the
-    // published size; depth is aligned to CAM_A, so they also apply
-    // to the depth frames.
+    // The intrinsics of the frames as published, from the first
+    // frame's transformation (size, crop and undistortion included);
+    // depth is aligned to CAM_A, so they also apply to the depth
+    // frames. Undistorted frames have no distortion left; otherwise
+    // it is CAM_A's from the device calibration.
     //
     CameraIntrinsics read_intrinsics() {
-        const auto calibration = device_->readCalibration();
+        bool timed_out = false;
 
-        const auto matrix = calibration.getCameraIntrinsics(
-            dai::CameraBoardSocket::CAM_A,
-            config_.width,
-            config_.height
-        );
+        const auto group = queue_->get<dai::MessageGroup>(std::chrono::seconds(10), timed_out);
+
+        const auto rgb = (timed_out || !group) ? nullptr : group->get<dai::ImgFrame>("rgb");
+
+        if (!rgb) {
+            throw std::runtime_error("No frame from the OAK camera to read its intrinsics from");
+        }
+
+        const auto& transformation = rgb->getTransformation();
+
+        const auto matrix = transformation.getIntrinsicMatrix();
 
         CameraIntrinsics intrinsics;
 
-        intrinsics.width = config_.width;
-        intrinsics.height = config_.height;
+        intrinsics.width = static_cast<int>(rgb->getWidth());
+        intrinsics.height = static_cast<int>(rgb->getHeight());
 
         for (int row = 0; row < 3; ++row) {
             for (int column = 0; column < 3; ++column) {
@@ -161,6 +172,15 @@ private:
         intrinsics.fy = intrinsics.matrix[1][1];
         intrinsics.cx = intrinsics.matrix[0][2];
         intrinsics.cy = intrinsics.matrix[1][2];
+
+        if (config_.undistort) {
+            intrinsics.distortion_model = "perspective";
+            intrinsics.distortion.assign(14, 0.0);
+
+            return intrinsics;
+        }
+
+        const auto calibration = device_->readCalibration();
 
         for (const float coefficient : calibration.getDistortionCoefficients(dai::CameraBoardSocket::CAM_A)) {
             intrinsics.distortion.push_back(coefficient);
@@ -199,7 +219,8 @@ private:
             std::make_pair<uint32_t, uint32_t>(config_.width, config_.height),
             dai::ImgFrame::Type::BGR888p,
             dai::ImgResizeMode::CROP,
-            fps
+            fps,
+            config_.undistort
         );
 
         // --------------------------------------------------------

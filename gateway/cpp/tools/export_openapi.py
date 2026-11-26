@@ -75,10 +75,10 @@ def add_cpp_only_paths(
 
     operation["summary"] = "Get the RGB camera lens distortion"
     operation["description"] = (
-        "CAM_A's distortion model and coefficients from the device calibration "
-        "(C++ gateway only). The RGB and depth frames are not undistorted; the "
-        "coefficients apply to normalised coordinates, so they go with "
-        "GET /camera/intrinsics at any frame size."
+        "CAM_A's distortion model and coefficients (C++ gateway only). While the "
+        "gateway undistorts the frames (GATEWAY_CAMERA_UNDISTORT, default) they are "
+        "zeros; otherwise they are the device calibration's and apply to normalised "
+        "coordinates, with GET /camera/intrinsics."
     )
     operation["operationId"] = "get_camera_distortion_api_v1_camera_distortion_get"
     operation["responses"]["200"]["content"]["application/json"]["schema"] = {
