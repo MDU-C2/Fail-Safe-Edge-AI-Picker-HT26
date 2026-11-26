@@ -42,6 +42,7 @@ PICK_SPEED = 100
 FLIP_SPEED = 100
 FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
+RIGHT_RELEASE_POS = 12 
 HANDOVER_BLEND_MM = 10
 SMOOTH_TRAVEL_Z = 175
 SMOOTH_ACCELERATION = 60
@@ -377,9 +378,11 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   move_speed=plan.speed, after=("right_retreat",))
     plan.path("right_place", "right", [(spot, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed, **carrying)
-    plan.grip("right_release", "right", "open")
+    # plan.grip("right_release", "right", "open")
+    plan.grip("right_release", "right", "move", position = RIGHT_RELEASE_POS)
     plan.path("right_clear", "right", [(place_above, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed)
+    plan.grip("right_release", "right", "open")
     if home_after_cup:
         plan.home("right_home", "right")
     elif right_park is not None:
