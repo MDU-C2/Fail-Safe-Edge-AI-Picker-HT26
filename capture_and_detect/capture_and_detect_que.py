@@ -795,7 +795,7 @@ class Handover:
 def load_model():
     """NCNN on the Lynx (the Lynx container sets PICKER_DEVICE=lynx), best.pt elsewhere."""
     lynx = os.environ.get("PICKER_DEVICE", "").lower() == "lynx"
-    path = HERE / ("best_ncnn_model" if lynx else "best.pt")
+    path = HERE / ("best_ncnn_model" if lynx else "bestExtended.pt")
     if not path.exists():
         raise SystemExit(f"Model not found: {path}\n"
                          f"Put best.pt and best_ncnn_model/ in the same folder as capture_and_detect.py.")
