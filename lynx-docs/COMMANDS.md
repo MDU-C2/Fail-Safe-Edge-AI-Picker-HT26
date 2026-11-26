@@ -89,8 +89,11 @@ show lag / show aggregates  # link aggregation
 show ring / frnt / mrp / coupling   # Westermo ring-redundancy protocols
 ```
 
-On this unit: one VLAN `vlan1` with **all** ports untagged; `vlan1` carries the mgmt
-IP. Up ports as seen 2026-11-11: eth3, eth4, eth8, eth9, eth10.
+On this unit: `vlan1` with every port but eth3/eth4 untagged, carrying the mgmt IPs,
+and since 2026-11-25 `vlan10` "camera" (eth3, the OAK) and `vlan20` "robot" (eth4, the
+YuMi), IP forwarding off.
+Up ports as seen 2026-11-25: eth3 (OAK), eth4 (YuMi), eth7, eth8, eth9 (laptop),
+eth10 (Pi).
 
 ## 4. IP / routing / L3 (read-only forms)
 
@@ -276,7 +279,8 @@ Observed on 2026-11-11, worth fixing before the switch leaves the bench:
   `configure → management → telnet no enable`, `… web http no enable`.
 - **SNMP** is on with community `public` → disable or set v3:
   `configure → management → snmp …`.
-- No static mgmt IP (DHCP + link-local only); the firewall is **off**.
+- No static mgmt IP (DHCP + link-local only); the firewall is **off** (IP forwarding
+  is off since 2026-11-25, so the camera and robot VLANs are not routed).
 - After any change: `copy running-config startup-config` to persist.
 
 ---

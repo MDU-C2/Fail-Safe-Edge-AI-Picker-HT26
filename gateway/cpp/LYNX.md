@@ -16,9 +16,12 @@ powershell -ExecutionPolicy Bypass -File gateway/cpp/tools/deploy_lynx.ps1   # i
 python gateway/scripts/gatewayctl.py --target lynx --token <robot.control token> smoke --read-token <camera.read token>
 ```
 
-The gateway is then at `http://169.254.219.127:8000/api/v1`, and at
-`http://192.168.125.20:8000/api/v1` on the robot subnet (strict mode,
+The gateway is then at `http://169.254.219.127:8000/api/v1` (strict mode,
 the clients of `gateway/auth_clients.json`, see [Clients](#clients)).
+It is also at `http://192.168.125.20:8000/api/v1` for clients on the
+`192.168.125.x` subnet. Since 2026-11-25 the robot and the camera are on
+VLANs of their own and only the gateway reaches them, see
+[Network isolation](#network-isolation).
 
 > The Lynx is shared lab hardware. Deploying adds an image and one app
 > (`gateway`); it changes nothing else. Only one process can hold the
@@ -165,7 +168,7 @@ Invoke-RestMethod http://169.254.219.127:8000/api/v1/health
 | Stop / start / restart | `app-hosting stop gateway`, `app-hosting start gateway`, `app-hosting restart gateway` |
 | Status | `show app-hosting`, `app-hosting app gateway`, `GET /api/v1/health` |
 | Gateway output | `show log app-gateway.log`; `follow app-gateway.log` to tail |
-| Live events | `ws://169.254.219.127:8000/api/v1/events` (or `192.168.125.20`) with `Authorization: Bearer <token>` (0.4.0 and later): `python diagnostics/gateway_diag.py --target lynx watch` (dashboard + events) or `... --target lynx events` (the `diagnostics` token from `client_tokens.json`) |
+| Live events | `ws://169.254.219.127:8000/api/v1/events` with `Authorization: Bearer <token>` (0.4.0 and later): `python diagnostics/gateway_diag.py --target lynx watch` (dashboard + events) or `... --target lynx events` (the `diagnostics` token from `client_tokens.json`) |
 | CPU / memory | `show processes` (the gateway is `/sbin/init --host 0.0.0.0 --port 8000`), `show memory` |
 | Change a setting | `configure` → `app-hosting` → `app gateway` → `environment GATEWAY_<NAME> <value>` → `leave`, then `app-hosting restart gateway` |
 | New version | `dev.sh wmopkg`, then the deploy script (or import + `app-hosting label gateway-cpp-<new> gatewaycpp` + `app-hosting reload gatewaycpp`) |
@@ -259,6 +262,79 @@ left arm moments later. `deploy_lynx.ps1 -Save` did not save that day
 (the save line in the configuration session did not take effect); it
 now runs `copy running-config startup-config` as its own command and
 warns if the configs still differ.
+
+### Network isolation
+
+Since 2026-11-25 the robot and the camera each have a VLAN of their own
+on the Lynx, so the gateway is the only way to them (RWS is plain HTTP,
+CommServer on 5001 has no authentication, the OAK has no access control
+at all):
+
+| VLAN | Ports | Lynx address | On it |
+|---|---|---|---|
+| `vlan1` | eth1, eth2, eth5..eth10 | `169.254.219.127/16` (link-local), `192.168.125.20/24` (static) | everything else: laptops, Pi, lab PCs |
+| `vlan10` "camera" | eth3 | `169.254.1.200/26` | the OAK `169.254.1.223` |
+| `vlan20` "robot" | eth4 | `192.168.125.2/30` | the YuMi `192.168.125.1` (and two devices behind it, `.203`, `.250`) |
+
+IP forwarding is off, so the Lynx routes nothing between them (the
+firewall is still off). The camera and robot subnets sit inside the
+`vlan1` ones on purpose: no device's address changes, clients keep the
+gateway at `192.168.125.20` or `169.254.219.127`, and the Lynx reaches
+`192.168.125.1` and `169.254.1.223` through the more specific route
+(`/30`, `/26`) on the device's own port. The YuMi and the OAK still see
+`.2` and `.200` as on-link (their own masks are wider) and answer
+directly. The price: a client on `vlan1` with an address in
+`192.168.125.0..3` or `169.254.1.192..255` gets no answer from the Lynx
+(none had one). The `/26` is the smallest block where the camera's
+`.223` is not the broadcast address. The gateway's settings did not
+change.
+
+Done with (each context left with `end`, applied with `leave`):
+
+```
+configure
+vlan 1        → no untagged eth4, no untagged eth3
+vlan 20       → name robot, untagged eth4
+vlan 10       → name camera, untagged eth3
+port eth4     → description robot
+port eth3     → description camera
+iface vlan20  → inet static 192.168.125.2/30
+iface vlan10  → inet static 169.254.1.200/26
+ip            → no forwarding
+leave
+```
+
+`default-vid` is "not found" under `port` on this unit, and not needed:
+a port's default VID follows the one VLAN it is untagged in. Undo: put
+eth3/eth4 back with `untagged` in `vlan 1`, `no vlan 10`, `no vlan 20`,
+`ip` → `forwarding`.
+
+Checked from the laptop afterwards: `/health` ok on both gateway
+addresses with camera and robot connected; the YuMi (ping, 80, 5001) and
+the OAK (ping, 11490, 11491) do not answer. Right after a `leave` the
+gateway may not answer for a few seconds.
+
+What it breaks: everything that reached the robot or the camera
+directly from `vlan1`: `rapid/rapidctl.py`, `legacy_socket_client.py`,
+`capture_and_detect/where.py`, the picker's native controller status
+(`controller_url` in `robot_controller.json`), RobotStudio online
+against the real YuMi, DepthAI tools and `pytest --oak` against the
+real OAK, and the camera apps `yololivetest`/`yolowebtest` (own network
+namespace, `OAK_TARGET`). Plug into eth4 or eth3 for direct access.
+
+> **Not saved (2026-11-25).** `copy run start` fails with "No space left
+> on device": the internal `Config` partition (14 MB jffs2) is 99 %
+> full, and the startup config on it is cut off after ~4 KB (no ports,
+> VLANs, addresses or gateway app), most likely by the failed 11-24
+> save. Do not reboot the Lynx until a save works. Cause not found yet:
+> images and app shares are on the SD card, logs go to pipes, and
+> `file cfg dir` fails on the full partition; `shell` is "Access
+> denied". Full running-config backups are kept off the repository
+> (they hold secrets).
+
+A laptop with Tailscale: its adapter also claims `169.254.0.0/16` (even
+when disconnected), so Windows sends traffic for `169.254.219.127` there;
+stop it (`Stop-Service Tailscale`, admin) while working with the Lynx.
 
 ## 5. Test
 
@@ -371,6 +447,8 @@ see below).
   (`configure` → `iface vlan1` → `inet static 192.168.125.20/24` →
   `leave`); since then `/health` is `ok` with the controller reachable.
   Saved to the startup config together with the app the same day.
+  Since 2026-11-25 the robot has its own VLAN, see
+  [Network isolation](#network-isolation).
 - **Piping commands into the CLI.** The deploy script feeds the config
   lines to an SSH session's standard input; Windows PowerShell may put a
   byte-order mark in front, which turns the first command into "not

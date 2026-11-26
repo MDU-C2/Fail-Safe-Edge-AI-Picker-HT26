@@ -179,10 +179,12 @@ does steps 2–4 this way for the gateway.
 
   It changes no configuration, but is most likely lost on a reboot (set
   2026-11-11); an NTP server on the lab network would make it stick.
-- The Lynx has two addresses on `vlan1`: `169.254.219.127/16`
-  (link-local, DHCP gets no answer) and `192.168.125.20/24` (static,
-  added and saved 2026-11-11). The YuMi only
-  answers on `192.168.125.1`, so an app with `netns host-os` reaches it
-  through the second one.
+- The Lynx has `169.254.219.127/16` (link-local, DHCP gets no answer)
+  and `192.168.125.20/24` on `vlan1`; since 2026-11-25 the camera (eth3)
+  and the robot (eth4) are on VLANs of their own (`vlan10`
+  `169.254.1.200/26`, `vlan20` `192.168.125.2/30`, no IP forwarding).
+  An app with `netns host-os` reaches both; an app in its own namespace,
+  and anything else on the lab network, reaches neither. See "Network
+  isolation" in [gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md#network-isolation).
 - The OAK camera can be held by one process at a time: stop other
   camera apps (and the gateway on the Raspberry Pi) first.
