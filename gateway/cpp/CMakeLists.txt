@@ -30,8 +30,8 @@ include(cmake/Embed.cmake)
 # ================================================================
 
 #
-# The API contract, exported from the Python gateway with
-# tools/export_openapi.py and served as is at /openapi.json.
+# The API contract, maintained by hand (tests/test_openapi.cpp checks
+# it against the routes) and served as is at /openapi.json.
 #
 gateway_embed_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/openapi/openapi.json

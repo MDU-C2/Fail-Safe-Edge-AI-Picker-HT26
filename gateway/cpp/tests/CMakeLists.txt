@@ -7,6 +7,7 @@ add_executable(
     test_control_manager.cpp
     test_events.cpp
     test_oak_reconnect.cpp
+    test_openapi.cpp
     test_router.cpp
     test_rws_errors.cpp
     test_rws_heartbeat.cpp

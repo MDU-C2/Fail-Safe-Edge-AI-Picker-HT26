@@ -73,9 +73,16 @@ public:
         Request& request
     ) const;
 
+    //
+    // Every HTTP route as {method, pattern}, in the order added
+    // (the check of openapi.json against the routes uses it).
+    //
+    std::vector<std::pair<std::string, std::string>> routes() const;
+
 private:
     struct Route {
         std::string method;
+        std::string pattern;
         std::vector<std::string> parts;
         Handler handler;
     };

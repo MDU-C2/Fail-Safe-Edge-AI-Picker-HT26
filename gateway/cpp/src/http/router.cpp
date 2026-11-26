@@ -162,13 +162,26 @@ void Router::add(
     std::string pattern,
     Handler handler
 ) {
+    auto parts = split_path(pattern);
+
     routes_.push_back(
         Route{
             std::move(method),
-            split_path(pattern),
+            std::move(pattern),
+            std::move(parts),
             std::move(handler),
         }
     );
+}
+
+std::vector<std::pair<std::string, std::string>> Router::routes() const {
+    std::vector<std::pair<std::string, std::string>> result;
+
+    for (const auto& route : routes_) {
+        result.emplace_back(route.method, route.pattern);
+    }
+
+    return result;
 }
 
 void Router::get(

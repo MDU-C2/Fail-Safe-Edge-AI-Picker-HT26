@@ -1053,6 +1053,79 @@
       }
     },
     "/api/v1/robot/rapid/tasks/{task}/modules/{module}": {
+      "get": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Read a RAPID module's source",
+        "description": "The source as the controller saves it, also while RAPID runs (PERS with their current values): the backup before a program change. 404 for an unknown task or a module that is not loaded.",
+        "operationId": "get_rapid_module_api_v1_robot_rapid_tasks__task__modules__module__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Task"
+            }
+          },
+          {
+            "name": "module",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+              "title": "Module"
+            }
+          },
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidModuleSource"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "put": {
         "tags": [
           "rapid"
@@ -1307,6 +1380,71 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RapidStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rapid/reset": {
+      "post": {
+        "tags": [
+          "rapid"
+        ],
+        "summary": "Reset RAPID variables and restart",
+        "description": "Needs robot.program and the control lease. Stops RAPID, writes the variables under mastership, reads them back (502 if one does not hold) and starts with the program pointer at main unless start is false. Clients send the values declared in rapid/SharedVars.mod (reloading a module does not reset its PERS); when gw_session or gw_timeout are among them the gateway writes its own back before the start.",
+        "operationId": "reset_rapid_api_v1_robot_rapid_reset_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RapidResetRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -1650,6 +1788,177 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/robot/rws/queue": {
+      "get": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "State of the motion queue",
+        "description": "Needs robot.read, no lease.",
+        "operationId": "get_queue_api_v1_robot_rws_queue_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RwsQueueStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "Run a sequence of RWS jobs",
+        "description": "Needs robot.control and the control lease. The gateway runs the whole sequence to the end, whoever holds the lease meanwhile. Every step is checked first (422, safe zone included), then RAPID running and the arms used idle (409/503); nothing runs unless all of it passes. One queue for both arms: while it runs, new queues and single jobs are 409. failed and cancelled refuse a new queue until DELETE clears them.",
+        "operationId": "start_queue_api_v1_robot_rws_queue_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RwsQueueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RwsQueueStatus"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "rws motion"
+        ],
+        "summary": "Cancel or clear the motion queue",
+        "description": "Needs robot.control and the control lease (whoever holds it, not only the owner). A running queue sends nothing more and ends as cancelled once the jobs running now finish; a done, failed or cancelled queue is cleared to idle.",
+        "operationId": "cancel_queue_api_v1_robot_rws_queue_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-dev-client",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Dev-Client"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RwsQueueStatus"
                 }
               }
             }
@@ -2866,6 +3175,317 @@
             "description": "OpenCV order: k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4, tx, ty."
           }
         }
+      },
+      "RapidModuleSource": {
+        "properties": {
+          "task": {
+            "type": "string",
+            "title": "Task"
+          },
+          "module": {
+            "type": "string",
+            "title": "Module"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task",
+          "module",
+          "source"
+        ],
+        "title": "RapidModuleSource"
+      },
+      "RapidVariable": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+            "title": "Name"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Value",
+            "description": "The value as RAPID text, e.g. FALSE, 20 or [0,0,0]."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "value"
+        ],
+        "title": "RapidVariable"
+      },
+      "RapidResetRequest": {
+        "properties": {
+          "task": {
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$",
+            "title": "Task"
+          },
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/RapidVariable"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Variables"
+          },
+          "start": {
+            "type": "boolean",
+            "title": "Start",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "task",
+          "variables"
+        ],
+        "title": "RapidResetRequest"
+      },
+      "RwsQueueStep": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "type": {
+            "enum": [
+              "move",
+              "path",
+              "home",
+              "gripper"
+            ],
+            "type": "string",
+            "title": "Type"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RwsMoveRequest"
+              },
+              {
+                "$ref": "#/components/schemas/RwsPathRequest"
+              },
+              {
+                "$ref": "#/components/schemas/RwsMotionRequest"
+              },
+              {
+                "$ref": "#/components/schemas/RwsGripperRequest"
+              }
+            ],
+            "title": "Body",
+            "description": "The body of POST /robot/rws/<type>, with the same rules (wait is ignored; optional for home)."
+          },
+          "group": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Group",
+            "description": "Consecutive steps with the same group run one lane per arm at the same time."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "title": "RwsQueueStep"
+      },
+      "RwsQueueRequest": {
+        "properties": {
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/RwsQueueStep"
+            },
+            "type": "array",
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "steps"
+        ],
+        "title": "RwsQueueRequest"
+      },
+      "RwsQueueStepStatus": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "enum": [
+              "move",
+              "path",
+              "home",
+              "gripper"
+            ],
+            "type": "string",
+            "title": "Type"
+          },
+          "arm": {
+            "enum": [
+              "left",
+              "right"
+            ],
+            "type": "string",
+            "title": "Arm"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "running",
+              "done",
+              "failed",
+              "skipped"
+            ],
+            "type": "string",
+            "title": "State"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "arm",
+          "group",
+          "state",
+          "message"
+        ],
+        "title": "RwsQueueStepStatus"
+      },
+      "RwsQueueStatus": {
+        "properties": {
+          "state": {
+            "enum": [
+              "idle",
+              "running",
+              "done",
+              "failed",
+              "cancelled"
+            ],
+            "type": "string",
+            "title": "State"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner"
+          },
+          "length": {
+            "type": "integer",
+            "title": "Length"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step",
+            "description": "The first running step, or where the queue failed or stopped."
+          },
+          "cancel_requested": {
+            "type": "boolean",
+            "title": "Cancel Requested"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/RwsQueueStepStatus"
+            },
+            "type": "array",
+            "title": "Steps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "owner",
+          "length",
+          "step",
+          "cancel_requested",
+          "message",
+          "started_at",
+          "finished_at",
+          "steps"
+        ],
+        "title": "RwsQueueStatus"
       }
     },
     "securitySchemes": {
