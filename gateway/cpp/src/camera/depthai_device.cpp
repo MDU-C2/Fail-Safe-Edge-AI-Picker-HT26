@@ -138,7 +138,9 @@ private:
     // to the depth frames.
     //
     CameraIntrinsics read_intrinsics() {
-        const auto matrix = device_->readCalibration().getCameraIntrinsics(
+        const auto calibration = device_->readCalibration();
+
+        const auto matrix = calibration.getCameraIntrinsics(
             dai::CameraBoardSocket::CAM_A,
             config_.width,
             config_.height
@@ -159,6 +161,25 @@ private:
         intrinsics.fy = intrinsics.matrix[1][1];
         intrinsics.cx = intrinsics.matrix[0][2];
         intrinsics.cy = intrinsics.matrix[1][2];
+
+        for (const float coefficient : calibration.getDistortionCoefficients(dai::CameraBoardSocket::CAM_A)) {
+            intrinsics.distortion.push_back(coefficient);
+        }
+
+        switch (calibration.getDistortionModel(dai::CameraBoardSocket::CAM_A)) {
+            case dai::CameraModel::Perspective:
+                intrinsics.distortion_model = "perspective";
+                break;
+            case dai::CameraModel::Fisheye:
+                intrinsics.distortion_model = "fisheye";
+                break;
+            case dai::CameraModel::Equirectangular:
+                intrinsics.distortion_model = "equirectangular";
+                break;
+            case dai::CameraModel::RadialDivision:
+                intrinsics.distortion_model = "radial_division";
+                break;
+        }
 
         return intrinsics;
     }

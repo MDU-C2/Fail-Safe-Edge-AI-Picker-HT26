@@ -8,6 +8,8 @@ checks against the real camera are in test_oak.py.
 import time
 from pathlib import Path
 
+import pytest
+
 from gateway.tests.conftest import mock_settings
 from gateway.tests.support import Gateway, expect
 
@@ -129,6 +131,20 @@ def test_camera_needs_token(
 
     for path in ("/camera/status", "/camera/rgb", "/camera/depth", "/camera/intrinsics"):
         expect(anonymous.get(path), 401)
+
+
+@pytest.mark.cpp_only
+def test_distortion(
+    strict_gateway: Gateway,
+) -> None:
+    expect(strict_gateway.client(None).get("/camera/distortion"), 401)
+
+    distortion = expect(strict_gateway.client("diagnostics").get("/camera/distortion"), 200)
+
+    #
+    # The mock has an ideal lens: OpenCV's model, 14 zeros.
+    #
+    assert distortion == {"model": "perspective", "coefficients": [0.0] * 14}
 
 
 def test_stale_frames_are_refused(

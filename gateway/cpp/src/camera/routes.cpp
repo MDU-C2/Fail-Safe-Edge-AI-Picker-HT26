@@ -95,6 +95,21 @@ void add_camera_routes(
     );
 
     router.get(
+        prefix + "/distortion",
+        [&app](Request& request) {
+            app.auth.require_permission(request, "camera.read");
+
+            const auto intrinsics = app.camera.intrinsics();
+
+            if (!intrinsics) {
+                throw HttpError(503, "Camera distortion is not currently available");
+            }
+
+            return Response::json(intrinsics->distortion_json());
+        }
+    );
+
+    router.get(
         prefix + "/rgb",
         [&app](Request& request) {
             app.auth.require_permission(request, "camera.read");
