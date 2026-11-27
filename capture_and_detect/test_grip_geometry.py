@@ -33,9 +33,19 @@ class GripGeometryTests(unittest.TestCase):
         whole = {**base(0, diameter_mm=150), "class": "CUP", "bbox_xyxy": [80, 80, 120, 120]}
         cup = observe([whole, base()])["cups"][0]
         self.assertEqual(cup["diameter"], 65.2)
-        self.assertEqual(cup["aperture"], 135.2)
+        self.assertEqual(cup["aperture"], 105.2)
         self.assertEqual((cup["rz"], cup["has_handle"], cup["grip_geometry_error"]), (180, False, None))
         json.dumps(cup, allow_nan=False)
+
+    def test_no_handle_cup_turns_jaws_away_from_a_close_neighbour(self):
+        # pick_order.set_web_grips: a cup 100 mm away along X blocks jaws along X (rz 180).
+        cups = observe([base(), base(2, x=600, u=200)])["cups"]
+        for cup in cups:
+            self.assertEqual(cup["rz"], 90)
+            self.assertTrue(cup["grip_safe"])
+            self.assertEqual(cup["aperture"], 105.2)
+        alone = observe([base()])["cups"][0]
+        self.assertEqual(alone["rz"], 180)
 
     def test_invalid_or_missing_diameter_preserves_full_open_fallback(self):
         for diameter in (None, 0, -1, True, "65", float("nan"), float("inf"), 10 ** 1000):
@@ -133,7 +143,7 @@ class GripGeometryTests(unittest.TestCase):
         self.assertEqual((first["rz"], translated["rz"]), (135, 135))
         self.assertEqual(second["rz"], 180)
         self.assertFalse(second["has_handle"])
-        self.assertEqual(second["aperture"], 135.2)
+        self.assertEqual(second["aperture"], 105.2)
 
 
 if __name__ == "__main__":

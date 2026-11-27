@@ -6,14 +6,14 @@
       "x": 350,
       "y": -260,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 3,
       "x": 450,
       "y": -260,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 4,
@@ -34,21 +34,21 @@
       "x": 350,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 9,
       "x": 450,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     },
     {
       "id": 10,
       "x": 550,
       "y": -380,
       "z": 230,
-      "occupied": false
+      "occupied": true
     }
   ],
   "cell_size_mm": 90

@@ -16,7 +16,7 @@ import time
 import cv2
 import numpy as np
 
-EDGE_PX = 5            # pixels taken off the mask edge before reading its depth
+EDGE_PX = 25            # pixels taken off the mask edge before reading its depth
 NEW_FRAME_WAIT = 2.0   # s, longest wait for the camera to deliver the next frame
 
 

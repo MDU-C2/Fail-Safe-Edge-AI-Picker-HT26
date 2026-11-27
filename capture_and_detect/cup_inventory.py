@@ -8,6 +8,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pick_order import set_web_grips
+
 # Preserve the existing Python client's XY limits. These are only a coarse filter;
 # the deployed robot controller must still validate reachability and motion.
 X_MIN, X_MAX = 350, 800
@@ -20,7 +22,7 @@ FLANGE_MIN = (180, -400, 50)
 FLANGE_MAX = (800, 500, 700)
 Z_MIN = 199  # Minimum ordinary flange target, not a path or gripper-clearance guarantee.
 HANDLE_MAX_DIST = 100
-GRIP_MARGIN = 70
+GRIP_MARGIN = 40   # was 70: (d + 70 - 75) / 2 > 25 for every cup, so the gripper always opened fully
 ACCEPTANCE_FLAGS = ("in_cup", "near_handle", "cup_height")
 
 
@@ -179,6 +181,7 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
                    status="available" if reason is None else "blocked")
         cups.append(cup)
     set_grip_geometry(cups, objects)
+    set_web_grips(cups)   # pick_order.py: rotate away from neighbours, opening per cup
     cups.sort(key=lambda cup: tuple(cup["pixel"][axis] if finite_number(cup["pixel"][axis])
                                    else math.inf for axis in ("u", "v")))
     for cup_id, cup in enumerate(cups, 1):
