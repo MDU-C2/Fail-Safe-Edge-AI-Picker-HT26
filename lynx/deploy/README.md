@@ -274,7 +274,7 @@ deployment used saved-scan picking in the native CLI and managed service; its
 historical reports do not validate the new source behavior.
 
 Camera-derived picking height remains off by default. Dual-arm travel TCP height
-is 175 mm (334 mm at the flange); left-only travel remains 250 mm. The existing
+is 250 mm (409 mm at the flange); left-only travel remains 250 mm. The existing
 diameter + 70 mm opening allowance is retained. Shared library speed defaults remain
 250 mm/s travel and 200 mm/s Home; an explicit `--speed` uses the existing caps.
 The fixed pick TCP height is 70 mm. No Mac UI speed override is imported.

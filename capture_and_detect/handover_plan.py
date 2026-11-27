@@ -45,7 +45,7 @@ FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
 RIGHT_RELEASE_POS = 12 
 HANDOVER_BLEND_MM = 10
-SMOOTH_TRAVEL_Z = 175
+SMOOTH_TRAVEL_Z = 250
 SMOOTH_ACCELERATION = 60
 SMOOTH_RAMP = 40
 CARRY_MAX_ACC = 1.5
@@ -280,7 +280,7 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     Source XY, detected yaw/aperture, optional camera height and the selected
     placement remain UI inputs. Only cup approach/descent/lift use detected yaw;
     the fixed handover keeps its tuned pose. Calibration XY is applied once.
-    Dual-arm travel uses TCP Z=175 mm; picking uses 70 mm or, with camera height,
+    Dual-arm travel uses TCP Z=250 mm; picking uses 70 mm or, with camera height,
     max(40, cup base Z + 20), plus the 159 mm gripper length. Left-only motion
     keeps its existing travel height. Placement is already a flange target.
 

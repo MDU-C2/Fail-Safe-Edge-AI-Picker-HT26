@@ -98,14 +98,14 @@ class CameraZPlanTests(unittest.TestCase):
                     if left_only:
                         self.assertEqual(bodies(jobs)["replace_cup"]["z"], descent["z"])
 
-    def test_smooth_dual_arm_travels_at_175_tcp_and_left_only_stays_at_250(self):
+    def test_smooth_dual_arm_and_left_only_travel_at_250_tcp(self):
         for left_only in (False, True):
             for camera_z in (False, True):
                 with self.subTest(left_only=left_only, camera_z=camera_z):
                     jobs = self.plan(left_only=left_only, camera_z=camera_z)
                     result = cup_targets(jobs)
                     for name in ("approach_cup", "lift_cup"):
-                        self.assertEqual(result[name]["z"], 409 if left_only else 334)
+                        self.assertEqual(result[name]["z"], 409)
                     if left_only:
                         self.assertEqual(bodies(jobs)["left_clear"]["z"], 409)
                     self.assertEqual(scene(80)["hover_motion"]["travel_tcp_z_mm"], 250)
@@ -129,7 +129,7 @@ class CameraZPlanTests(unittest.TestCase):
                     self.assertEqual(names[-1], "left_clear")
                     self.assertTrue(all(job["body"]["arm"] == "left" for job in changed))
                 else:
-                    self.assertEqual(names[-2:], ["right_release", "right_clear"])
+                    self.assertEqual(names[-3:], ["right_release", "right_clear", "right_open_after_clear"])
 
     def test_camera_height_does_not_apply_tag_offset_z_twice_or_mutate_cup(self):
         original = copy.deepcopy(self.cup)

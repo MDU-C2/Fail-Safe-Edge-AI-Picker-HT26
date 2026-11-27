@@ -110,7 +110,7 @@ CAMERA_Z_OFFSET = 20       # TCP height above the cup's camera base z
 CAMERA_Z_FLOOR = 40        # never lower than this (30 below the tested PICK_Z): limits a crash into the tray
 USE_CAMERA_Z = True        # default: depth from the camera; --fixed-z turns it off
 DEPTH_FRAMES = 5           # depth = pixel-by-pixel median of this many camera frames (depth_average.py)
-TRAVEL_Z = 250             # left-only TCP travel height; dual-arm uses the shared plan's 175 mm
+TRAVEL_Z = 250             # left-only TCP travel height; dual-arm uses the shared plan's 250 mm
 HANDLE_MAX_DIST = 100      # a CUP HANDLE further than this (mm) from a cup's base centre is not its handle
 GRIP_MARGIN = 70           # left jaws open to the cup base diameter + this (mm)
 LEFT_GAP_CLOSED = 75       # left jaws, measured: 75 mm at position 0, 95 at 10, 125 at 25 (2 mm per position)
