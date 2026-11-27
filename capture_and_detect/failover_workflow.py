@@ -212,6 +212,7 @@ class FailoverRunner:
                                    for p in grid["locations"]],
                     "cell_size_mm": grid.get("cell_size_mm")}
         identity = {"calibration": session.calibration_id, "tag_offset": list(session.tag_offset),
+                    "right_park_pose": session.right_park_pose,
                     "grid": hashlib.sha256(json.dumps(geometry, sort_keys=True,
                         separators=(",", ":"), allow_nan=False).encode()).hexdigest()}
         settings = {"identity": identity, "motion": {"speed": session.speed,
@@ -232,7 +233,7 @@ class FailoverRunner:
                 or set(settings) - {"identity", "motion", "continuous_batch", "device_speeds"}
                 or type(settings.get("continuous_batch", False)) is not bool
                 or settings["identity"] != self.settings()["identity"]):
-            raise SelectionError("Failover worker calibration or placement grid differs from the starting device.")
+            raise SelectionError("Failover worker calibration, placement grid or right-arm parking pose differs from the starting device.")
         motion = settings["motion"]
         validate_motion(motion)
         speed, home_speed = motion["speed"], motion["home_speed"]

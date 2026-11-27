@@ -381,8 +381,16 @@ class ModelAssetTests(unittest.TestCase):
             self.assertEqual(len(manifest["arms"][arm]["links"]), 7)
             for link in manifest["arms"][arm]["links"]:
                 self.assertIn(link, manifest["parts"])
-        for name in ("body", "gripper", *manifest["fingers"]):
-            self.assertIn(name, manifest["parts"])
+        self.assertIn("body", manifest["parts"])
+        for arm in ("left", "right"):
+            gripper = manifest["grippers"][arm]
+            self.assertIn(gripper["body"], manifest["parts"])
+            self.assertGreater(gripper["cup_grip_centre_m"], 0.1)
+            self.assertEqual(len(gripper["fingers"]), 2)
+            for finger in gripper["fingers"]:
+                self.assertIn(finger["part"], manifest["parts"])
+                self.assertEqual(len(finger["matrix"]), 16)
+                self.assertAlmostEqual(sum(value * value for value in finger["axis"]), 1.0)
         for name, part in manifest["parts"].items():
             width = 2 if part["index_type"] == "uint16" else 4
             self.assertLessEqual(part["positions"] + part["vertices"] * 12, size, name)

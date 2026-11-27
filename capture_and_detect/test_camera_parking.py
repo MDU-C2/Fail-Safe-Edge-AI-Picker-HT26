@@ -11,7 +11,7 @@ import pytest
 
 from camera_parking import load_right_park_pose
 from cup_inventory import SelectionError
-from handover_plan import right_via_pose
+from handover_plan import right_via_pose, right_camera_park_pose
 
 
 GATEWAY = "http://offline.invalid:8000"
@@ -225,6 +225,7 @@ def test_factory_loads_sidecar_only_for_enabled_between_cup_checks(factory_rig, 
     from web_app import hardware_factory
     rig = factory_rig
     rig.args.between_cup_check = enabled
+    rig.args.right_park = enabled
     with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
         session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.between_cup_check is enabled
@@ -257,6 +258,7 @@ def test_factory_passes_real_right_via_preset_only_when_checks_enabled(factory_r
     path = save(Path(rig.args.placing_grid).parent, preset_record)
     original = path.read_bytes()
     rig.args.between_cup_check = enabled
+    rig.args.right_park = enabled
     session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.between_cup_check is enabled
     assert session.between_cup_grid_check is enabled
@@ -276,6 +278,113 @@ def test_invalid_enabled_sidecar_prevents_robot_client_creation(factory_rig):
         hardware_factory(rig.args)(rig.controller)
     rig.create_robot.assert_not_called()
     rig.args.between_cup_check = False
+    rig.args.right_park = False
     session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.right_park_pose is None
     assert session.between_cup_grid_check is False
+
+
+def test_right_park_flag_loads_the_sidecar_without_workspace_checks(factory_rig):
+    from web_app import hardware_factory
+    rig = factory_rig
+    rig.args.between_cup_check = False
+    rig.args.right_park = True
+    with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_called_once_with(Path(rig.args.placing_grid).with_suffix(".right-park.json"), GATEWAY)
+    assert session.right_park_pose == POSE
+    assert session.between_cup_check is False          # only the waiting position, no extra checks
+    assert session.between_cup_grid_check is False
+
+
+def test_shipped_outside_tray_waiting_position_loads_and_is_behind_the_grid():
+    import json
+    from camera_parking import load_right_park_pose
+    here = Path(__file__).resolve().parent
+    pose = load_right_park_pose(here / "placing_grid_outside_tray.right-park.json", "http://192.168.125.20:8000/")
+    grid = json.loads((here / "placing_grid_outside_tray.json").read_text())
+    cell = grid["cell_size_mm"]
+    near_edge = min(place["x"] for place in grid["locations"]) - cell / 2
+    assert pose == right_camera_park_pose()
+    assert pose["x"] < near_edge   # behind the grid's near edge, toward the robot
+
+
+def test_waiting_position_is_on_by_default_on_every_platform(factory_rig):
+    import web_app
+    from web_app import hardware_factory
+    assert web_app.argparse.ArgumentParser  # web_app parses --right-park/--no-right-park
+    rig = factory_rig
+    rig.args.between_cup_check = False
+    if hasattr(rig.args, "right_park"):
+        del rig.args.right_park            # not given on the command line
+    with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_called_once()
+    assert session.right_park_pose == POSE
+    assert session.between_cup_check is False
+
+
+@pytest.mark.parametrize("gateway", ["http://192.168.125.20:8000", "http://169.254.219.127:8000/"])
+def test_shipped_parking_accepts_only_explicit_gateway_origins(gateway):
+    path = Path(__file__).with_name("placing_grid_outside_tray.right-park.json")
+    assert load_right_park_pose(path, gateway) == right_camera_park_pose()
+
+
+@pytest.mark.parametrize("gateway", ["http://169.254.219.128:8000", "http://192.168.125.20:8001",
+                                      "https://192.168.125.20:8000", "http://localhost:8000"])
+def test_shipped_parking_rejects_other_gateway_origins(gateway):
+    path = Path(__file__).with_name("placing_grid_outside_tray.right-park.json")
+    with pytest.raises(SelectionError, match="configured gateway"):
+        load_right_park_pose(path, gateway)
+
+
+@pytest.mark.parametrize("aliases", [None, True, {}, "http://alias.invalid:8000", [None],
+    ["http://alias.invalid:8000", "http://alias.invalid:8000"], [GATEWAY],
+    ["http://*.invalid:8000"], ["http://user:secret@alias.invalid:8000"],
+    ["http://alias.invalid:8000/path"], ["http://alias.invalid:8000/"],
+    ["http://alias.invalid:8000?query"], ["http://alias.invalid:8000#fragment"],
+    ["ftp://alias.invalid:8000"], ["http://alias.invalid:65536"],
+    ["http://alias.invalid:0"], ["http://alias.invalid:8000 "]])
+def test_invalid_alias_configuration_is_rejected_even_for_canonical_gateway(tmp_path, record, aliases):
+    record["gateway_aliases"] = aliases
+    with pytest.raises(SelectionError, match="aliases"):
+        load_right_park_pose(save(tmp_path, record), GATEWAY)
+
+
+def test_workspace_checks_require_parking_even_with_disable_flag(factory_rig):
+    from web_app import hardware_factory
+    rig = factory_rig
+    rig.args.between_cup_check, rig.args.right_park = True, False
+    with patch("camera_parking.load_right_park_pose", return_value=POSE) as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_called_once()
+    assert session.right_park_pose == POSE
+    assert session.between_cup_grid_check
+
+
+def test_coordinated_mac_uses_shared_camera_target_without_loading_sidecar(factory_rig, tmp_path):
+    from web_app import hardware_factory
+    rig = factory_rig
+    rig.args.live, rig.args.coordinator_url = True, "http://coordinator.invalid"
+    rig.args.coordinator_token_file, rig.args.state_dir = tmp_path / "token", tmp_path
+    rig.args.between_cup_check, rig.args.right_park = False, False
+    with patch("device_service.read_gateway_token", return_value="offline"), \
+         patch("failover_coordinator.CoordinatorClient"), \
+         patch("failover_workflow.FailoverRunner"), \
+         patch("camera_parking.load_right_park_pose") as loader:
+        session, _ = hardware_factory(rig.args)(rig.controller)
+    loader.assert_not_called()
+    assert session.right_park_pose == right_camera_park_pose()
+    assert session.between_cup_check and session.between_cup_grid_check
+
+
+def test_pi_worker_uses_the_same_camera_target(factory_rig, tmp_path):
+    from contextlib import ExitStack
+    from failover_worker import build_session
+    rig = factory_rig
+    rig.args.state_dir, rig.args.model = tmp_path, tmp_path / "offline-model"
+    rig.args.conf, rig.args.threads, rig.args.depth_frames = 0.5, 3, 5
+    with ExitStack() as resources:
+        session = build_session(rig.args, rig.create_robot.return_value, resources)
+    assert session.right_park_pose == right_camera_park_pose()
+    assert session.between_cup_check and session.between_cup_grid_check

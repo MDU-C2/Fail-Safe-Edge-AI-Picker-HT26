@@ -18,6 +18,17 @@ Kinematics are the IRB 14000 joint frames from the ROS yumi_description URDF
 Chain order per arm: rax_1, rax_2, eax_a, rax_3, rax_4, rax_5, rax_6.
 
     python capture_and_detect/tools/build_yumi_model.py <stl-dir>
+    python capture_and_detect/tools/build_yumi_model.py <stl-dir> --left-finger DownFingerV5.STL
+
+--left-finger: the custom finger on the LEFT gripper (one finger, mm, any CAD
+frame; the other finger is the same part turned 180 degrees about the gripper
+axis). It is bolted exactly where the standard finger goes, by matching its
+screw holes (4 x r 1.2 mm on a 12 x 4 mm rectangle, 2 x r 1.0 mm 18 mm apart).
+The holes fit two ways round; the finger is designed to cross over the centre
+like the standard fingers, with its jaw offset back onto the gripper's centre
+line, so the way round that centres the jaw is used. Each jaw moves out 1 mm per
+gripper position. DownFingerV5: jaws 72 mm across the outside at position 0,
+122 mm at 25 (measured on the robot: 75 and 125, handover_plan.LEFT_GAP_CLOSED).
 """
 
 import argparse
@@ -174,10 +185,81 @@ def split_fingers(gripper):
     return trimesh.util.concatenate(body), tip_neg, tip_pos
 
 
+def screw_holes(mesh):
+    """Mounting-screw holes: (axis index, 2-D centre, radius, depth range) of small
+    cylindrical bores (r 0.8-1.5 mm) in any axis direction."""
+    holes = []
+    for axis in range(3):
+        normal_along = np.abs(mesh.face_normals[:, axis]) < 0.05
+        if not normal_along.any():
+            continue
+        walls = mesh.submesh([np.where(normal_along)[0]], append=True)
+        other = [i for i in range(3) if i != axis]
+        for wall in walls.split(only_watertight=False):
+            points = wall.vertices
+            centre = points[:, other].mean(axis=0)
+            radius = np.linalg.norm(points[:, other] - centre, axis=1)
+            if len(wall.faces) >= 8 and 0.8 <= radius.mean() <= 1.5 and radius.std() < 0.3:
+                holes.append((axis, centre, float(radius.mean()),
+                              (float(points[:, axis].min()), float(points[:, axis].max()))))
+    return holes
+
+
+def finger_mount_pattern(holes):
+    """The 6-hole finger pattern: (axis, pattern centre, face coordinate, face side)."""
+    by_axis = {}
+    for hole in holes:
+        by_axis.setdefault(hole[0], []).append(hole)
+    for axis, group in by_axis.items():
+        if len(group) >= 6:
+            centres = np.array([hole[1] for hole in group])
+            low = min(hole[3][0] for hole in group)
+            high = max(hole[3][1] for hole in group)
+            return axis, centres.mean(axis=0), low, high
+    sys.exit("Could not find the 6 screw holes of the finger mounting pattern.")
+
+
+def mount_left_finger(finger, standard_finger):
+    """Bolt the custom finger where standard_finger (screws on the +x carriage) goes.
+
+    Returns the finger in gripper coordinates and its jaw's outside width across
+    both fingers at position 0 (for the build report)."""
+    axis, centre, low, _ = finger_mount_pattern(screw_holes(finger))
+    g_axis, g_centre, g_face, _ = finger_mount_pattern(screw_holes(standard_finger))
+    if g_axis != 2:
+        sys.exit("The standard finger's screw holes are not along the gripper axis.")
+    other = [i for i in range(3) if i != axis]
+    options = []
+    for flip in (1.0, -1.0):
+        # finger axis -> gripper +z (away from the gripper); the two in-plane
+        # axes -> gripper x and y, both ways round.
+        rotation = np.zeros((3, 3))
+        rotation[2, axis] = 1.0
+        rotation[0, other[0]] = flip
+        rotation[1, other[1]] = 1.0
+        if np.linalg.det(rotation) < 0:   # keep it a rotation, never a mirror
+            rotation[1] *= -1
+        source = np.zeros(3)
+        source[axis], source[other] = low, centre
+        matrix = np.eye(4)
+        matrix[:3, :3] = rotation
+        matrix[:3, 3] = np.array([g_centre[0], g_centre[1], g_face]) - rotation @ source
+        mounted = finger.copy()
+        mounted.apply_transform(matrix)
+        jaw = mounted.vertices[mounted.vertices[:, 2] > mounted.bounds[1][2] - 30]
+        off_centre = abs(jaw[:, 1].min() + jaw[:, 1].max()) / 2
+        options.append((off_centre, mounted, 2 * np.abs(jaw[:, 0]).max()))
+    off_centre, mounted, width = min(options, key=lambda option: option[0])
+    if off_centre > 5:
+        sys.exit(f"No way round puts the custom finger's jaw on the gripper centre line ({off_centre:.1f} mm off).")
+    return mounted, width
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("stl_dir")
     parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--left-finger", type=Path, help="custom finger STL for the left gripper (mm)")
     args = parser.parse_args()
 
     base_path, gripper_path, link_paths = classify(args.stl_dir)
@@ -192,6 +274,33 @@ def main():
     gripper, tip_neg, tip_pos = split_fingers(load(gripper_path))
     parts.update(gripper=("gripper", gripper), finger_tip_neg=("finger", tip_neg),
                  finger_tip_pos=("finger", tip_pos))
+    identity = [float(v) for v in np.eye(4).T.ravel()]
+    turned = [round(float(v), 9) for v in trimesh.transformations.rotation_matrix(np.pi, [0, 0, 1]).T.ravel()]
+    # Standard servo fingers: closed (tips touching) at the exported pose; each
+    # tip moves away from the axis along gripper x, 1 mm per position.
+    standard = {"fingers": [{"part": "finger_tip_neg", "matrix": identity, "axis": [-1, 0, 0]},
+                            {"part": "finger_tip_pos", "matrix": identity, "axis": [1, 0, 0]}],
+                # Cup centre along the gripper axis when held (right arm takes the
+                # cup at the handover: left flange 655, right flange 316 mm).
+                "cup_grip_centre_m": 0.1575}
+    grippers = {"left": standard, "right": standard}
+    left_note = ""
+    if args.left_finger:
+        # The standard finger whose screws are on the +x carriage.
+        carriage = tip_neg if finger_mount_pattern(screw_holes(tip_neg))[1][0] > 0 else tip_pos
+        custom, width = mount_left_finger(load(args.left_finger), carriage)
+        parts["left_finger"] = ("finger", custom)
+        grippers["left"] = {
+            # Same carriages and crossing layout as the standard fingers: the
+            # finger on the +x carriage has its jaw on the -x side and moves -x
+            # when the gripper opens.
+            "fingers": [{"part": "left_finger", "matrix": identity, "axis": [-1, 0, 0]},
+                        {"part": "left_finger", "matrix": turned, "axis": [-1, 0, 0]}],
+            # Pick: flange 229 mm over the table, mug 95 mm tall upside-down.
+            "cup_grip_centre_m": 0.1815,
+            "source": args.left_finger.name,
+        }
+        left_note = f"; left finger {args.left_finger.name}: jaws {width:.0f} mm across the outside at position 0"
 
     blob, manifest_parts = bytearray(), {}
     def append(array):
@@ -228,9 +337,9 @@ def main():
         "arms": {arm: {"joints": [origin(*joint) for joint in [JOINT_1[arm], *JOINTS_2_TO_7]],
                        "links": [f"{arm}_link{i}" for i in range(1, 8)]} for arm in ("right", "left")},
         "gripper_mount": origin(*GRIPPER_MOUNT),
-        # Fingers are closed (tips touching) at the exported pose; opening moves
-        # each tip away from the axis along gripper x.
-        "fingers": {"finger_tip_neg": [-1, 0, 0], "finger_tip_pos": [1, 0, 0]},
+        # Per arm: gripper body, fingers (fixed matrix in the gripper frame, then
+        # moved along "axis" by 1 mm per gripper position) and where a held cup sits.
+        "grippers": {arm: {"body": "gripper", **spec} for arm, spec in grippers.items()},
         "parts": manifest_parts,
     }
     args.out.mkdir(parents=True, exist_ok=True)
@@ -238,7 +347,7 @@ def main():
     (args.out / "yumi_model.json").write_text(json.dumps(manifest, indent=1) + "\n")
     triangles = sum(p["index_count"] // 3 for p in manifest_parts.values())
     print(f"Wrote {len(manifest_parts)} parts, {triangles} triangles, {len(blob) / 1e6:.1f} MB; "
-          f"worst joint-to-mesh distance {worst:.1f} mm")
+          f"worst joint-to-mesh distance {worst:.1f} mm{left_note}")
 
 
 if __name__ == "__main__":

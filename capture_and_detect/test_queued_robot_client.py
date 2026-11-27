@@ -189,7 +189,7 @@ def test_queued_handover_preserves_parallel_separation_and_post_turnover_departu
         assert all(step["type"] != "home" for step in queue)
     if settings.get("right_park_pose"):
         right_names = [step["name"] for step in queue if step["body"]["arm"] == "right"]
-        assert right_names[-3:] == ["right_release", "right_clear", "right_park"]
+        assert right_names[-4:] == ["right_release", "right_clear", "right_open_after_clear", "right_park"]
 
     # Queue scheduling never changes the tuned motion or selected speed.
     bodies = {job["name"]: {key: value for key, value in job["body"].items() if key != "wait"}

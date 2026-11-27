@@ -3,6 +3,7 @@
 import json
 import math
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cup_inventory import SelectionError
 from handover_plan import normalize_right_park_pose, right_via_pose
@@ -28,10 +29,34 @@ def _finite_float(value):
     return number
 
 
+def _gateway_aliases(record):
+    """Validate explicit alternate origins; never infer aliases from a subnet."""
+    aliases = record.get("gateway_aliases", [])
+    if (not isinstance(aliases, list) or len(aliases) > 8
+            or any(not isinstance(alias, str) for alias in aliases)):
+        raise SelectionError("Right-arm parking gateway aliases must be an explicit list of gateway origins.")
+    for alias in aliases:
+        try:
+            origin = urlsplit(alias)
+            valid = (origin.scheme in {"http", "https"} and origin.hostname
+                     and not any(c.isspace() or c in "*\\" for c in alias)
+                     and origin.username is None and origin.password is None
+                     and not origin.path and not origin.query and not origin.fragment
+                     and origin.port != 0 and alias == origin.scheme + "://" + origin.netloc)
+        except ValueError:
+            valid = False
+        if not valid:
+            raise SelectionError("Right-arm parking gateway aliases must be exact HTTP(S) origins without credentials or paths.")
+    if len(set(aliases)) != len(aliases) or record.get("gateway") in aliases:
+        raise SelectionError("Right-arm parking gateway aliases must be distinct from each other and the configured gateway.")
+    return aliases
+
+
 def load_right_park_pose(path, gateway):
     """Return a copied flange pose, or None when no sidecar has been saved.
 
-    A saved pose belongs to one gateway and to the controller's right-arm
+    A saved pose belongs to one gateway (including explicitly listed alternate
+    gateway origins) and to the controller's right-arm
     tool0/wobj0 Wobj frame. The right_via preset uses the normal workflow's
     existing upright waiting target in that frame. Reading either record never
     verifies reachability or dispatches a command; ordinary endpoint limits apply.
@@ -51,8 +76,10 @@ def load_right_park_pose(path, gateway):
         raise SelectionError("Right-arm parking file must contain an object.")
     if type(record.get("schema_version")) is not int or record["schema_version"] != 1:
         raise SelectionError("Right-arm parking file requires schema_version 1.")
-    if (not isinstance(gateway, str) or not gateway.rstrip("/")
-            or record.get("gateway") != gateway.rstrip("/")):
+    aliases = _gateway_aliases(record)
+    if (not isinstance(record.get("gateway"), str) or not record["gateway"]
+            or not isinstance(gateway, str) or not gateway.rstrip("/")
+            or gateway.rstrip("/") not in [record["gateway"], *aliases]):
         raise SelectionError("Right-arm parking file does not match the configured gateway.")
     if "preset" in record:
         if record["preset"] != "right_via":

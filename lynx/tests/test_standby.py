@@ -10,7 +10,7 @@ import pytest
 
 from cup_commands import CupSession
 from cup_inventory import SelectionError
-from handover_plan import right_camera_park_jobs, right_via_pose
+from handover_plan import right_camera_park_jobs, right_camera_park_pose
 from lynx import standby
 from lynx.picker import arguments
 from lynx.runtime_lock import NativeRuntimeLock
@@ -240,7 +240,7 @@ def test_real_finite_session_waits_for_grid_and_homes_only_after_workspace_empty
         return observed_scene(grid, sequence, observed_sources, states), 100 + sequence
     session = CupSession(capture, Mock(), robot, "cal-1", placing_grid=grid,
                          recovery=RecoveryJournal(tmp_path / "journal.json"), between_cup_check=True,
-                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_via_pose())
+                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_camera_park_pose())
     waits = []
     def wait():
         assert not robot.jobs, "Initial full-grid waiting should keep the robot stationary"
@@ -277,7 +277,7 @@ def test_initial_empty_workspace_homes_once_and_exits_without_watching_for_more(
     capture = Mock(return_value=(initial, 100))
     session = CupSession(capture, Mock(), robot, "cal-1", placing_grid=grid,
                          recovery=RecoveryJournal(tmp_path / "journal.json"), between_cup_check=True,
-                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_via_pose())
+                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_camera_park_pose())
     standby.run_standby(session, output=Mock(), sleep=Mock())
     capture.assert_called_once_with("scan")
     assert [job["endpoint"] for job in robot.jobs] == [RobotClient.HOME_ENDPOINT] * 2
@@ -359,7 +359,7 @@ def test_cli_uses_tertiary_token_queue_client_finite_refresh_and_closes_worker(l
     assert rig.robots[0].api == "http://127.0.0.1:8000/api/v1"
     settings = rig.sessions[0].kwargs
     assert settings["between_cup_check"] is True and settings["between_cup_grid_check"] is True
-    assert settings["continuous_batch"] is False and settings["right_park_pose"] == right_via_pose()
+    assert settings["continuous_batch"] is False and settings["right_park_pose"] == right_camera_park_pose()
     rig.standby.assert_called_once()
     assert len(rig.workers) == 1 and rig.workers[0].closed
     with NativeRuntimeLock(rig.state):
@@ -392,7 +392,7 @@ def test_concurrent_stop_during_inherited_parking_keeps_real_session_recovery(tm
     capture = Mock()
     session = CupSession(capture, Mock(), robot, "cal-1", placing_grid=grid,
                          recovery=RecoveryJournal(tmp_path / "journal.json"), between_cup_check=True,
-                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_via_pose())
+                         between_cup_grid_check=True, continuous_batch=False, right_park_pose=right_camera_park_pose())
     robot.after_move = lambda _count: session.latch_stop()
     with pytest.raises((SelectionError, RobotCommandError), match="[Ss]top"):
         standby.run_standby(session, output=Mock(), sleep=Mock())

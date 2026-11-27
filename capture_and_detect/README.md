@@ -128,6 +128,16 @@ updated. The read-only telemetry connection uses sequential GET requests and
 backs off on errors. Polling and animation stop when the tab/page is hidden.
 No gateway or RAPID update is needed.
 
+**Full screen** opens the scene in the browser fullscreen view, or fills the
+window on browsers that do not allow it. The status badge stays visible; Escape
+or **Exit full screen** returns to the dashboard.
+
+The left gripper now shows the custom `DownFingerV5.STL` cup fingers; the right
+gripper retains its standard fingers. Each arm uses its own finger mounting and
+cup-holding centre. The assets include these meshes, so no build tools are needed
+to run the dashboard. For a rebuild, pass `--left-finger DownFingerV5.STL` to
+`tools/build_yumi_model.py`.
+
 The bundled model and three.js module are served locally from `web_static/3d/`.
 To rebuild the model from RobotStudio STL exports, see `tools/build_yumi_model.py`;
 the three.js bundle entry and rebuild command are in `tools/three-bundle-entry.js`.
@@ -868,7 +878,7 @@ movement to finish. The review and progress include this waiting-position move o
 configured. Home after every cup remains a separate, explicitly enabled mode;
 the continuous run's Home on an empty workspace does not enable that setting.
 
-The Mac workspace-check mode reads an optional `.right-park.json` sidecar next to
+The live dashboard reads an optional `.right-park.json` sidecar next to
 the selected grid, for example `placing_grid_outside_tray.right-park.json`. The
 `right_via` preset uses the existing upright right-arm waiting position: the
 shared `R_VIA` coordinates and `RIGHT_UP` orientation from the handover plan.
@@ -888,9 +898,23 @@ Existing explicit position files remain supported as an alternative: omit
 include `controller_pose` metadata for `arm: "right"`, `tool: "tool0"`,
 `wobj: "wobj0"` and `coordinate: "Wobj"`. The configured gateway and applicable
 position/frame validation still apply. A missing sidecar keeps the existing
-finish above the placement destination. Only Mac workspace-check mode loads this
-configuration; Pi/Lynx, direct non-macOS dashboards and terminal workflows retain
-their existing movement defaults.
+finish above the placement destination. The dashboard loads it on every platform
+by default; `--no-right-park` disables it when workspace checks do not require it.
+The original `picker_workflow.py` terminal mode keeps its existing movement
+defaults. The native Lynx CLI uses the shared camera target. The shipped outside-tray
+sidecar parks at x 200, y -380, z 250 with the gripper upright, behind the grid's
+near edge at x 305. It keeps the canonical gateway `http://192.168.125.20:8000`
+and explicitly allows the same gateway's alternate origin `http://169.254.219.127:8000`.
+Other origins are rejected; aliases must be listed exactly in `gateway_aliases`.
+
+Coordinated Mac/Pi/Lynx runs use the shared `right_camera_park_pose()` target,
+separate from the unchanged `R_VIA` handover approach. The complete cup queue
+releases the cup, lifts clear, opens fully and then parks before any new capture.
+Parking uses the placement speed capped by the overall speed. The shared run
+identity includes this parking pose: older or differently configured workers
+cannot take over a new run silently. Update all armed workers to the same version
+before starting the next coordinated batch. Do not update or restart a worker
+while an admitted batch is active.
 
 Any failure stops the batch before another cup is dispatched. Successful picks
 leave any remaining cups available for the next request.

@@ -3,6 +3,7 @@
 import unittest
 
 from handover_plan import handover_jobs, left_only_jobs
+from robot_client import RobotClient
 
 
 class HandoverDependencyTests(unittest.TestCase):
@@ -27,6 +28,8 @@ class HandoverDependencyTests(unittest.TestCase):
 
     def test_every_job_has_valid_acyclic_dependencies_and_own_arm_predecessor(self):
         self.assertEqual(len(self.jobs), len(self.by_name))
+        self.assertEqual(RobotClient._job_dependencies(self.jobs),
+                         {job["name"]: set(job["after"]) for job in self.jobs})
         previous = {}
         for job in self.jobs:
             name, arm = job["name"], job["body"]["arm"]
@@ -83,8 +86,9 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertIn("right_place", self.ancestors("right_release"))
         self.assertIn("right_release", self.ancestors("right_clear"))
         self.assertEqual(self.by_name["right_clear"]["after"], ["right_release"])
+        self.assertEqual(self.by_name["right_open_after_clear"]["after"], ["right_clear"])
         self.assertEqual(self.ready(set(self.by_name)), set())
-        self.assertEqual(self.jobs[-1]["name"], "right_clear")
+        self.assertEqual(self.jobs[-1]["name"], "right_open_after_clear")
         self.assertNotIn("right_close", self.by_name)
 
     def test_optional_homes_start_and_finish_with_confirmed_clearances(self):
@@ -98,7 +102,7 @@ class HandoverDependencyTests(unittest.TestCase):
         self.assertNotIn("left_park", self.by_name)
         retreated = self.ancestors("right_retreat") | {"right_retreat"}
         self.assertEqual(self.ready(retreated), {"left_close_return", "right_place"})
-        self.assertEqual(self.by_name["right_home"]["after"], ["right_clear"])
+        self.assertEqual(self.by_name["right_home"]["after"], ["right_open_after_clear"])
         self.assertNotIn("right_home_raise", self.by_name)
         self.assertNotIn("left_home", self.ancestors("right_home"))
         self.assertNotIn("right_home", self.ancestors("left_home"))
