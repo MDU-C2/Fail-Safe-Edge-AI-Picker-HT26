@@ -222,7 +222,7 @@ run is needed for the grid. A source-only configuration retains the earlier
 behavior: cached placement geometry excludes grid cups, while destination
 evidence remains from the manual scan and grid occupancy is not reassessed.
 
-Dual-arm travel TCP height is **175 mm**; left-only travel remains **250 mm**.
+Dual-arm and left-only travel TCP heights are **250 mm**.
 Requested gripper opening remains **diameter + 70 mm**. `--camera-z` is disabled by default; when enabled it uses
 `max(40, round(cup_base_z + 20, 1))` mm TCP for picking and replacing. Otherwise
 pick TCP height is 70 mm. No movement occurs merely by launching the UI.
@@ -991,7 +991,7 @@ The detected base Z is checked. Without `--camera-z`, heights are fixed:
 
 | Position | Gripper TCP Z | Flange Z sent to RWS |
 | --- | ---: | ---: |
-| Above selected cup, smooth dual-arm | 175 mm | 334 mm |
+| Above selected cup, smooth dual-arm | 250 mm | 409 mm |
 | Above selected cup, hover / left-only | 250 mm | 409 mm |
 | Pick selected cup | 70 mm | 229 mm |
 

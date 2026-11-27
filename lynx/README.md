@@ -241,7 +241,7 @@ batch does not send the arms Home between cups. Defaults are:
 
 | Setting | Value |
 | --- | --- |
-| Dual-arm travel TCP height | 175 mm; the 159 mm gripper offset makes the flange target 334 mm |
+| Dual-arm travel TCP height | 250 mm; the 159 mm gripper offset makes the flange target 409 mm |
 | Left-only travel TCP height | 250 mm; flange target 409 mm |
 | Fixed picking TCP height | 70 mm |
 | Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
