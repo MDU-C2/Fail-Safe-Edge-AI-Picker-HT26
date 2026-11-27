@@ -90,6 +90,7 @@ void MockCameraProducer::start() {
         {0.0, 500.0, 240.0},
         {0.0, 0.0, 1.0},
     }};
+    intrinsics.distortion.assign(14, 0.0);
 
     camera_.set_intrinsics(intrinsics);
     camera_.set_connected(true);

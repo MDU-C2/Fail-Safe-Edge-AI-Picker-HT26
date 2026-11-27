@@ -44,6 +44,10 @@ param(
     # Seconds without the gateway's RWS heartbeat before an idle arm goes
     # home on its own; a gateway start also sends the arms home. 0 = off.
     [string]$HeartbeatTimeout = "5",
+    # Undistort CAM_A on the camera, so /camera/rgb and /camera/depth are
+    # pinhole images and /camera/intrinsics their K ("false" = raw frames).
+    [ValidateSet("true", "false")]
+    [string]$Undistort = "true",
     [int]$Port = 8000,
     [int]$ServePort = 8099,
     [switch]$Autostart,
@@ -168,6 +172,7 @@ $config = @(
     "environment GATEWAY_RWS_SAFE_ZONE_MIN $SafeZoneMin",
     "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
     "environment GATEWAY_RWS_HEARTBEAT_TIMEOUT $HeartbeatTimeout",
+    "environment GATEWAY_CAMERA_UNDISTORT $Undistort",
     # Empty (not "no environment", which may fail silently once it is
     # gone): an empty value makes the gateway use the clients file.
     "environment GATEWAY_AUTH_CLIENTS",
@@ -232,4 +237,15 @@ while ($true) {
 }
 
 $reply | ConvertTo-Json -Depth 4
+
+#
+# A label move that does not take effect leaves the old image running
+# with no error from the Lynx (seen 2026-11-26, with its internal flash
+# full), so check the version that actually started.
+#
+if ($reply.version -ne $Version) {
+    Write-Warning "The Lynx runs $($reply.version), not ${Version}: the label $Label did not move (show app-hosting images)"
+    exit 1
+}
+
 Write-Host "Gateway $Version running on the Lynx: http://${Lynx}:$Port"

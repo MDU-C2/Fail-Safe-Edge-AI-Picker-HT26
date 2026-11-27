@@ -29,6 +29,7 @@ std::unique_ptr<CameraProducer> create_camera_producer(
     config.fps = settings.camera_fps;
     config.width = static_cast<int>(settings.camera_rgb_width);
     config.height = static_cast<int>(settings.camera_rgb_height);
+    config.undistort = settings.camera_undistort;
 
     auto connector = create_depthai_connector(config);
 

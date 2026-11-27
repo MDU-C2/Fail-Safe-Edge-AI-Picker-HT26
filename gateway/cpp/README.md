@@ -116,13 +116,17 @@ docker run --rm -p 8000:8000 -v $PWD/gateway/auth_clients.json:/auth_clients.jso
 | `src/rws/` | `rws/`: client, `Controller` interface (faked in tests), motion handshake, RAPID, routes; `queue.*` and `heartbeat.*` (C++ only, see "Motion queue" and "Gateway watchdog") |
 | `src/http/validate.*` | Pydantic's coercions and FastAPI's 422 for request bodies, query and path |
 | `src/health.cpp` | `health.py` |
-| `openapi/openapi.json` | FastAPI's schema, exported by `tools/export_openapi.py` and served as is |
+| `openapi/openapi.json` | the API schema, maintained by hand, embedded and served as is |
 | `tests/` | GoogleTest; ports of the Python unit tests plus new ones |
-| `tools/` | schema export, memory measurement, depthai RAM probe, `deploy_lynx.ps1` |
+| `tools/` | memory measurement, depthai RAM probe, `deploy_lynx.ps1` |
 | `LYNX.md` | deploying to the Westermo Lynx |
 
-Change a Python route or model, then re-export the schema:
-`python gateway/cpp/tools/export_openapi.py` (Windows venv is fine).
+`openapi/openapi.json` is the source of truth for the schema: add or
+change a route there along with the code. It began as FastAPI's
+export of the Python gateway; that export was retired on 2026-11-26
+(the Python gateway is legacy and lacks the C++-only routes). The
+unit test `OpenApi.SchemaMatchesTheRoutes` (`tests/test_openapi.cpp`)
+fails when the registered routes and the schema's paths differ.
 
 ## Dependencies
 
@@ -162,7 +166,7 @@ Pinned in `cmake/Dependencies.cmake`, fetched into the build tree.
 - **Same wire format.** `{"detail": ...}` errors with the same
   texts, 422 bodies in FastAPI's shape, datetimes as
   `2026-11-09T12:00:00.123456Z` (always six digits), and
-  `/openapi.json` from the Python app. `/health` adds
+  `/openapi.json` in FastAPI's shape. `/health` adds
   `"implementation": "cpp"`; there is no `/docs`.
 
 ## Motion queue (C++ only)
@@ -172,8 +176,7 @@ through it: each RWS job finishes in RAPID, but nobody sends the
 next. With the queue the client hands the gateway the whole
 sequence and the gateway runs it to the end, whoever holds the
 lease meanwhile. `src/rws/queue.*`, routes in
-`src/rws/motion_routes.cpp`; not in the Python gateway, so not in
-`/openapi.json`.
+`src/rws/motion_routes.cpp`; not in the Python gateway.
 
 - `POST /robot/rws/queue` (`robot.control` + lease) –
   `{"steps": [{"name", "type": "move"|"path"|"home"|"gripper",

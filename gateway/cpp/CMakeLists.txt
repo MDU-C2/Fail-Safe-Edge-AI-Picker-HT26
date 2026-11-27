@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 
 project(
     gateway_cpp
-    VERSION 0.7.1
+    VERSION 0.8.1
     LANGUAGES C CXX
 )
 
@@ -30,8 +30,8 @@ include(cmake/Embed.cmake)
 # ================================================================
 
 #
-# The API contract, exported from the Python gateway with
-# tools/export_openapi.py and served as is at /openapi.json.
+# The API contract, maintained by hand (tests/test_openapi.cpp checks
+# it against the routes) and served as is at /openapi.json.
 #
 gateway_embed_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/openapi/openapi.json
