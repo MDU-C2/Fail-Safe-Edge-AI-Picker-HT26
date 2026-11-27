@@ -76,7 +76,9 @@ class Replay:
         np.asarray(depth, dtype=np.dtype(dtype).newbyteorder("<")).tofile(self.depth_path)
         cal = vision.calibration
         config = {"calibration": {"scale": cal.scale, "R": np.asarray(cal.R).tolist(),
-                                  "t": np.asarray(cal.t).tolist(), "tag_offset": list(cal.offset)},
+                                  "t": np.asarray(cal.t).tolist(), "tag_offset": list(cal.offset),
+                                  "depth_scale": getattr(cal, "depth_scale", 1.),
+                                  "depth_offset": getattr(cal, "depth_offset", 0.)},
                   "intrinsics": vision.K, "grid_snapshot": {"locations": locations},
                   "cell_size_mm": vision.cell_size, "table_z_mm": vision.table_z,
                   "table_reference": vision.table_reference}
@@ -151,6 +153,22 @@ def synthetic(replay):
                  "segmentation": encode_mask(np.ones(depth.shape, bool))}
     replay.assess(vision, depth, [oversized], locations, None, "oversized-mask-fails-closed",
                   expected_error="resource limit")
+    corrected_calibration = types.SimpleNamespace(scale=1., R=np.diag([1., -1., -1.]),
+        t=np.array([0., 0., 600.]), offset=(0., 0., 0.), depth_scale=.5, depth_offset=200.)
+    corrected_vision = PlacementVision(corrected_calibration, K)
+    raw = np.full((480, 640), 800, np.uint16)
+    mask = np.zeros(raw.shape, bool)
+    mask[220:260, 300:340] = True
+    cup = {"class": "CUP", "confidence": .9, "bbox_xyxy": [300, 220, 340, 260],
+           "segmentation": encode_mask(mask)}
+    raised = raw.copy()
+    raised[mask] = 640
+    missing = raw.copy()
+    missing[235:245, 315:325] = 0
+    for label, sample, objects in [("clear", raw, []), ("cup", raised, [cup]),
+                                    ("other-object-depth", raised, []), ("missing-depth", missing, [])]:
+        expected = original_assess(corrected_vision, sample, objects, locations)
+        replay.assess(corrected_vision, sample, objects, locations, expected, "handeye-corrected-" + label)
     return result.wasSuccessful()
 
 

@@ -69,7 +69,8 @@ def observe_callbacks(rig, monkeypatch, *, fault=None):
             journal = json.loads(rig.session.recovery.path.read_text())
             context = journal["context"]
             names = [job["name"] for job in pending["jobs"]]
-            assert len(names) == 19
+            assert len(names) == 20
+            assert names[-4:] == ["right_release", "right_clear", "right_open_after_clear", "right_park"]
             assert list(context["execution"]["pending_jobs"]) == names
             assert context["execution"]["pending_steps"] == names
             assert context["execution"]["completed_steps"] == []
@@ -93,7 +94,7 @@ def observe_callbacks(rig, monkeypatch, *, fault=None):
     return state
 
 
-@pytest.mark.parametrize("aggregate,callback_writes", [(False, 19), (True, 1)])
+@pytest.mark.parametrize("aggregate,callback_writes", [(False, 20), (True, 1)])
 def test_whole_cup_persistence_keeps_identical_plan_and_complete_journal(
         rig, monkeypatch, aggregate, callback_writes):
     rig.robot.supports_queue_callbacks = aggregate
@@ -107,7 +108,8 @@ def test_whole_cup_persistence_keeps_identical_plan_and_complete_journal(
     }
     pending = observed.completed["pending"]
     names = [job["name"] for job in pending["jobs"]]
-    assert len(names) == 19 and names[-1] == "right_park"
+    assert len(names) == 20
+    assert names[-4:] == ["right_release", "right_clear", "right_open_after_clear", "right_park"]
     assert pending["jobs"] == observed.dispatched["jobs"]
     assert rig.gateway.submissions[0]["steps"] == plan_to_queue_steps(
         pending["jobs"], name_prefix=f"q{pending['submission_id']}_")
@@ -116,10 +118,10 @@ def test_whole_cup_persistence_keeps_identical_plan_and_complete_journal(
     execution = observed.completed["recovery"]["context"]["execution"]
     assert execution["pending_jobs"] == {} and execution["pending_steps"] == []
     assert {job["name"] for job in execution["completed_steps"]} == set(names)
-    assert len(execution["completed_steps"]) == 19
+    assert len(execution["completed_steps"]) == 20
     assert rig.coordinator.state()["run"]["phase"] == "complete"
     assert rig.coordinator.state()["run"]["confirmed_homes"] == ["right", "left"]
-    assert [len(item["steps"]) for item in rig.gateway.submissions] == [19, 1, 1]
+    assert [len(item["steps"]) for item in rig.gateway.submissions] == [20, 1, 1]
     assert rig.capture.call_count == 2
     assert not rig.session.recovery.required() and not rig.session.motion_uncertain
     assert not any(method == "DELETE" or path == "/robot/rapid/stop"
@@ -143,7 +145,7 @@ def test_aggregate_persistence_failure_or_stop_preserves_recovery_and_prevents_n
     pending = rig.robot._read_pending(rig.runner.pending_path)
     assert pending["state"] == ("not_submitted" if phase == "before" else "done")
     assert pending["callback_completed"] == [] and not pending["callbacks_applied"]
-    assert len(pending["callback_attempted"]) == (0 if phase == "before" else 19)
+    assert len(pending["callback_attempted"]) == (0 if phase == "before" else 20)
     context = json.loads(rig.session.recovery.path.read_text())["context"]
     assert context["execution"]["state"] == "interrupted"
     assert context["failover"]["submission_id"] == pending["submission_id"]

@@ -497,3 +497,20 @@ html { background:#f4f6f3; color:#243d35; }
 .pick-height-option strong{font-size:12px;margin-bottom:5px}.pick-height-option span{font-size:11px;color:#71806d}
 .pick-height-option[aria-pressed="true"]{background:#e8f2e7;border-color:#54816a;box-shadow:inset 0 0 0 1px #54816a}
 .pick-height-option:disabled{cursor:default;opacity:.65}.pick-height-option:focus-visible{outline:2px solid #2f6454;outline-offset:3px}
+/* A second computer keeps all views while the original picker owns control. */
+.monitor-banner { margin: 0 0 20px; padding: 16px 20px; border: 1px solid #bdd6c9; border-radius: 14px; background: #e9f3ed; color: #214c38; }
+.monitor-banner strong { font-size: 11px; letter-spacing: .12em; }
+.monitor-banner p { margin: 6px 0 0; font-size: 13px; line-height: 1.5; }
+.monitor-banner[hidden] { display: none; }
+
+/* 3D view full screen: the browser's own full screen where allowed, otherwise
+   the view fills the window (e.g. iPhone Safari, which only allows video). */
+.scene-overlay{position:absolute;top:12px;left:12px;right:12px;z-index:2;display:none;justify-content:space-between;align-items:center;gap:10px;pointer-events:none}
+.scene-overlay>*{pointer-events:auto}
+.scene-canvas-host:fullscreen .scene-overlay,.scene-panel.scene-expanded .scene-overlay{display:flex}
+.scene-exit-full{font:inherit;font-size:12px;font-weight:600;padding:8px 13px;border-radius:7px;border:1px solid #cfd5c9;background:rgba(255,255,255,.92);color:#2f4a3c;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.scene-exit-full:hover{background:#fff}
+.scene-exit-full:focus-visible{outline:2px solid #2f6454;outline-offset:2px}
+.scene-canvas-host:fullscreen{width:100vw;height:100vh;margin:0;border:0;border-radius:0}
+.scene-panel.scene-expanded .scene-canvas-host{position:fixed;inset:0;z-index:1000;margin:0;width:100vw;height:100vh;height:100dvh;min-height:0;border:0;border-radius:0}
+body.scene-expanded-open{overflow:hidden}

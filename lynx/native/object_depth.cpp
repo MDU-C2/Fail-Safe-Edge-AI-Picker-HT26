@@ -1,4 +1,5 @@
 #include "object_depth.hpp"
+#include "depth_calibration.hpp"
 
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -66,6 +67,7 @@ json measurement(const std::optional<double>& value) {
 
 struct CameraGeometry {
     double fx, fy, cx, cy;
+    DepthCalibration depth_calibration;
     cv::Matx33d scaled_rotation;
     cv::Vec3d translation;
     cv::Vec3d robot(double u, double v, double depth) const {
@@ -83,6 +85,7 @@ CameraGeometry geometry(const json& config, int width, int height) {
     const auto& intr = config.at("intrinsics");
     const auto& cal = config.at("calibration");
     CameraGeometry result{};
+    result.depth_calibration = DepthCalibration::from_json(cal);
     result.fx = number(intr.at("fx")); result.fy = number(intr.at("fy"));
     result.cx = number(intr.at("cx")); result.cy = number(intr.at("cy"));
     if (result.fx <= 0 || result.fy <= 0) invalid("Focal lengths must be positive");
@@ -210,13 +213,18 @@ json segmentation(const MaskGeometry& mask) {
 
 json describe(const std::string& name, double confidence, const MaskGeometry& mask,
               const std::vector<cv::Mat>& depths, const CameraGeometry& camera) {
-    auto value = values_at(depths.back(), mask.bounds, mask.inner);
+    auto calibrated_median = [&](const cv::Mat& depth) -> std::optional<double> {
+        const auto raw = values_at(depth, mask.bounds, mask.inner);
+        const double value = raw ? camera.depth_calibration.correct(*raw) : 0.;
+        return value > 0. ? std::optional<double>(value) : std::nullopt;
+    };
+    auto value = calibrated_median(depths.back());
     json frames = json::array(), robot_frames = json::array();
     if (depths.size() > 1) {
         double sum = 0;
         std::size_t count = 0;
         for (const auto& depth : depths) {
-            const auto current = values_at(depth, mask.bounds, mask.inner);
+            const auto current = calibrated_median(depth);
             frames.push_back(measurement(current));
             if (current) {
                 // V4 averages the logged per-frame mask medians.

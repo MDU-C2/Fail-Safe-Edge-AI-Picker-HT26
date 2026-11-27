@@ -131,6 +131,18 @@ class DetectionStorageTests(unittest.TestCase):
         self.assertEqual(result["calibration_sha256"], self.calibration.digest)
         self.assertEqual(self.camera.capture.call_count, 1)
 
+    def test_handeye_depth_corrects_saved_coordinates_but_keeps_original_png(self):
+        raw_calibration = json.loads(self.calibration_path.read_text())
+        raw_calibration.update(depth_scale=.5, depth_offset=100., t=[0., 0., -450.], tag_offset=[0., 0., 0.])
+        self.calibration_path.write_text(json.dumps(raw_calibration))
+        self.detector.calibration = app.Calibration(self.calibration_path)
+        scan, _ = self.service.capture("scan")
+        cup = scan["cups"][0]
+        self.assertEqual(cup["camera_mm"], {"x": 318.8, "y": 62.5, "z": 500.})
+        self.assertEqual((cup["x"], cup["y"], cup["z"]), (318.8, 62.5, 50.))
+        np.testing.assert_array_equal(cv2.imread(scan["images"]["depth"], cv2.IMREAD_UNCHANGED), self.depth)
+        self.assertTrue(np.all(self.depth == 800))
+
     def test_capture_uses_startup_intrinsics_without_a_change_gate(self):
         self.camera.intrinsics.return_value = dict(self.K, fx=900)
         result, _ = self.service.capture("scan")

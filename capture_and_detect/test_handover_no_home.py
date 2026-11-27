@@ -85,7 +85,7 @@ class NoHomePlanTests(unittest.TestCase):
         left = [job for job in jobs if job["body"]["arm"] == "left"]
         right = [job for job in jobs if job["body"]["arm"] == "right"]
         self.assertEqual(left[-1]["name"], "left_park")
-        self.assertEqual(right[-1]["name"], "right_clear")
+        self.assertEqual(right[-1]["name"], "right_open_after_clear")
         for lane, xyz, action in ((left, (350, 400, 690), "open"),
                                   (right, (420, -200, 310), "open")):
             last_path = [job for job in lane if job["endpoint"].endswith("/path")][-1]

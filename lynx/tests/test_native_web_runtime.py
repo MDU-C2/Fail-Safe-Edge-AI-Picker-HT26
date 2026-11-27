@@ -11,7 +11,7 @@ import pytest
 
 from lynx.runtime import native_web_factory
 from lynx.tests.test_cli_capture import capture_rig
-from handover_plan import right_via_pose
+from handover_plan import right_camera_park_pose
 
 
 class Controller:
@@ -104,7 +104,7 @@ def test_default_factory_enables_finite_refresh_with_native_worker_exclusion(nat
     assert session.motion_settings()["home_after_cup"] is False
     assert session.between_cup_check is True and session.between_cup_grid_check is True
     assert session.motion_settings()["continuous_batch"] is False
-    assert session.right_park_pose == right_via_pose()
+    assert session.right_park_pose == right_camera_park_pose()
     assert session.robot.dry_run
     assert session.placing_grid.path == rig.grid.path
     assert session.tag_offset == rig.calibration.offset

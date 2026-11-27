@@ -36,19 +36,24 @@ class HandoverPlanTests(unittest.TestCase):
                               ("right_retreat", "left_park"),
                               ("left_clear", "right_retreat"), ("right_lower", "right_retreat"),
                               ("right_retreat", "right_place"), ("right_place", "right_release"),
-                              ("right_release", "right_clear")):
+                              ("right_release", "right_clear"),
+                              ("right_clear", "right_open_after_clear")):
             with self.subTest(first=first, second=second):
                 self.assertIn(first, by_name[second]["after"])
         self.assertTrue(all(job["body"]["wait"] is True for job in jobs))
         for name, arm, action in (("right_open_start", "right", "open"),
                                   ("left_open", "left", "open"), ("grip_cup", "left", "grip"),
                                   ("right_open", "right", "open"), ("right_grip", "right", "grip"),
-                                  ("left_release", "left", "open"), ("right_release", "right", "open")):
+                                  ("left_release", "left", "open"),
+                                  ("right_open_after_clear", "right", "open")):
             self.assertEqual(by_name[name]["endpoint"], "/robot/rws/gripper")
             self.assertEqual(by_name[name]["body"], {"arm": arm, "action": action, "wait": True})
+        self.assertEqual(by_name["right_release"]["endpoint"], "/robot/rws/gripper")
+        self.assertEqual(by_name["right_release"]["body"],
+                         {"arm": "right", "action": "move", "position": 12, "wait": True})
         self.assertEqual([job["name"] for job in jobs if job["body"].get("action") == "grip"],
                          ["grip_cup", "right_grip"])
-        self.assertEqual(jobs[-1]["name"], "right_clear")
+        self.assertEqual(jobs[-1]["name"], "right_open_after_clear")
 
     def test_smooth_branch_geometry_and_local_linear_segments(self):
         # Literal flange targets from the upstream blended approach/parking

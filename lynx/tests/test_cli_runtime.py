@@ -71,7 +71,8 @@ def send(i,value):
  data=json.dumps(value).encode()
  sys.stdout.buffer.write(struct.pack('<4sIIII',b'LNXR',i,0,len(data),0)+data)
  sys.stdout.buffer.flush()
-send(0,{'ready':True,'protocol_version':1,'perception_version':2,'input_size':640,'classes_count':4,'max_detections':32})
+send(0,{'ready':True,'protocol_version':1,'perception_version':2,'input_size':640,'classes_count':4,'max_detections':32,
+        'depth_calibration_version':1 if mode=='corrected' else 0})
 while True:
  header=sys.stdin.buffer.read(32)
  if not header: break
@@ -127,6 +128,48 @@ def test_oversized_frame_rejected_before_sending(worker_script):
     try:
         with pytest.raises(InferenceError, match="bounded"):
             worker.observe(b"", [b""], {"intrinsics": {"width": 1921, "height": 1}})
+        assert worker.sequence == 0
+    finally:
+        worker.close()
+
+
+def test_corrected_depth_cannot_run_on_legacy_native_worker(worker_script):
+    worker = native(worker_script)
+    depths = [bytes([1]) * 12, bytes([2]) * 12]
+    try:
+        with pytest.raises(InferenceError, match="updated native worker"):
+            worker.observe(bytes([3]) * 18, depths,
+                           {"calibration": {"depth_scale": .5, "depth_offset": 100.},
+                            "intrinsics": {"width": 3, "height": 2}})
+        assert worker.sequence == 0
+        assert len(depths) == 2
+        assert worker.process.poll() is None
+    finally:
+        worker.close()
+
+
+def test_corrected_depth_is_sent_to_capable_native_worker(worker_script):
+    worker = native(worker_script, "corrected")
+    try:
+        result = worker.observe(bytes([3]) * 18, [bytes([1]) * 12, bytes([2]) * 12],
+                                {"calibration": {"depth_scale": .5, "depth_offset": 100.},
+                                 "intrinsics": {"width": 3, "height": 2},
+                                 "grid_snapshot": {"locations": [{"id": 2}]}})
+        assert result["slots"] == [{"id": 2, "state": "clear"}]
+        assert worker.sequence == 1
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("fields", [{"depth_scale": 0}, {"depth_scale": -1},
+                                   {"depth_scale": True}, {"depth_offset": "100"},
+                                   {"depth_offset": float("nan")}])
+def test_invalid_depth_calibration_rejected_before_sending(worker_script, fields):
+    worker = native(worker_script)
+    try:
+        with pytest.raises(InferenceError, match="Invalid optical depth"):
+            worker.observe(bytes([3]) * 18, [bytes([1]) * 12, bytes([2]) * 12],
+                           {"calibration": fields, "intrinsics": {"width": 3, "height": 2}})
         assert worker.sequence == 0
     finally:
         worker.close()

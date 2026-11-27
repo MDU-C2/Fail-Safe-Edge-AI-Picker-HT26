@@ -107,7 +107,7 @@ json assess_placement(const cv::Mat& input,const json& objects,const json& confi
             if(!std::isfinite(expected)||std::abs(expected-g.table_z)>30)throw std::invalid_argument("Reference plane outside its bound.");
         }
     }
-    const cv::Mat& depth=input;
+    const placement::DepthImage depth(input, DepthCalibration::from_json(config.at("calibration")));
     auto cups=placement::assign_cups(depth,objects,locations,g.transform,g.translation,K,g.cell_size,g.table_z,160);
     auto regions=placement::assign_depth_regions(depth,objects,locations,cups.owners,cups.assignments,g.transform,g.translation,K,g.cell_size,g.table_z,160,true);
     cups.owners.release();

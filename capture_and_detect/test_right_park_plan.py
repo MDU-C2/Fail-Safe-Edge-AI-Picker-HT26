@@ -27,24 +27,33 @@ class RightParkPlanTests(unittest.TestCase):
                     default = self.plan(**settings)
                     self.assertEqual(self.plan(right_park_pose=None, **settings), default)
                     self.assertNotIn("right_park", [job["name"] for job in default])
-                    self.assertEqual(default[-1]["name"], "right_home" if home else "right_clear")
+                    self.assertEqual(default[-1]["name"], "right_home" if home else "right_open_after_clear")
 
-    def test_parking_adds_only_one_joint_path_after_the_unchanged_clearance_lift(self):
+    def test_parking_adds_only_one_joint_path_after_the_unchanged_release_lift_and_open(self):
         original = self.plan()
         jobs = self.plan(right_park_pose=self.pose)
         self.assertEqual(jobs[:-1], original)
         park = jobs[-1]
         self.assertEqual(park["name"], "right_park")
         self.assertEqual(park["endpoint"], RobotClient.PATH_ENDPOINT)
-        self.assertEqual(park["after"], ["right_clear"])
+        self.assertEqual(park["after"], ["right_open_after_clear"])
         self.assertEqual(park["body"], {
             "arm": "right", "wait": True, "points": [dict(self.pose, linear=False, speed=250, zone=0)],
             "speed": 250, "zone": 0, "acceleration": 60, "ramp": 40,
         })
         self.assertEqual(RobotClient._validate_job(park), park)
-        self.assertEqual(jobs[-2]["name"], "right_clear")
-        self.assertTrue(jobs[-2]["body"]["points"][0]["linear"])
-        self.assertEqual(jobs[-2]["body"]["points"][0]["z"], self.place["z"] + 80)
+        self.assertEqual(len(jobs), 20)
+        self.assertEqual([job["name"] for job in jobs[-4:]],
+                         ["right_release", "right_clear", "right_open_after_clear", "right_park"])
+        release, clear, full_open = jobs[-4:-1]
+        self.assertEqual(release["after"], ["right_place"])
+        self.assertEqual(release["body"]["action"], "move")
+        self.assertEqual(release["body"]["position"], 12)
+        self.assertEqual(clear["after"], ["right_release"])
+        self.assertTrue(clear["body"]["points"][0]["linear"])
+        self.assertEqual(clear["body"]["points"][0]["z"], self.place["z"] + 80)
+        self.assertEqual(full_open["after"], ["right_clear"])
+        self.assertEqual(full_open["body"]["action"], "open")
         right = [job for job in jobs if job["body"]["arm"] == "right"]
         self.assertEqual([job for job in right if "action" in job["body"]][-1]["body"]["action"], "open")
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in jobs))
@@ -88,7 +97,7 @@ class RightParkPlanTests(unittest.TestCase):
                 # Parking explicitly stops; the via path's default blend is
                 # also overridden to fine by its single final endpoint.
                 self.assertEqual(park["body"], dict(via["body"], zone=0))
-                self.assertEqual(park["after"], ["right_clear"])
+                self.assertEqual(park["after"], ["right_open_after_clear"])
                 self.assertEqual(sum(job["name"] == "right_via" for job in jobs), 1)
                 self.assertEqual(RobotClient._validate_job(park), park)
                 self.assertFalse(any(job["endpoint"] == RobotClient.HOME_ENDPOINT for job in jobs))

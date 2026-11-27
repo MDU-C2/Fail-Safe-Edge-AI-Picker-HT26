@@ -21,7 +21,7 @@ HERE = Path(__file__).resolve().parent
 
 def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
                assistant=None, assistant_settings=None, access=None, tls=False, extra_origins=(),
-               device_monitor=None):
+               device_monitor=None, observer_monitor=None):
     # Optional web dependencies are never needed by terminal mode.
     from fastapi import FastAPI, Request
     from fastapi.responses import FileResponse, JSONResponse, Response
@@ -53,6 +53,8 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
         try:
             if device_monitor is not None:
                 device_monitor.start()
+            if observer_monitor is not None:
+                observer_monitor.start()
             controller.start()
             yield
         finally:
@@ -61,11 +63,18 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
             finally:
                 if device_monitor is not None:
                     await asyncio.to_thread(device_monitor.close)
+                if observer_monitor is not None:
+                    await asyncio.to_thread(observer_monitor.close)
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
+        if getattr(controller, "read_only", False) is True:
+            if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+                return JSONResponse({"detail": "Open this monitor on localhost."}, status_code=403)
+            if request.method not in ("GET", "HEAD"):
+                return JSONResponse({"detail": "Monitoring only. Use the main dashboard for commands."}, status_code=405)
         if access is not None:
             rejected = access.check(request)
             if rejected is not None:
@@ -103,7 +112,7 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
 
     @app.get("/static/{asset}")
     def asset(asset: str):
-        if asset not in ("app.js", "app.css", "assistant.js"):
+        if asset not in ("app.js", "app.css", "assistant.js", "observer.js", "observer.css"):
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return FileResponse(HERE / "web_static" / asset)
 
@@ -128,13 +137,18 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
             return {"source": "unavailable", "arms": {"left": None, "right": None}}
         return read()
 
+    from observer_app import install_observer_routes
+    install_observer_routes(app, observer_monitor)
+
     @app.get("/api/state")
-    def state():
-        return controller.state()
+    def state(camera: bool = False):
+        return controller.state(camera_demand=camera) if getattr(controller, "read_only", False) is True else controller.state()
 
     @app.get("/api/active_device")
     def active_device():
         from active_device_status import empty_status
+        if getattr(controller, "read_only", False) is True:
+            return controller.active_device()
         return device_monitor.snapshot() if device_monitor is not None else empty_status()
 
     @app.get("/api/status")
@@ -181,7 +195,7 @@ def create_app(controller, *, port=8080, image_root=None, allowed_origin=None,
     @app.get("/api/assistant/status")
     def assistant_status(request: Request):
         result = assistant.status()
-        result["settings_editable"] = settings_editable(request)
+        result["settings_editable"] = settings_editable(request) and getattr(controller, "read_only", False) is not True
         if access is not None and allowed_origin and access.pairing_code:
             result["phone"] = {"origin": allowed_origin,
                                "pairing_code": access.pairing_code if settings_editable(request) else None}
@@ -417,9 +431,11 @@ def hardware_factory(args):
         between_cup_check = failover or getattr(args, "between_cup_check", platform.system() == "Darwin")
         right_park_pose = None
         if failover:
-            from handover_plan import right_via_pose
-            right_park_pose = right_via_pose()
-        elif between_cup_check:
+            from handover_plan import right_camera_park_pose
+            right_park_pose = right_camera_park_pose()
+        elif between_cup_check or getattr(args, "right_park", True) is not False:
+            # Every dashboard can clear the camera after placing. Required
+            # workspace checks keep parking enabled even with --no-right-park.
             from camera_parking import load_right_park_pose
             right_park_pose = load_right_park_pose(Path(args.placing_grid).with_suffix(".right-park.json"),
                                                   args.gateway)
@@ -476,9 +492,12 @@ def main(argv=None):
     parser.add_argument("--phone-ca", type=Path, help="Public local CA certificate for the phone download")
     parser.add_argument("--assistant-settings", type=Path, help="Private settings file outside Git; written only if Remember is selected")
     parser.add_argument("--demo", action="store_true", help="Sample cups only; no camera, model or robot connection (default without --gateway)")
+    parser.add_argument("--monitor", action="store_true", help="Full read-only dashboard on a second computer; use --gateway and a diagnostics credential")
     parser.add_argument("--gateway", help="Robot gateway base URL; this computer runs detection and picking")
     parser.add_argument("--device-config", type=Path,
                         help="Local computer/Pi/Lynx picker configuration; the local computer supports Astra Assistant")
+    parser.add_argument("--observer-token-file", type=Path,
+                        help="Read-only diagnostics token for Observer; otherwise GATEWAY_DIAG_TOKEN / client_tokens.json")
     parser.add_argument("--controller-profile", default=str(HERE / "robot_controller.json"),
                         help="Legacy compatibility option; status is read through the gateway")
     modes = parser.add_mutually_exclusive_group()
@@ -486,6 +505,9 @@ def main(argv=None):
     modes.add_argument("--dry-run", action="store_true", help="Preview only; the default in camera mode")
     parser.add_argument("--output", help="Capture directory, or separate dashboard cache in managed-device mode")
     parser.add_argument("--calibration", default=str(HERE.parent / "calibration" / "calibration_grid.json"))
+    parser.add_argument("--right-park", action=argparse.BooleanOptionalAction, default=True,
+                        help="after each cup, move the right arm to the camera-clear waiting position in "
+                             "<placing-grid>.right-park.json when that file exists (default: on)")
     parser.add_argument("--placing-grid", default=str(HERE / "placing_grid_outside_tray.json"),
                         help="Placement JSON shared with terminal mode; occupancy is preserved")
     parser.add_argument("--grid-table-z", type=float, default=0.0, help="Physical robot Z of the table in mm (default 0)")
@@ -506,6 +528,9 @@ def main(argv=None):
                         help="Legacy compatibility option; snapshot picking does not rematch cup pixels")
     add_inference_arguments(parser)
     args = parser.parse_args(argv)
+    if args.monitor:
+        from monitor_dashboard import run_monitor
+        return run_monitor(args, parser)
     if args.output is None:
         args.output = str(args.device_config.resolve().parent / "dashboard-cache"
                           if args.device_config else HERE / "Data" / "Detections")
@@ -564,7 +589,7 @@ def main(argv=None):
     mode = "demo" if not args.gateway and not args.device_config else ("live" if args.live else "dry_run")
     temporary = tempfile.TemporaryDirectory(prefix="cup-dashboard-") if mode == "demo" else None
     directory = Path(temporary.name if temporary else args.output).resolve()
-    controller = device_monitor = None
+    controller = device_monitor = observer_monitor = None
     try:
         if args.device_config:
             from device_dashboard import DeviceDashboard
@@ -575,10 +600,12 @@ def main(argv=None):
                                        llm_enabled=mode == "demo")
         from active_device_status import monitor_from_options
         device_monitor = monitor_from_options(args, mode=mode)
+        from gateway_observer import observer_from_options
+        observer_monitor = observer_from_options(args, mode=mode)
         app = create_app(controller, port=args.port, image_root=directory,
                          allowed_origin=args.allowed_origin, assistant_settings=args.assistant_settings,
                          access=access, tls=tls, extra_origins=local_origins,
-                         device_monitor=device_monitor)
+                         device_monitor=device_monitor, observer_monitor=observer_monitor)
         with ProcessLock(directory):
             print(f"\nCup dashboard: {scheme}://localhost:{args.port}", flush=True)
             if args.allowed_origin:
@@ -619,8 +646,12 @@ def main(argv=None):
                 if device_monitor is not None:
                     device_monitor.close()
             finally:
-                if temporary:
-                    temporary.cleanup()
+                try:
+                    if observer_monitor is not None:
+                        observer_monitor.close()
+                finally:
+                    if temporary:
+                        temporary.cleanup()
     return 0
 
 

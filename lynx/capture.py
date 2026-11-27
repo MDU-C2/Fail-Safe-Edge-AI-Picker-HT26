@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 
 from camera_client import CameraError, NoNewCameraFrame
+from calibration_depth import depth_parameters
 from cup_inventory import (SelectionError, atomic_json, build_inventory,
                            finite_number, normalize_offset, save_inventory)
 from table_reference_contract import validate_reference, _identity
@@ -38,6 +39,7 @@ class Calibration:
         self.raw = bounded_read(path)
         self.digest = hashlib.sha256(self.raw).hexdigest()
         self.value = json.loads(self.raw)
+        self.depth_scale, self.depth_offset = depth_parameters(self.value)
         self.scale, self.R, self.t = (self.value[key] for key in ("scale", "R", "t"))
         self.offset = normalize_offset(self.value.get("tag_offset", (0, 0, 0)))
 

@@ -112,6 +112,23 @@ def synthetic_fixtures():
         return fixture(name, [(label, mask, box, score)], [image], checks=checks)
 
     yield single("base_good", checks=((0, "z_mm", 800.0),))
+    corrected = configuration(shape)
+    corrected["calibration"].update(depth_scale=.5, depth_offset=100., tag_offset=[0, 0, 0])
+    yield fixture("handeye_depth_correction", [("CUP BASE", base, None, .9)], [depth],
+                  config=corrected, checks=((0, "z_mm", 500.), (0, "robot_z_mm", 350.)))
+    yield fixture("handeye_depth_correction_missing", [("CUP BASE", base, None, .9)],
+                  [np.zeros(shape, np.uint16)], config=corrected,
+                  checks=((0, "z_mm", None), (0, "robot_z_mm", None), (0, "diameter_mm", None)))
+    yield fixture("handeye_depth_correction_temporal", [("CUP BASE", base, None, .9)],
+                  [depth, np.zeros(shape, np.uint16), np.full(shape, 801, np.uint16)],
+                  config=corrected, checks=((0, "z_frames_mm", [500., None, 500.5]),
+                                           (0, "robot_z_frames_mm", [350., None, 349.5]),
+                                           (0, "z_mm", 500.2)))
+    submitted = configuration(shape)
+    submitted["calibration"].update(depth_scale=.07110738241328723, depth_offset=603.9341817718713)
+    yield fixture("handeye_fractional_correction", [("CUP BASE", base, None, .9)],
+                  [depth, np.full(shape, 803, np.uint16)], config=submitted,
+                  checks=((0, "z_frames_mm", [660.8, 661.0]), (0, "z_mm", 660.9)))
     rim = depth.copy()
     rim[13:24, 15:26] = 700
     yield single("base_core_ignores_background_rim", image=rim, checks=((0, "z_mm", 700.0),))
@@ -451,6 +468,10 @@ def run_rejections(directory, harness, timeout):
         ("nan_focal_json", edit_json(0, lambda value: value["intrinsics"].update(fx=float("nan")))),
         ("intrinsics_shape_mismatch", edit_json(0, lambda value: value["intrinsics"].update(width=47))),
         ("zero_calibration_scale", edit_json(0, lambda value: value["calibration"].update(scale=0))),
+        ("zero_depth_scale", edit_json(0, lambda value: value["calibration"].update(depth_scale=0))),
+        ("negative_depth_scale", edit_json(0, lambda value: value["calibration"].update(depth_scale=-1))),
+        ("boolean_depth_scale", edit_json(0, lambda value: value["calibration"].update(depth_scale=True))),
+        ("string_depth_offset", edit_json(0, lambda value: value["calibration"].update(depth_offset="100"))),
         ("bad_rotation_shape", edit_json(0, lambda value: value["calibration"].update(R=[[1, 0], [0, 1]]))),
         ("bad_tag_offset", edit_json(0, lambda value: value["calibration"].update(tag_offset=[0, 0]))),
         ("duplicate_class_names", edit_json(0, lambda value: value.update(names=["CUP", "CUP BASE", "CUP BASE"]))),

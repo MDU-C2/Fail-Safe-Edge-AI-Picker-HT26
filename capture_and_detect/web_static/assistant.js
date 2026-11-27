@@ -20,7 +20,7 @@
     const entry = Array.isArray(state?.devices?.entries) ? state.devices.entries.find((item) => item?.id === "mac") : null;
     return string(entry?.label).trim() || "the local computer";
   };
-  const assistantAvailable = () => controllerState?.devices ? deviceAccess(controllerState) && controllerOnline : status?.available !== false;
+  const assistantAvailable = () => !controllerState?.read_only && (controllerState?.devices ? deviceAccess(controllerState) && controllerOnline : status?.available !== false);
   const canAsk = () => connected && assistantAvailable() && !busy && !active && !controllerState?.busy;
   const rememberSupported = () => status?.remember_supported !== false;
   const canEditSettings = () => connected && status?.settings_editable === true && !busy && !active;
@@ -118,6 +118,13 @@
       active.cancel.disabled = !connected || !controllerOnline || Boolean(busy);
     }
     renderPhoneSetup();
+    if (controllerState?.read_only) {
+      setText(ui.state, "Monitoring only");
+      setText(ui.source, "Assistant runs on the main dashboard");
+      setText(ui["context-note"], "Use the main dashboard for Assistant requests. Its conversation and saved cup references are not shared with this monitor.");
+      setText(ui["settings-access"], "Settings are managed on the main dashboard.");
+      setText(ui["phone-unavailable"], "This monitor uses its own Ethernet connection; no pairing is needed.");
+    }
   }
 
   const contextKey = (state) => JSON.stringify([state?.instance_id, state?.device_epoch ?? null, state?.mode, state?.devices?.active_id ?? null]);

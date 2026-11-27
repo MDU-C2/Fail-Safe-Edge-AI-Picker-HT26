@@ -1,0 +1,3 @@
+# Full dashboard monitoring on a second computer; no detection model required.
+-r requirements-web.txt
+Pillow>=10,<13

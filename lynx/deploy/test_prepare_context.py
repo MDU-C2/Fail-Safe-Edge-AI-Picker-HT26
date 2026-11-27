@@ -57,7 +57,7 @@ class ContextTests(unittest.TestCase):
             "terminal_commands", "operator_commands", "language_commands", "local_llm",
             "table_reference_contract", "web_controller", "device_agent", "device_service", "placement_records",
             "workspace_check", "queued_robot_client", "failover_coordinator", "failover_workflow", "failover_worker",
-            "robot_telemetry",
+            "robot_telemetry", "calibration_depth",
         }
         self.cli_runtime = {
             "__init__", "picker", "capture", "raw_images", "model", "resources",

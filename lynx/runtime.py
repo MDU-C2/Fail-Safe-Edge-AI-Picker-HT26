@@ -67,7 +67,7 @@ class _NativeWebFactory:
         # controller starts its worker. None imports NumPy/OpenCV/FastAPI.
         from camera_client import CameraClient
         from cup_commands import CupSession
-        from handover_plan import right_via_pose
+        from handover_plan import right_camera_park_pose
         from language_commands import LanguageController
         from local_llm import DisabledIntentClient
         from placing_grid import PlacingGrid
@@ -168,7 +168,7 @@ class _NativeWebFactory:
                                  strict_single_verification=True, max_result_age=max_age,
                                  camera_z=getattr(args, "camera_z", False),
                                  between_cup_check=True, between_cup_grid_check=True,
-                                 continuous_batch=False, right_park_pose=right_via_pose())
+                                 continuous_batch=False, right_park_pose=right_camera_park_pose())
             language = LanguageController(session, DisabledIntentClient(),
                                           audit_dir=store.folder / "language")
             self._update(state="ready", ready=True, camera=copy.deepcopy(captures.K),
