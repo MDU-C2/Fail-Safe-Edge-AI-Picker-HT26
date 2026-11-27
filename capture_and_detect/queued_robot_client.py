@@ -606,7 +606,7 @@ class QueueRobotClient(RobotClient):
         return None
 
     @staticmethod
-    def _validate_queue_status(reply, *, inspection=False):
+    def _validate_queue_status(reply, *, inspection=False, completed_history=False):
         if (not isinstance(reply, dict)
                 or reply.get("state") not in {"idle", "running", "done", "failed", "cancelled"}
                 or not isinstance(reply.get("steps"), list)
@@ -629,14 +629,19 @@ class QueueRobotClient(RobotClient):
         # Legacy terminal pickers reused a few unprefixed step names. Such a
         # failed snapshot is usable only as an exact, whole-array inspection
         # target; it can never identify completed callbacks or new admission.
-        legacy_failure = (inspection and reply["state"] in {"failed", "cancelled"}
-                          and all(isinstance(step, dict) and isinstance(step.get("name"), str)
-                                  and not re.match(r"q[0-9a-f]{16}_", step["name"])
-                                  for step in reply["steps"]))
+        legacy_labels = all(isinstance(step, dict) and isinstance(step.get("name"), str)
+                            and not re.match(r"q[0-9a-f]{16}_", step["name"])
+                            for step in reply["steps"])
+        legacy_failure = inspection and reply["state"] in {"failed", "cancelled"} and legacy_labels
+        # Older terminal runs can also finish successfully with reused names.
+        # Accept that whole-array history only before admitting NEW work, never
+        # as a receipt or a source of per-step completion callbacks. Every step
+        # must still be DONE, and wait_for_idle_queue checks both arms separately.
+        legacy_completed = completed_history and reply["state"] == "done" and legacy_labels
         names = set()
         for step in reply["steps"]:
             if (not isinstance(step, dict) or not isinstance(step.get("name"), str) or not step["name"]
-                    or step["name"] in names and not legacy_failure
+                    or step["name"] in names and not (legacy_failure or legacy_completed)
                     or step.get("type") not in {"move", "path", "home", "gripper"}
                     or step.get("arm") not in {"left", "right"} or not isinstance(step.get("group"), str)
                     or step.get("state") not in {"pending", "running", "done", "failed", "skipped", "cancelled"}
@@ -650,12 +655,14 @@ class QueueRobotClient(RobotClient):
             raise RobotCommandError("A queue step is still running; wait before recovery.")
         return reply
 
-    def queue_status(self):
-        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT))
+    def queue_status(self, *, completed_history=False):
+        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT),
+                                           completed_history=completed_history)
 
     def inspection_queue_status(self):
         """Read terminal evidence for explicit inspection, never completion."""
-        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT), inspection=True)
+        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT), inspection=True,
+                                           completed_history=True)
 
     @staticmethod
     def _terminal_arm_error(result):
@@ -759,7 +766,7 @@ class QueueRobotClient(RobotClient):
             if self._batch_binding is not None and self._receipt_cancel.is_set():
                 raise QueueWaitCancelled("Stopped waiting locally; the previous gateway queue remains untouched.")
             self.check_lease()
-            status = self.queue_status()
+            status = self.queue_status(completed_history=True)
             self.check_lease()
             if status["state"] != "idle":
                 self._acknowledged_idle_errors = {}

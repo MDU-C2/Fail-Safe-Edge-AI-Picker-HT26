@@ -300,15 +300,36 @@ def test_partial_recovery_keeps_old_receipt_blocked_and_retries_from_idle(rig, m
     rig.capture.assert_not_called()
 
 
-@pytest.mark.parametrize("change", ["running", "done", "running_step", "prefixed", "changed_duplicate", "same_start"])
+def test_completed_legacy_duplicate_history_retires_only_explicitly_inspected_unknown(rig):
+    before, original, _ = lost_queue(rig)
+    completed = json.loads((Path(__file__).parent / "test_fixtures" /
+                            "legacy_completed_duplicate_queue.json").read_text())
+    rig.gateway.queue = copy.deepcopy(completed)
+    grid = rig.grid.path.read_bytes()
+    result = rig.session.acknowledge_recovery()
+    assert "completion remains unknown" in result["message"]
+    pending = rig.robot._read_pending(rig.runner.pending_path)
+    assert pending["state"] == "unknown" and pending["reconciled"]
+    assert pending["queue"] == before["queue"] and pending["started_at"] == before["started_at"]
+    for key in ("callback_attempted", "callback_completed", "home_verified", "callbacks_applied"):
+        assert pending[key] == before[key]
+    assert pending["abandoned_receipt_queue"] == original
+    assert pending["inspected_abandonment"]["observed_queue"] == completed
+    receipt = rig.coordinator.receipt(before["run_id"], before["submission_id"])
+    assert receipt["state"] == "unknown" and receipt["queue"] == original
+    assert rig.gateway.queue == completed and rig.grid.path.read_bytes() == grid
+    assert rig.coordinator.state()["head"] is None
+    assert not rig.session.recovery.required() and not rig.session.motion_uncertain
+    assert not rig.session.scan_usable
+    no_motion(rig)
+
+
+@pytest.mark.parametrize("change", ["running", "incomplete_done", "running_step", "prefixed", "changed_duplicate", "same_start"])
 def test_legacy_duplicate_relaxation_never_allows_active_or_changed_evidence(rig, monkeypatch, change):
     _, original, _ = lost_queue(rig)
     rig.gateway.queue = legacy_failed_queue()
-    if change in {"running", "done"}:
-        rig.gateway.queue["state"] = change
-        if change == "done":
-            for step in rig.gateway.queue["steps"]:
-                step.update(state="done", message="DONE")
+    if change in {"running", "incomplete_done"}:
+        rig.gateway.queue["state"] = "done" if change == "incomplete_done" else change
     elif change == "running_step":
         rig.gateway.queue["steps"][4]["state"] = "running"
     elif change == "prefixed":

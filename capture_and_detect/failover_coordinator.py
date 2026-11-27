@@ -203,7 +203,7 @@ def _signature(steps, *, submitted=False):
             for step in steps]
 
 
-def _queue(value):
+def _queue(value, *, completed_history=False):
     value = _json_copy(value)
     if (not isinstance(value, dict) or not isinstance(value.get("state"), str)
             or value["state"] not in {"idle", "running", "done", "failed", "cancelled"}
@@ -217,10 +217,18 @@ def _queue(value):
     if not value["steps"] or not isinstance(value.get("owner"), str) or not value["owner"]:
         raise CoordinatorError("Gateway queue identity is invalid.")
     _timestamp(value.get("started_at"))
+    # Older terminal pickers reused unprefixed labels. Their fully completed
+    # queue may establish a baseline for NEW work or an inspected different
+    # queue; it must never establish a bound submission's completion. Keep
+    # receipt/Home validation strict, and reject any coordinated-prefix mix.
+    legacy_completed = (completed_history and value["state"] == "done"
+                        and all(isinstance(step, dict) and isinstance(step.get("name"), str)
+                                and not re.match(r"q[0-9a-f]{16}_", step["name"])
+                                for step in value["steps"]))
     names = set()
     for step in value["steps"]:
         if (not isinstance(step, dict) or not isinstance(step.get("name"), str) or not step["name"]
-                or len(step["name"]) > 160 or step["name"] in names
+                or len(step["name"]) > 160 or step["name"] in names and not legacy_completed
                 or not isinstance(step.get("type"), str) or step["type"] not in {"move", "path", "home", "gripper"}
                 or not isinstance(step.get("arm"), str) or step["arm"] not in {"left", "right"}
                 or not isinstance(step.get("group"), str) or len(step["group"]) > 80
@@ -275,7 +283,7 @@ def _recovery(value, *, run_id, submission_id, item):
 
 def _abandonment_observation(value, *, queue, submission_id):
     """A stopped, different queue cannot prove the old cup completed."""
-    observed = _queue(value)
+    observed = _queue(value, completed_history=True)
     if (observed["state"] not in {"idle", "done", "failed", "cancelled"}
             or any(step["state"] == "running" for step in observed["steps"])
             or any(step["name"].startswith("q" + submission_id + "_") for step in observed["steps"])
@@ -764,7 +772,7 @@ class CoordinatorStore:
                 confirmed = run.get("confirmed_homes", [])
                 if arm in confirmed or arm == "left" and "right" not in confirmed:
                     raise CoordinatorConflict("Home must follow its durable right-then-left verification barrier.")
-            queue = _queue(self._get("/robot/rws/queue"))
+            queue = _queue(self._get("/robot/rws/queue"), completed_history=True)
             head = value["submissions"].get(value["head"])
             if head is not None:
                 self._observe(value, head, queue)
@@ -821,7 +829,7 @@ class CoordinatorStore:
                     # This cannot create or change historical queue evidence.
                     return self._result(item)
             self._run(value, run_id)
-            queue = _queue(self._get("/robot/rws/queue"))
+            queue = _queue(self._get("/robot/rws/queue"), completed_history=True)
             if any(step["name"].startswith("q" + submission_id + "_") for step in queue["steps"]):
                 if item is not None:
                     self._observe(value, item, queue)
@@ -899,7 +907,7 @@ class CoordinatorStore:
             raise CoordinatorError("Abandonment requires explicit operator inspection.")
         _identifier(run_id)
         _identifier(submission_id, submission=True)
-        expected = _queue(expected_gateway_queue)
+        expected = _queue(expected_gateway_queue, completed_history=True)
         with self._transaction() as value:
             run = self._run(value, run_id)
             item = value["submissions"].get(submission_id)
@@ -922,7 +930,7 @@ class CoordinatorStore:
             if prior is not None and prior["observed_queue_sha256"] != expected_digest:
                 raise CoordinatorConflict("Gateway evidence differs from the inspected abandonment.")
             self._lease("primary")
-            if _queue_digest(_queue(self._get("/robot/rws/queue"))) != expected_digest:
+            if _queue_digest(_queue(self._get("/robot/rws/queue"), completed_history=True)) != expected_digest:
                 raise CoordinatorConflict("Gateway queue differs from the inspected snapshot.")
             arms = {}
             for arm in ("left", "right"):
@@ -930,7 +938,7 @@ class CoordinatorStore:
                 if not _inspected_arm_status(status):
                     raise CoordinatorConflict("Both arms must report an idle terminal move result.")
                 arms[arm] = status
-            if _queue_digest(_queue(self._get("/robot/rws/queue"))) != expected_digest:
+            if _queue_digest(_queue(self._get("/robot/rws/queue"), completed_history=True)) != expected_digest:
                 raise CoordinatorConflict("Gateway queue changed during inspected abandonment.")
             self._lease("primary")
             if prior is not None:
