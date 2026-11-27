@@ -13,7 +13,7 @@ import threading
 from types import SimpleNamespace
 
 from device_service import read_gateway_token
-from handover_plan import right_via_pose
+from handover_plan import right_camera_park_pose
 from queued_robot_client import QueueRobotClient
 from terminal_commands import positive
 
@@ -89,7 +89,7 @@ def build_session(args, robot, resources):
                       recovery=recovery, placing_grid=grid, verification_frames=1,
                       strict_single_verification=True, camera_z=False,
                       between_cup_check=True, between_cup_grid_check=True,
-                      continuous_batch=False, right_park_pose=right_via_pose())
+                      continuous_batch=False, right_park_pose=right_camera_park_pose())
     return session
 
 

@@ -1,5 +1,9 @@
 # Gateway diagnostics
 
+For the graphical **Observer** tab and an independent Windows browser viewer,
+see [Browser observer](OBSERVER.md). It reads the same gateway status without
+starting a picker or taking control.
+
 `gateway_diag.py` is a read-only terminal tool for the Robot Gateway. It
 acts as the `diagnostics` client (`robot.read` + `camera.read`, priority
 10), so it can show everything and change nothing: it never takes the

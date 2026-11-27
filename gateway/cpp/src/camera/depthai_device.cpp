@@ -4,17 +4,26 @@
 //
 // The pipeline of gateway/camera/oak_producer.py:
 //
-//   CAM_A  -> BGR888p at width x height ----------------+--> Sync "rgb"
-//                                         inputAlignTo  |
+//   CAM_A -> BGR888p at width x height [-> ImageManip undistort] -+--> Sync "rgb"
+//                                                    inputAlignTo |
 //   CAM_B, CAM_C -> GRAY8 640x400 -> StereoDepth (ROBOTICS, LR check)
-//                                         depth --------+--> Sync "depth"
+//                                                    depth -------+--> Sync "depth"
 //
 // Sync pairs RGB and depth within 100 ms; the host queue keeps only
-// the newest pair (size 1, non-blocking). Depth is aligned to CAM_A,
-// so rgb[v, u] and depth[v, u] are the same point.
+// the newest pair (size 1, non-blocking).
+//
+// StereoDepth always gives undistorted (pinhole) depth. With
+// GATEWAY_CAMERA_UNDISTORT (default on) an ImageManip undistorts the
+// RGB on the camera, so rgb[v, u] and depth[v, u] are the same point
+// across the whole image. Camera::requestOutput's enableUndistortion
+// does not: on this OAK (RVC2, depthai 3.10) it only marks the frame
+// as undistorted and leaves the pixels raw (found 2026-11-26). Without
+// it the RGB is raw and matches the depth only near the centre (the
+// lens moves the corners by up to ~190 px at 1920x1080).
 //
 
 #include <chrono>
+#include <stdexcept>
 #include <thread>
 
 #include <depthai/depthai.hpp>
@@ -36,8 +45,6 @@ public:
         : config_(config) {
         device_ = connect(connect_timeout_seconds);
 
-        intrinsics_ = read_intrinsics();
-
         build_pipeline();
 
         pipeline_->start();
@@ -45,6 +52,8 @@ public:
         if (config_.warmup_seconds > 0) {
             std::this_thread::sleep_for(std::chrono::duration<double>(config_.warmup_seconds));
         }
+
+        intrinsics_ = read_intrinsics();
     }
 
     ~DepthaiDevice() override {
@@ -133,23 +142,39 @@ private:
     }
 
     //
-    // CAM_A intrinsics from the device calibration, converted to the
-    // published size; depth is aligned to CAM_A, so they also apply
-    // to the depth frames.
+    // The intrinsics of the frames as published, from the first
+    // frame's transformation: its K includes the sensor mode's
+    // scaling and crop (CalibrationHandler::getCameraIntrinsics for
+    // the output size does not, and was 5 % off at 1920x1080), and
+    // its distortion is zeros once undistorted, CAM_A's otherwise.
     //
     CameraIntrinsics read_intrinsics() {
-        const auto calibration = device_->readCalibration();
+        //
+        // Peeked, not taken: the pair stays queued for the producer, so
+        // a frame is ready as soon as the camera is reported open.
+        //
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
-        const auto matrix = calibration.getCameraIntrinsics(
-            dai::CameraBoardSocket::CAM_A,
-            config_.width,
-            config_.height
-        );
+        std::shared_ptr<dai::MessageGroup> group;
+
+        while (!(group = queue_->front<dai::MessageGroup>()) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        const auto rgb = group ? group->get<dai::ImgFrame>("rgb") : nullptr;
+
+        if (!rgb) {
+            throw std::runtime_error("No frame from the OAK camera to read its intrinsics from");
+        }
+
+        const auto& transformation = rgb->getTransformation();
+
+        const auto matrix = transformation.getIntrinsicMatrix();
 
         CameraIntrinsics intrinsics;
 
-        intrinsics.width = config_.width;
-        intrinsics.height = config_.height;
+        intrinsics.width = static_cast<int>(rgb->getWidth());
+        intrinsics.height = static_cast<int>(rgb->getHeight());
 
         for (int row = 0; row < 3; ++row) {
             for (int column = 0; column < 3; ++column) {
@@ -162,11 +187,11 @@ private:
         intrinsics.cx = intrinsics.matrix[0][2];
         intrinsics.cy = intrinsics.matrix[1][2];
 
-        for (const float coefficient : calibration.getDistortionCoefficients(dai::CameraBoardSocket::CAM_A)) {
+        for (const float coefficient : transformation.getDistortionCoefficients()) {
             intrinsics.distortion.push_back(coefficient);
         }
 
-        switch (calibration.getDistortionModel(dai::CameraBoardSocket::CAM_A)) {
+        switch (transformation.getDistortionModel()) {
             case dai::CameraModel::Perspective:
                 intrinsics.distortion_model = "perspective";
                 break;
@@ -201,6 +226,18 @@ private:
             dai::ImgResizeMode::CROP,
             fps
         );
+
+        if (config_.undistort) {
+            auto undistort = pipeline_->create<dai::node::ImageManip>();
+
+            undistort->initialConfig->setUndistort(true);
+            undistort->initialConfig->setFrameType(dai::ImgFrame::Type::BGR888p);
+            undistort->setMaxOutputFrameSize(config_.width * config_.height * 3);
+
+            rgb_output->link(undistort->inputImage);
+
+            rgb_output = &undistort->out;
+        }
 
         // --------------------------------------------------------
         // Stereo cameras and depth

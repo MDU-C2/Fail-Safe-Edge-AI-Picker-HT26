@@ -97,6 +97,36 @@ public:
         target = *parsed;
     }
 
+    //
+    // pydantic's bool: true/false, 1/0, yes/no, on/off (any case).
+    //
+    void boolean(
+        const char* name,
+        bool& target
+    ) {
+        const auto value = lookup(name);
+
+        if (!value) {
+            return;
+        }
+
+        for (const char* yes : {"true", "1", "yes", "on", "t", "y"}) {
+            if (iequals(*value, yes)) {
+                target = true;
+                return;
+            }
+        }
+
+        for (const char* no : {"false", "0", "no", "off", "f", "n"}) {
+            if (iequals(*value, no)) {
+                target = false;
+                return;
+            }
+        }
+
+        fail(name, *value, "must be a boolean");
+    }
+
     void integer(
         const char* name,
         long long& target
@@ -209,6 +239,7 @@ Settings load_settings(
     load.number("camera_fps", settings.camera_fps);
     load.integer("camera_rgb_width", settings.camera_rgb_width);
     load.integer("camera_rgb_height", settings.camera_rgb_height);
+    load.boolean("camera_undistort", settings.camera_undistort);
     load.number("camera_max_frame_age_seconds", settings.camera_max_frame_age_seconds);
 
     load.choice("robot_provider", settings.robot_provider, {"mock", "tcp"});

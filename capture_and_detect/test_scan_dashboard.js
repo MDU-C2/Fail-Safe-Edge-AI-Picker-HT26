@@ -24,7 +24,7 @@ function dashboard() {
   }
   const context = vm.createContext({
     dom, connected: true, posting: false, stopPosting: false, quickPosting: false,
-    localStopInhibit: false, selectedId: null, selectedCapture: null,
+    localStopInhibit: false, selectedId: null, selectedCapture: null, transientError: "",
     state: { ready: true, busy: false, mode: "live", recovery_required: true,
       stop_requested: false, scan_usable: true, proposal: null,
       inventory: { capture: "scan-1", cups: [{ id: 1, selectable: true, pick_available: true }] },
@@ -32,6 +32,7 @@ function dashboard() {
     document: { querySelectorAll() { return []; } },
     text(id, value) { dom[id].textContent = String(value ?? ""); },
     hide(id, hidden) { dom[id].hidden = hidden; },
+    asMessage: (value) => String(value ?? ""),
     renderSelectedActions() {}, updateCountdown() {}, renderRobotControls() {}, renderPickHeight() {}, renderSavedCups() {},
     post(url) { requests.push(url); },
   });

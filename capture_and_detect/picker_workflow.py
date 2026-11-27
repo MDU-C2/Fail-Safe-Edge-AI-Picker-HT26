@@ -29,6 +29,7 @@ import cv2
 import numpy as np
 
 from camera_client import CameraClient, CameraError
+from calibration_depth import corrected_depth, depth_parameters
 from cup_commands import CupSession
 from picker_depth import capture_fresh_samples, mask_depth, DEFAULT_DEPTH_FRAMES
 from detection_masks import encode_mask
@@ -138,6 +139,7 @@ class Calibration:
         self.scale = cal["scale"]
         self.R, self.t = np.array(cal["R"], dtype=float), np.array(cal["t"], dtype=float)
         self.offset = normalize_offset(cal.get("tag_offset", (0, 0, 0)))
+        self.depth_scale, self.depth_offset = depth_parameters(cal)
         if (self.R.shape != (3, 3) or self.t.shape != (3,) or not np.isfinite(self.R).all()
                 or not np.isfinite(self.t).all() or not math.isfinite(self.scale) or self.scale <= 0):
             raise ValueError("Invalid calibration matrix, translation, or scale")
@@ -147,6 +149,8 @@ class Calibration:
             raise SelectionError("Calibration file changed. Restart and scan again.")
 
     def to_robot(self, x, y, z):
+        # Camera XYZ must already use corrected optical depth. Applying the
+        # affine correction after this rotation would shift the wrong axes.
         return tuple(self.scale * self.R @ np.array([x, y, z]) + self.t)
 
 
@@ -185,11 +189,12 @@ class Detector:
         """V4 coordinates: eroded-mask median per frame, mean of available depths."""
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
-        z = mask_depth(depth, mask)
+        depth_scale, depth_offset = depth_parameters(self.calibration)
+        z = corrected_depth(mask_depth(depth, mask), depth_scale, depth_offset)
         samples = getattr(self, "_depth_samples", ())
         z_frames, robot_z_frames = [], []
         for sample in samples:
-            value = mask_depth(sample, mask)
+            value = corrected_depth(mask_depth(sample, mask), depth_scale, depth_offset)
             z_frames.append(mm(value))
             robot_z_frames.append(None if value is None else mm(self.calibration.to_robot(
                 (u - self.K["cx"]) * value / self.K["fx"],

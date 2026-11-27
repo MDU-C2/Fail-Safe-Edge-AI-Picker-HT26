@@ -35,7 +35,7 @@ VLANs of their own and only the gateway reaches them, see
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
 | Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only, see [Clients](#clients)) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` (from the deploy script since 0.6.0; the 0.6.0 build deployed on 2026-11-23 predates it) and an empty `GATEWAY_AUTH_CLIENTS` (so the package's clients file is used, see [Clients](#clients)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` (from the deploy script since 0.6.0; the 0.6.0 build deployed on 2026-11-23 predates it), `GATEWAY_CAMERA_UNDISTORT=true` (since 0.8.0, `-Undistort false` in the deploy script for raw frames) and an empty `GATEWAY_AUTH_CLIENTS` (so the package's clients file is used, see [Clients](#clients)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
@@ -139,6 +139,7 @@ environment GATEWAY_CALIBRATION_FILE /state/calibration.json
 environment GATEWAY_RWS_SAFE_ZONE_MIN [180,-400,50]
 environment GATEWAY_RWS_SAFE_ZONE_MAX [800,500,700]
 environment GATEWAY_RWS_HEARTBEAT_TIMEOUT 5
+environment GATEWAY_CAMERA_UNDISTORT true
 enable
 no autostart
 leave
@@ -322,15 +323,20 @@ against the real YuMi, DepthAI tools and `pytest --oak` against the
 real OAK, and the camera apps `yololivetest`/`yolowebtest` (own network
 namespace, `OAK_TARGET`). Plug into eth4 or eth3 for direct access.
 
-> **Not saved (2026-11-25).** `copy run start` fails with "No space left
-> on device": the internal `Config` partition (14 MB jffs2) is 99 %
-> full, and the startup config on it is cut off after ~4 KB (no ports,
-> VLANs, addresses or gateway app), most likely by the failed 11-24
-> save. Do not reboot the Lynx until a save works. Cause not found yet:
-> images and app shares are on the SD card, logs go to pipes, and
-> `file cfg dir` fails on the full partition; `shell` is "Access
-> denied". Full running-config backups are kept off the repository
-> (they hold secrets).
+> **Saved on 2026-11-26** (startup config = running config, 27 KB,
+> with the VLANs and the gateway app). From 2026-11-25 it could not be
+> saved: the internal `Config` partition (14 MB jffs2, `show media`) was
+> 99 % full and the startup config on it cut off after ~4 KB. The cause
+> was the picker's 47 MB `lynx-picker-0.2.9` installed on 2026-11-17 as
+> a WeOS *system package* (`package install`, listed by `show package`
+> with version "Unknown"), which writes to the internal flash, not as
+> an app image (`file app import`, SD card). `package remove
+> lynx-picker-0.2.9` freed it (99 % → 6 %; the list entry stays,
+> "Operation not permitted", Persistent: No). The full flash also made
+> `app-hosting label` fail silently, so a deploy kept the old image
+> running (the deploy script now checks the version). Install app
+> images with `file app import` only. Full running-config backups are
+> kept off the repository (they hold secrets).
 
 A laptop with Tailscale: its adapter also claims `169.254.0.0/16` (even
 when disconnected), so Windows sends traffic for `169.254.219.127` there;

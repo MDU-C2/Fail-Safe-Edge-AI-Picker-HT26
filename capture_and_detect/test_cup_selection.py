@@ -330,8 +330,8 @@ class CupSelectionTests(unittest.TestCase):
         pick_points = (jobs["approach_cup"]["body"]["points"][1:] +
                        jobs["left_handover"]["body"]["points"][:1])
         self.assertEqual([(p["x"], p["y"], p["z"]) for p in pick_points],
-                         [(485, 100, 334), (485, 100, 229), (485, 100, 334)])
-        self.assertEqual(robot.jobs[-1]["name"], "right_clear")
+                         [(485, 100, 409), (485, 100, 229), (485, 100, 409)])
+        self.assertEqual(robot.jobs[-1]["name"], "right_open_after_clear")
         self.assertIn("left_clear", jobs)
         self.assertFalse(any(job["endpoint"].endswith("/home") for job in robot.jobs))
         self.assertEqual(capture.call_count, 1)
@@ -417,7 +417,7 @@ class CupSelectionTests(unittest.TestCase):
                 session.clock = lambda: now[0]
                 session.scan()
                 self.select(session, action="goto")
-                self.assertEqual(robot.jobs[-1]["name"], "right_clear")
+                self.assertEqual(robot.jobs[-1]["name"], "right_open_after_clear")
                 self.assertFalse(session.motion_uncertain)
                 self.assertEqual(capture.call_count, 1)
 

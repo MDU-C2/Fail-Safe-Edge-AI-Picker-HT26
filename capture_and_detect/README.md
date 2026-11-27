@@ -1,5 +1,10 @@
 # Terminal picker and browser dashboard
 
+The **Observer** tab shows read-only gateway health, control handover, queue
+progress, arm poses, grippers, camera status and RAPID tasks. It also runs as an
+independent Windows viewer for Ethernet-disconnect tests; see
+[Browser observer](../diagnostics/OBSERVER.md) for startup and credential setup.
+
 There are two independent entry points. Run only one robot controller at a time.
 
 | Entry point | Workflow |
@@ -7,6 +12,7 @@ There are two independent entry points. Run only one robot controller at a time.
 | `python capture_and_detect.py` | The V4 terminal capture workflow with the same smooth dual-arm handover as the UI. Enter captures and processes all reachable cups. |
 | `python web_app.py --gateway <gateway-url> --live` | The existing browser UI, single-cup selection, Assistant, smooth handover, placement checks, confirmations and recovery. |
 | `python web_app.py --demo` | The browser UI with simulated data and no gateway or robot connection. |
+| `python web_app.py --monitor --gateway <gateway-url>` | All UI tabs on a second computer, with read-only camera, robot/3D and Observer updates. Install `requirements-monitor.txt`; see [Windows setup](../diagnostics/OBSERVER.md#windows-the-full-ui-alongside-the-mac). |
 | `python picker_workflow.py --commands` | The optional advanced scan/goto/confirm shell sharing the UI backend. |
 
 Commands in this guide run from the `capture_and_detect` directory unless stated
@@ -128,6 +134,16 @@ updated. The read-only telemetry connection uses sequential GET requests and
 backs off on errors. Polling and animation stop when the tab/page is hidden.
 No gateway or RAPID update is needed.
 
+**Full screen** opens the scene in the browser fullscreen view, or fills the
+window on browsers that do not allow it. The status badge stays visible; Escape
+or **Exit full screen** returns to the dashboard.
+
+The left gripper now shows the custom `DownFingerV5.STL` cup fingers; the right
+gripper retains its standard fingers. Each arm uses its own finger mounting and
+cup-holding centre. The assets include these meshes, so no build tools are needed
+to run the dashboard. For a rebuild, pass `--left-finger DownFingerV5.STL` to
+`tools/build_yumi_model.py`.
+
 The bundled model and three.js module are served locally from `web_static/3d/`.
 To rebuild the model from RobotStudio STL exports, see `tools/build_yumi_model.py`;
 the three.js bundle entry and rebuild command are in `tools/three-bundle-entry.js`.
@@ -206,7 +222,7 @@ run is needed for the grid. A source-only configuration retains the earlier
 behavior: cached placement geometry excludes grid cups, while destination
 evidence remains from the manual scan and grid occupancy is not reassessed.
 
-Dual-arm travel TCP height is **175 mm**; left-only travel remains **250 mm**.
+Dual-arm and left-only travel TCP heights are **250 mm**.
 Requested gripper opening remains **diameter + 70 mm**. `--camera-z` is disabled by default; when enabled it uses
 `max(40, round(cup_base_z + 20, 1))` mm TCP for picking and replacing. Otherwise
 pick TCP height is 70 mm. No movement occurs merely by launching the UI.
@@ -558,19 +574,46 @@ An optional **frozen empty-table reference** corrects spatial bias in the
 below-table check. The app automatically loads the grid's sibling file
 `<grid-stem>.table-reference.json` when present. The current outside-tray grid
 uses `placing_grid_outside_tray.table-reference.json`, fitted from the independently
-clear scan `20261112_115617_554897_scan`. Its provenance includes the saved depth
-hash and three advancing frame sequences. No reference is learned during normal
-scans or from a scene containing cups. The fitter rejects corrected scans as a
-new baseline to prevent cumulative drift.
+cleared placement area captured on 2026-11-26 after the camera calibration changed.
+Its provenance records three independently clear five-frame bursts and a median
+of all 15 depth frames, retaining pixels invalid in any source frame as invalid.
+The fit RMS is 4.64 mm and the largest cell residual P99 is 11.18 mm, within the
+unchanged 5 mm and 15 mm limits. Cups outside the placement area are not included
+in the fit. No reference is learned during normal scans or from occupied cells;
+the fitter rejects corrected scans as a new baseline to prevent cumulative drift.
+
+`calibration_grid.json` uses the new `session_20261126_132106` scale, rotation,
+translation and camera intrinsics, while retaining its established grid tag
+offset `[-122, 0, 40]`. The terminal's source `calibration.json` remains unchanged
+with its Z offset of 20 mm. Picking applies only the X/Y tag offset; preserving
+the grid's Z offset does not change pick height. The grid's seven robot placement
+positions and 90 mm cells are unchanged. All execution devices must receive the
+same calibration/reference pair before using automatic failover.
+
+Hand-eye calibration files may also contain `depth_scale` and `depth_offset`.
+These describe optical depth in millimetres:
+`corrected_z = depth_scale * raw_z + depth_offset`. The detector applies this
+before calculating camera X/Y and cup diameter, then applies the saved rigid
+transform. Grid checks and reference fitting use the same mapping. Missing raw
+depth remains missing, and saved depth PNGs retain the camera's raw values.
+The file's `tag_offset`, including `[0, 0, 0]`, is used as supplied; an offset
+from an older calibration must not be copied into a new hand-eye fit.
+
+An active depth correction is part of the reference identity. A different
+mapping needs a separately validated reference; a reference cannot repair an
+incorrect camera-to-robot calibration. Check the transformed empty table
+against the configured table height before activation. Hand-eye board fitting
+errors alone do not validate the depth correction. Files without these two
+fields retain the existing identity depth mapping.
 
 The reference is a robust plane fitted to observed empty-table samples, balanced
 on a 2 mm XY raster, with bounded slope, offset, residuals and spatial support.
 Only its negative offset extends the original below-table band. **Both positive
 floor mismatch and raised-object checks retain the original 30 mm limit**;
 robot calibration, placement coordinates, cup ownership and missing-depth checks
-are unchanged. This resolves the saved P9 failure where the measured table was
+are unchanged. The original reference resolved the saved P9 failure where the measured table was
 32–34 mm below ideal Z=0 but within 30 mm of its independently observed reference.
-It also clears 18 table-depth unknowns across 44 archived frames; the two frames'
+It also cleared 18 table-depth unknowns across 44 archived frames; the two frames'
 cells with insufficient valid depth remain unknown.
 
 Reference identity binds the calibration, camera intrinsics, grid coordinates,
@@ -786,13 +829,12 @@ overlay and the robot's destinations. The earlier cell-size reduction changed
 only the assessment footprints. Removing locations does not prove every
 remaining target is reachable.
 
-The matching frozen table reference was derived from the original verified
-empty-table capture. Only the last RGB/depth pair of that three-frame scan is
-archived, so reassessment for the shifted layout uses that pair, with this
-limitation recorded in the reference provenance. The seven-cell reference is
-fitted only after all seven unchanged areas independently pass the empty-frame
-check without a reference or cup exclusions. The live scene is not used to fit a
-new reference; a fresh scan is still required after the layout changes.
+The matching frozen table reference was rebuilt from three independently clear
+depth bursts on 2026-11-26 for the replacement/moved camera. All seven unchanged
+areas passed the empty-frame check without a reference or cup exclusions before
+fitting the 15-frame median. Its provenance records the source sequences and
+depth hash. Normal live scans never refit this baseline; a fresh scan is still
+required after a calibration or layout change.
 
 The grid file's optional `cell_size_mm` is now authoritative for each capture,
 including initial scan placement checks. This file sets it to 90. `--grid-cell-size` is
@@ -868,7 +910,7 @@ movement to finish. The review and progress include this waiting-position move o
 configured. Home after every cup remains a separate, explicitly enabled mode;
 the continuous run's Home on an empty workspace does not enable that setting.
 
-The Mac workspace-check mode reads an optional `.right-park.json` sidecar next to
+The live dashboard reads an optional `.right-park.json` sidecar next to
 the selected grid, for example `placing_grid_outside_tray.right-park.json`. The
 `right_via` preset uses the existing upright right-arm waiting position: the
 shared `R_VIA` coordinates and `RIGHT_UP` orientation from the handover plan.
@@ -888,9 +930,23 @@ Existing explicit position files remain supported as an alternative: omit
 include `controller_pose` metadata for `arm: "right"`, `tool: "tool0"`,
 `wobj: "wobj0"` and `coordinate: "Wobj"`. The configured gateway and applicable
 position/frame validation still apply. A missing sidecar keeps the existing
-finish above the placement destination. Only Mac workspace-check mode loads this
-configuration; Pi/Lynx, direct non-macOS dashboards and terminal workflows retain
-their existing movement defaults.
+finish above the placement destination. The dashboard loads it on every platform
+by default; `--no-right-park` disables it when workspace checks do not require it.
+The original `picker_workflow.py` terminal mode keeps its existing movement
+defaults. The native Lynx CLI uses the shared camera target. The shipped outside-tray
+sidecar parks at x 200, y -380, z 250 with the gripper upright, behind the grid's
+near edge at x 305. It keeps the canonical gateway `http://192.168.125.20:8000`
+and explicitly allows the same gateway's alternate origin `http://169.254.219.127:8000`.
+Other origins are rejected; aliases must be listed exactly in `gateway_aliases`.
+
+Coordinated Mac/Pi/Lynx runs use the shared `right_camera_park_pose()` target,
+separate from the unchanged `R_VIA` handover approach. The complete cup queue
+releases the cup, lifts clear, opens fully and then parks before any new capture.
+Parking uses the placement speed capped by the overall speed. The shared run
+identity includes this parking pose: older or differently configured workers
+cannot take over a new run silently. Update all armed workers to the same version
+before starting the next coordinated batch. Do not update or restart a worker
+while an admitted batch is active.
 
 Any failure stops the batch before another cup is dispatched. Successful picks
 leave any remaining cups available for the next request.
@@ -935,7 +991,7 @@ The detected base Z is checked. Without `--camera-z`, heights are fixed:
 
 | Position | Gripper TCP Z | Flange Z sent to RWS |
 | --- | ---: | ---: |
-| Above selected cup, smooth dual-arm | 175 mm | 334 mm |
+| Above selected cup, smooth dual-arm | 250 mm | 409 mm |
 | Above selected cup, hover / left-only | 250 mm | 409 mm |
 | Pick selected cup | 70 mm | 229 mm |
 

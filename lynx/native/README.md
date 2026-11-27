@@ -112,12 +112,15 @@ deadlines around startup, pipe writes and reads, and terminate the worker after
 a timeout or broken frame. Clean stdin EOF exits. No frame data is written to disk.
 
 After model validation and warmup, request ID zero carries a ready JSON object.
-The current worker advertises `version: "2.0.0"`, `protocol_version: 1` and
+The current worker advertises `version: "2.1.0"`, `protocol_version: 1` and
 `perception_version: 2`, together with `ready: true`, `ncnn_version`,
 `opencv_version`, `postprocess: "ultralytics-8.4.166-retina"`, `input_size`,
 `classes_count` and `max_detections`. The outer response framing remains version
 1; **`perception_version: 2` is the capability required for LNXP**. A coordinator
 must verify the advertised model dimensions, class count and detection limit.
+`depth_calibration_version: 1` declares support for optical depth correction.
+Nonidentity depth corrections are rejected by the Python owner when an older
+worker does not advertise that capability.
 
 ## Binary IPC v2 perception extension — current picker
 
@@ -152,7 +155,7 @@ Configuration used by the current picker:
 
 | JSON field | Contract |
 |---|---|
-| `calibration` | Positive finite `scale`, 3×3 `R`, three-element `t`, and optional three-element `tag_offset`; coordinates are millimetres. |
+| `calibration` | Positive finite `scale`, 3×3 `R`, three-element `t`, and optional three-element `tag_offset`; coordinates are millimetres. Optional positive finite `depth_scale` and finite `depth_offset` default to 1 and 0. |
 | `intrinsics` | Finite `fx`, `fy`, `cx`, `cy`; focal lengths positive; integer `width` and `height` must match the request. |
 | `names` | Three or four labels in export order, including CUP, CUP BASE, CUP HANDLE and optional TRAY; class count must match the loaded graph. |
 | `grid_snapshot.locations` | 1..64 locations with unique positive integer `id` and finite `x`, `y`; the picker also supplies validated `z`, occupancy and reservation fields. |
@@ -164,6 +167,16 @@ The C++ placement code checks geometry and reference-plane bounds. Full artifact
 provenance, file hashes and changes during a capture are checked by the Python
 coordinator; the worker does not fit a reference from an occupied scene or read
 configuration files itself.
+
+Hand-eye depth calibration uses `optical_z = depth_scale * raw_depth + depth_offset`
+before pinhole unprojection, diameter estimation and placement assessment. The
+similarity transform remains `robot = scale * R @ camera + t`. Zero, nonfinite,
+negative, or nonpositive corrected depth stays unavailable. Native placement
+applies this per sample without retaining another full depth image; saved depth
+PNGs and the IPC payload retain the raw sensor values. Object `z_mm` and
+`z_frames_mm` report corrected optical millimetres. Calibration files must retain
+their supplied `tag_offset`; a hand-eye base-frame transform with zero offset
+must not inherit the earlier tag-mounted calibration's offset.
 
 Responses use the same **20-byte LNXR header** as v1 below, with two differences:
 successful perception JSON may be up to **4,194,304 bytes (4 MiB)** and

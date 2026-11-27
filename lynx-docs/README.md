@@ -45,8 +45,9 @@ IP forwarding is off, so only the Lynx itself and apps on it with
 Lynx and reach the gateway on `169.254.219.127` or `192.168.125.20` as
 before. Details, the commands and what it broke: "Network isolation" in
 [gateway/cpp/LYNX.md](../gateway/cpp/LYNX.md#network-isolation).
-**The configuration is not saved** (internal flash full, see there):
-do not reboot the Lynx. Management
+The configuration is saved (2026-11-26, after the internal flash
+was freed, see there). Install app images with `file app import`, never
+`package install`, which fills the 14 MB internal flash. Management
 services enabled: **SSH (22), HTTP (80), HTTPS (443), Telnet (23), SNMP**.
 
 ### SSH in

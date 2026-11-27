@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from cup_inventory import SelectionError, finite_number
+from calibration_depth import corrected_depth_image
 from table_reference_contract import (_fail, _source, _identity, _check_plane, validate_reference)
 
 
@@ -102,6 +103,7 @@ def fit_reference(depth, locations, *, calibration, intrinsics, cell_size,
     if (not isinstance(depth, np.ndarray) or depth.shape != (camera["height"], camera["width"])
             or not np.issubdtype(depth.dtype, np.number) or np.iscomplexobj(depth)):
         _fail("baseline depth does not match camera dimensions.")
+    depth = corrected_depth_image(depth, calibration)
     if (not isinstance(baseline_slots, (list, tuple)) or len(baseline_slots) != len(locations)
             or any(not isinstance(slot, dict) for slot in baseline_slots)
             or [slot.get("id") for slot in baseline_slots] != [place["id"] for place in locations]):

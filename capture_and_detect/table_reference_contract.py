@@ -3,6 +3,7 @@ import json
 import math
 import re
 from cup_inventory import SelectionError, finite_number
+from calibration_depth import depth_parameters
 
 SCHEMA_VERSION = 1
 
@@ -126,10 +127,20 @@ def _identity(calibration, intrinsics, locations, cell_size, table_z):
                 _fail("grid coordinates must be finite.")
             place["z"] = float(location["z"])
         places.append(place)
-    return {"calibration_sha256": digest.lower(), "scale": float(scale),
+    identity = {"calibration_sha256": digest.lower(), "scale": float(scale),
             "rotation": rotation, "translation": translation,
             "tag_offset_mm": offset, "intrinsics": camera,
             "locations": places, "cell_size_mm": float(cell_size), "table_z_mm": float(table_z)}
+    try:
+        depth_scale, depth_offset = depth_parameters(calibration)
+    except ValueError as error:
+        _fail(str(error))
+    # Keep legacy reference identities unchanged for the identity mapping.
+    # Active correction must be recorded separately from the calibration hash:
+    # a reference made by software that ignored it must never validate here.
+    if (depth_scale, depth_offset) != (1.0, 0.0):
+        identity.update(depth_scale=depth_scale, depth_offset=depth_offset)
+    return identity
 
 
 def _check_plane(coefficients, identity):

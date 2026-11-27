@@ -38,6 +38,12 @@ struct OakConfig {
     int width = 1920;
     int height = 1080;
 
+    //
+    // Undistort CAM_A on the camera (depth is aligned to the
+    // undistorted image).
+    //
+    bool undistort = true;
+
     int stereo_width = 640;
     int stereo_height = 400;
 
@@ -58,7 +64,8 @@ public:
     virtual ~OakDevice() = default;
 
     //
-    // CAM_A intrinsics, scaled to the published frame size.
+    // CAM_A intrinsics of the published frames (their size, and
+    // undistorted when configured).
     //
     virtual CameraIntrinsics intrinsics() const = 0;
 

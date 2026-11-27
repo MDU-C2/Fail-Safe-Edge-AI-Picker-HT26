@@ -26,6 +26,7 @@ RIGHT_UP = (0, 0, 0)
 RIGHT_DOWN = (180, 0, 0)
 RIGHT_SIDE = (90, 0, 0)
 R_VIA = (300, -300, 250)
+RIGHT_CAMERA_PARK = (200, -380, 250)
 R_TAKE = (HANDOVER_L[0] - 20, HANDOVER_L[1] - 15, HANDOVER_L[2] - 339)
 R_BELOW = (R_TAKE[0], R_TAKE[1], R_TAKE[2] - 35)
 R_BESIDE = (R_BELOW[0], R_BELOW[1] - 120, R_BELOW[2])
@@ -42,8 +43,9 @@ PICK_SPEED = 100
 FLIP_SPEED = 100
 FLIP_ACCELERATION = 30
 PLACE_ABOVE = 80
+RIGHT_RELEASE_POS = 12 
 HANDOVER_BLEND_MM = 10
-SMOOTH_TRAVEL_Z = 175
+SMOOTH_TRAVEL_Z = 250
 SMOOTH_ACCELERATION = 60
 SMOOTH_RAMP = 40
 CARRY_MAX_ACC = 1.5
@@ -61,6 +63,15 @@ def right_via_pose():
     This returns coordinates only and never dispatches motion.
     """
     return dict(zip(("x", "y", "z", "rx", "ry", "rz"), (*R_VIA, *RIGHT_UP)))
+
+
+def right_camera_park_pose():
+    """Empty right-arm waiting target behind the placement grid, tool0/wobj0.
+
+    Keep this separate from R_VIA, the next cup's handover approach. The
+    Mac, Pi and Lynx coordinated workflows use the same final parking target.
+    """
+    return dict(zip(("x", "y", "z", "rx", "ry", "rz"), (*RIGHT_CAMERA_PARK, *RIGHT_UP)))
 
 
 def normalize_right_park_pose(value=None):
@@ -269,7 +280,7 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
     Source XY, detected yaw/aperture, optional camera height and the selected
     placement remain UI inputs. Only cup approach/descent/lift use detected yaw;
     the fixed handover keeps its tuned pose. Calibration XY is applied once.
-    Dual-arm travel uses TCP Z=175 mm; picking uses 70 mm or, with camera height,
+    Dual-arm travel uses TCP Z=250 mm; picking uses 70 mm or, with camera height,
     max(40, cup base Z + 20), plus the 159 mm gripper length. Left-only motion
     keeps its existing travel height. Placement is already a flange target.
 
@@ -377,9 +388,11 @@ def handover_jobs(cup, *, place, tag_offset=(0, 0, 0), speed=None,
                   move_speed=plan.speed, after=("right_retreat",))
     plan.path("right_place", "right", [(spot, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed, **carrying)
-    plan.grip("right_release", "right", "open")
+    # plan.grip("right_release", "right", "open")
+    plan.grip("right_release", "right", "move", position = RIGHT_RELEASE_POS)
     plan.path("right_clear", "right", [(place_above, RIGHT_DOWN, place_speed, True)],
               move_speed=place_speed)
+    plan.grip("right_open_after_clear", "right", "open")
     if home_after_cup:
         plan.home("right_home", "right")
     elif right_park is not None:
@@ -398,7 +411,10 @@ def right_camera_park_jobs(*, speed=None, phase_speeds=None):
     """
     plan = _Plan(speed, None, phase_speeds=phase_speeds)
     place_speed = plan.phase_speeds["placement"]
-    plan.path("right_park", "right", [(R_VIA, RIGHT_UP, place_speed, False)],
+    pose = right_camera_park_pose()
+    position = tuple(pose[axis] for axis in ("x", "y", "z"))
+    rotation = tuple(pose[axis] for axis in ("rx", "ry", "rz"))
+    plan.path("right_park", "right", [(position, rotation, place_speed, False)],
               move_speed=place_speed, zone=0)
     return plan.jobs
 

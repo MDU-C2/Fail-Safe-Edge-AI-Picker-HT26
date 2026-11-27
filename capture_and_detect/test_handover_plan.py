@@ -36,28 +36,33 @@ class HandoverPlanTests(unittest.TestCase):
                               ("right_retreat", "left_park"),
                               ("left_clear", "right_retreat"), ("right_lower", "right_retreat"),
                               ("right_retreat", "right_place"), ("right_place", "right_release"),
-                              ("right_release", "right_clear")):
+                              ("right_release", "right_clear"),
+                              ("right_clear", "right_open_after_clear")):
             with self.subTest(first=first, second=second):
                 self.assertIn(first, by_name[second]["after"])
         self.assertTrue(all(job["body"]["wait"] is True for job in jobs))
         for name, arm, action in (("right_open_start", "right", "open"),
                                   ("left_open", "left", "open"), ("grip_cup", "left", "grip"),
                                   ("right_open", "right", "open"), ("right_grip", "right", "grip"),
-                                  ("left_release", "left", "open"), ("right_release", "right", "open")):
+                                  ("left_release", "left", "open"),
+                                  ("right_open_after_clear", "right", "open")):
             self.assertEqual(by_name[name]["endpoint"], "/robot/rws/gripper")
             self.assertEqual(by_name[name]["body"], {"arm": arm, "action": action, "wait": True})
+        self.assertEqual(by_name["right_release"]["endpoint"], "/robot/rws/gripper")
+        self.assertEqual(by_name["right_release"]["body"],
+                         {"arm": "right", "action": "move", "position": 12, "wait": True})
         self.assertEqual([job["name"] for job in jobs if job["body"].get("action") == "grip"],
                          ["grip_cup", "right_grip"])
-        self.assertEqual(jobs[-1]["name"], "right_clear")
+        self.assertEqual(jobs[-1]["name"], "right_open_after_clear")
 
     def test_smooth_branch_geometry_and_local_linear_segments(self):
         # Literal flange targets from the upstream blended approach/parking
         # plan, rather than imported constants: this catches drift in tuning.
         expected = {
             "approach_cup": [(400, 100, 450, 180, 0, 180, False, 10),
-                             (500, 100, 334, 180, 0, 180, False, 10),
+                             (500, 100, 409, 180, 0, 180, False, 10),
                              (500, 100, 229, 180, 0, 180, True, 0)],
-            "left_handover": [(500, 100, 334, 180, 0, 180, True, 10),
+            "left_handover": [(500, 100, 409, 180, 0, 180, True, 10),
                               (350, -100, 655, 180, 0, 180, False, 0)],
             "left_clear": [(350, -100, 690, 180, 0, 180, True, 0)],
             "left_park": [(350, 400, 690, 180, 0, 180, False, 0)],
@@ -97,7 +102,7 @@ class HandoverPlanTests(unittest.TestCase):
                         for index in indices:
                             point = changed["body"]["points"][index]
                             self.assertEqual((point["x"], point["y"]), (385, 125))
-                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 2 else 334)
+                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 2 else 409)
                             point["x"], point["y"] = 500, 100
                     self.assertEqual(changed, initial)
         self.assertEqual(self.cup, original)
@@ -107,7 +112,7 @@ class HandoverPlanTests(unittest.TestCase):
         jobs = {job["name"]: job for job in handover_jobs(cup, place=self.place, camera_z=True)}
         approach = jobs["approach_cup"]["body"]["points"]
         self.assertEqual([p["rz"] for p in approach], [180, 145, 145])
-        self.assertEqual([p["z"] for p in approach], [450, 334, 254])
+        self.assertEqual([p["z"] for p in approach], [450, 409, 254])
         lift = jobs["left_handover"]["body"]["points"]
         self.assertEqual([p["rz"] for p in lift], [145, 180])
         self.assertEqual(jobs["left_open"]["body"],

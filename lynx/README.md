@@ -77,6 +77,13 @@ The current reference is bound to the calibrated **1920×1080** intrinsics, layo
 cell size, table height and calibration digest. Changing camera resolution or
 moving a cell requires a separately validated matching reference.
 
+For hand-eye files with a nonidentity `depth_scale`/`depth_offset`, rebuild the
+Linux native worker with depth-calibration capability version 1 (worker 2.1 or
+later). The Python adapter rejects an older worker before sending inference or
+placement requests with that mapping. Updating Python files alone is insufficient.
+Validate the calibration against a clear table and rebuild its matching reference
+before installing it; preserve the supplied tag offset and raw depth images.
+
 Create a new state directory from the currently inspected deployment state:
 
 ```sh
@@ -234,7 +241,7 @@ batch does not send the arms Home between cups. Defaults are:
 
 | Setting | Value |
 | --- | --- |
-| Dual-arm travel TCP height | 175 mm; the 159 mm gripper offset makes the flange target 334 mm |
+| Dual-arm travel TCP height | 250 mm; the 159 mm gripper offset makes the flange target 409 mm |
 | Left-only travel TCP height | 250 mm; flange target 409 mm |
 | Fixed picking TCP height | 70 mm |
 | Opening allowance | Measured base diameter + 70 mm, through the existing gripper conversion/checks |
