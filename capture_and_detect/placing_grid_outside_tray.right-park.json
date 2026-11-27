@@ -1,8 +1,23 @@
 {
   "schema_version": 1,
   "gateway": "http://192.168.125.20:8000",
+  "gateway_aliases": [
+    "http://169.254.219.127:8000"
+  ],
   "robot_id": "mdu-yumi-lynx-9113c0",
-  "preset": "right_via",
-  "source": "existing smooth handover upright waiting position, selected for camera clearance",
-  "configured_at": "2026-11-20T08:57:22.520295+00:00"
+  "pose": {
+    "x": 200,
+    "y": -380,
+    "z": 250,
+    "rx": 0,
+    "ry": 0,
+    "rz": 0
+  },
+  "controller_pose": {
+    "arm": "right",
+    "tool": "tool0",
+    "wobj": "wobj0",
+    "coordinate": "Wobj"
+  },
+  "source": "right arm waits behind the placement grid, out of the camera view"
 }

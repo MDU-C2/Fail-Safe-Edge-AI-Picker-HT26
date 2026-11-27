@@ -17,7 +17,7 @@ from placing_grid import PlacingGrid
 from recovery_journal import RecoveryJournal
 from robot_client import RobotClient
 from queued_robot_client import QueueRobotClient
-from handover_plan import right_via_pose
+from handover_plan import right_camera_park_pose
 from robot_controls import RobotControls
 from terminal_commands import handle_input, positive, print_cups
 from terminal_controller import TerminalController
@@ -232,7 +232,7 @@ def main(argv=None):
                              strict_single_verification=True, max_result_age=args.max_result_age,
                              camera_z=args.camera_z, between_cup_check=True,
                              between_cup_grid_check=True, continuous_batch=False,
-                             right_park_pose=right_via_pose())
+                             right_park_pose=right_camera_park_pose())
         if args.scan_once:
             # Do not call session.scan(): a dry camera check must not reconcile
             # or release the deployment's existing occupied/reserved records.

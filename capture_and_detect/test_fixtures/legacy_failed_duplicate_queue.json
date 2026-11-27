@@ -1,0 +1,164 @@
+{
+  "state": "failed",
+  "owner": "primary",
+  "length": 19,
+  "step": 4,
+  "cancel_requested": true,
+  "message": "Job 5 (right_via): RAPID stopped before the move finished",
+  "started_at": "2026-11-25T08:57:55.373013Z",
+  "finished_at": "2026-11-25T08:58:11.774985Z",
+  "steps": [
+    {
+      "name": "right_open_start",
+      "type": "gripper",
+      "arm": "right",
+      "group": "g0",
+      "state": "done",
+      "message": "DONE"
+    },
+    {
+      "name": "left_open",
+      "type": "gripper",
+      "arm": "left",
+      "group": "g0",
+      "state": "done",
+      "message": "DONE"
+    },
+    {
+      "name": "approach_cup",
+      "type": "path",
+      "arm": "left",
+      "group": "g0",
+      "state": "done",
+      "message": "DONE"
+    },
+    {
+      "name": "grip_cup",
+      "type": "gripper",
+      "arm": "left",
+      "group": "g0",
+      "state": "done",
+      "message": "DONE"
+    },
+    {
+      "name": "right_via",
+      "type": "path",
+      "arm": "right",
+      "group": "g1",
+      "state": "failed",
+      "message": "RAPID stopped before the move finished"
+    },
+    {
+      "name": "right_beside",
+      "type": "path",
+      "arm": "right",
+      "group": "g1",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "left_handover",
+      "type": "path",
+      "arm": "left",
+      "group": "g2",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_open",
+      "type": "gripper",
+      "arm": "right",
+      "group": "g3",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_take",
+      "type": "path",
+      "arm": "right",
+      "group": "g3",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_grip",
+      "type": "gripper",
+      "arm": "right",
+      "group": "g3",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "left_release",
+      "type": "gripper",
+      "arm": "left",
+      "group": "g4",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "left_clear",
+      "type": "path",
+      "arm": "left",
+      "group": "g4",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_lower",
+      "type": "path",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_retreat",
+      "type": "path",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_place",
+      "type": "path",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_release",
+      "type": "gripper",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_clear",
+      "type": "path",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "right_release",
+      "type": "gripper",
+      "arm": "right",
+      "group": "g5",
+      "state": "skipped",
+      "message": null
+    },
+    {
+      "name": "left_park",
+      "type": "path",
+      "arm": "left",
+      "group": "g6",
+      "state": "skipped",
+      "message": null
+    }
+  ]
+}

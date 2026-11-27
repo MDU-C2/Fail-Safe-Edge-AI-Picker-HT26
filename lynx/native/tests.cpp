@@ -1,5 +1,6 @@
 #include "geometry.hpp"
 #include "protocol.hpp"
+#include "depth_calibration.hpp"
 
 #include <functional>
 #include <iostream>
@@ -15,6 +16,19 @@ void check(bool passed, const char* message) {
 void rejects(const std::function<void()>& action, const char* message) {
     try { action(); } catch (const std::exception&) { return; }
     throw std::runtime_error(message);
+}
+
+void test_depth_calibration() {
+    const auto identity = lynx::DepthCalibration::from_json(nlohmann::json::object());
+    check(identity.correct(811.5) == 811.5, "Legacy optical depth stays unchanged");
+    const auto corrected = lynx::DepthCalibration::from_json({{"depth_scale", .5}, {"depth_offset", 100.}});
+    check(corrected.correct(800.) == 500., "Apply correction before unprojection");
+    for (double missing : {0., -1., std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})
+        check(corrected.correct(missing) == 0., "Missing depth cannot become the calibration offset");
+    check(lynx::DepthCalibration{1., -100.}.correct(50.) == 0., "Nonpositive corrected depth stays unavailable");
+    for (const auto& invalid : {nlohmann::json{{"depth_scale", 0}}, nlohmann::json{{"depth_scale", -1}},
+            nlohmann::json{{"depth_scale", true}}, nlohmann::json{{"depth_offset", "100"}}})
+        rejects([&] { lynx::DepthCalibration::from_json(invalid); }, "Malformed depth calibration rejected");
 }
 
 std::string request_bytes(std::uint32_t id, std::uint32_t width, std::uint32_t height,
@@ -140,6 +154,7 @@ void test_masks() {
 
 int main() {
     try {
+        test_depth_calibration();
         test_protocol();
         test_letterbox_and_boxes();
         test_nms();

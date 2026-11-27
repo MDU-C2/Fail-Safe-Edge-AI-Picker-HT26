@@ -22,6 +22,15 @@ class NativePerception(WorkerTransport):
         The caller owns the latest frame for auditing. Earlier burst frames are
         released while streaming to avoid retaining two copies of the burst.
         """
+        calibration = config.get("calibration", {})
+        scale, offset = calibration.get("depth_scale", 1.), calibration.get("depth_offset", 0.)
+        if (type(scale) not in (int, float) or type(offset) not in (int, float)
+                or not math.isfinite(scale) or not math.isfinite(offset) or scale <= 0):
+            raise InferenceError("Invalid optical depth calibration.")
+        if ((scale != 1. or offset != 0.)
+                and (type(getattr(self, "depth_calibration_version", None)) is not int
+                     or self.depth_calibration_version < 1)):
+            raise InferenceError("This calibration requires an updated native worker with depth correction support.")
         camera = config["intrinsics"]
         width, height = camera["width"], camera["height"]
         if (type(width) is not int or type(height) is not int

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -202,6 +203,29 @@ def build_inventory(objects, *, capture_id, frame, calibration_id, gateway, imag
     }
 
 
+# On Windows, os.replace fails with "Access is denied" (WinError 5) or
+# "being used by another process" (WinError 32) while any other program has the
+# target open for a moment: Defender scanning the file just written, the search
+# indexer, a sync client or an editor. The recovery journal is rewritten on
+# every robot step, so over a long run one write eventually hits such a moment.
+# Retry briefly; a lock that outlasts REPLACE_RETRY_SECONDS still raises.
+REPLACE_RETRY_SECONDS = 2.0
+_RETRY_REPLACE = os.name == "nt"
+
+
+def _replace(source, target):
+    deadline, wait = time.monotonic() + REPLACE_RETRY_SECONDS, 0.01
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if not _RETRY_REPLACE or time.monotonic() + wait > deadline:
+                raise
+            time.sleep(wait)
+            wait = min(wait * 2, 0.25)
+
+
 def atomic_json(path, value):
     """Readers see either the previous complete document or the next one."""
     path = Path(path)
@@ -215,7 +239,7 @@ def atomic_json(path, value):
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace(temporary, path)
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)

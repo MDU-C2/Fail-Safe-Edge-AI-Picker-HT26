@@ -95,7 +95,7 @@ def test_only_live_opted_in_robot_uses_queues(live, configured, queued):
 
 
 def test_hardware_factory_attaches_primary_continuous_runner_and_uses_shared_park(factory_rig, monkeypatch, tmp_path):
-    from handover_plan import right_via_pose
+    from handover_plan import right_camera_park_pose
     from web_app import hardware_factory
     rig = factory_rig
     token = tmp_path / "coordinator-token"
@@ -107,11 +107,11 @@ def test_hardware_factory_attaches_primary_continuous_runner_and_uses_shared_par
     coordinator, runner = Mock(), Mock()
     monkeypatch.setitem(sys.modules, "failover_coordinator", SimpleNamespace(CoordinatorClient=coordinator))
     monkeypatch.setitem(sys.modules, "failover_workflow", SimpleNamespace(FailoverRunner=runner))
-    sidecar = Mock(side_effect=AssertionError("Failover uses the shared right-via target"))
+    sidecar = Mock(side_effect=AssertionError("Failover uses the shared camera-clearance target"))
     monkeypatch.setattr("camera_parking.load_right_park_pose", sidecar)
     session, _ = hardware_factory(rig.args)(rig.controller)
     assert session.between_cup_check and session.between_cup_grid_check
-    assert session.continuous_batch is True and session.right_park_pose == right_via_pose()
+    assert session.continuous_batch is True and session.right_park_pose == right_camera_park_pose()
     assert session.failover is runner.return_value
     assert runner.call_args.kwargs["role"] == "primary"
     assert runner.call_args.kwargs["state_dir"] == tmp_path

@@ -100,7 +100,9 @@ import requests
 from ultralytics import YOLO
 
 import depth_average                               # depth of several frames, mask edge left out
+from calibration_depth import corrected_depth, depth_parameters
 from handover_plan import handover_jobs
+from pick_order import count_neighbours, next_cup   # fewest neighbours first (collision)
 
 # ================================================================
 # Settings
@@ -118,7 +120,7 @@ GRIP_FIELDS = ["capture", "cup", "diameter_mm", "grip_left_mm", "grip_right_mm",
 
 # ---------------- Robot moves ----------------
 JOB_TIMEOUT = 90           # s, longer than the gateway's own 60 s job timeout
-SPEED = 850               # TCP speed, mm/s (1..1500), sent with every move and home
+SPEED = 300               # TCP speed, mm/s (1..1500), sent with every move and home
 ACCELERATION = 100         # legacy left-only moves; smooth paths use handover_plan's settings
 RAMP = 100                 # legacy left-only ramp; smooth paths use handover_plan's settings
 HOME_SPEED = 200          # mm/s for going home (grippers empty then), faster than SPEED
@@ -852,7 +854,7 @@ class Handover:
 def load_model():
     """NCNN on the Lynx (the Lynx container sets PICKER_DEVICE=lynx), best.pt elsewhere."""
     lynx = os.environ.get("PICKER_DEVICE", "").lower() == "lynx"
-    path = HERE / ("best_ncnn_model" if lynx else "best.pt")
+    path = HERE / ("best_ncnn_model" if lynx else "bestExtended.pt")
     if not path.exists():
         raise SystemExit(f"Model not found: {path}\n"
                          f"Put best.pt and best_ncnn_model/ in the same folder as capture_and_detect.py.")
@@ -869,6 +871,7 @@ class Calibration:
         self.scale, self.R, self.t = cal["scale"], np.array(cal["R"]), np.array(cal["t"])
         # tag centre minus gripper TCP (robot mm); Arm.goto() adds its x, y to every pick move
         self.offset = tuple(cal.get("tag_offset", (0, 0, 0)))
+        self.depth_scale, self.depth_offset = depth_parameters(cal)
 
     def to_robot(self, x, y, z):
         return tuple(self.scale * self.R @ np.array([x, y, z]) + self.t)
@@ -904,7 +907,7 @@ class Detector:
         return objects, annotated
 
     def to_robot(self, u, v, z):
-        """Pixel (u, v) at camera distance z -> (camera x, y) and robot (x, y, z), mm (pinhole model)."""
+        """Backproject already-corrected optical Z into camera and robot mm."""
         x = (u - self.K["cx"]) * z / self.K["fx"]
         y = (v - self.K["cy"]) * z / self.K["fy"]
         return x, y, self.calibration.to_robot(x, y, z)
@@ -915,16 +918,17 @@ class Detector:
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
         diameter_px = 2 * np.sqrt(mask.sum() / np.pi)   # of a circle with the mask's area
+        depth_scale, depth_offset = depth_parameters(self.calibration)
         z_frames, robot_z_frames = [], []          # the same object in each single frame
         for d in depths:
-            zf = depth_average.mask_depth(d, mask)  # median inside the mask, its edge left out
+            zf = corrected_depth(depth_average.mask_depth(d, mask), depth_scale, depth_offset)
             z_frames.append(mm(zf))
             robot_z_frames.append(mm(self.to_robot(u, v, zf)[2][2]) if zf else None)
         valid = [zf for zf in z_frames if zf]
         if valid:                                  # Z = mean of the frames (robot Z then = mean of robot_z_frames)
             z = sum(valid) / len(valid)
         else:                                      # no single frames given: the depth image as it is
-            z = depth_average.mask_depth(depth, mask)
+            z = corrected_depth(depth_average.mask_depth(depth, mask), depth_scale, depth_offset)
 
         x = y = None
         robot = (None, None, None)
@@ -1144,7 +1148,7 @@ class Picker:
         self.store.save_cups(cups, stamp)
         log(f"{len(cups)} cup(s) saved to cups.json")
         placed = 0
-        while self.move_one(cups, stamp):          # all cups of this capture, most certain first
+        while self.move_one(cups, stamp):          # all cups of this capture, fewest neighbours first
             placed += 1
         if placed and not self.gateway.lost.is_set() and not any(c["status"] == "failed" for c in cups):
             self.go_home()                         # all done: home once, not between cups
@@ -1343,9 +1347,9 @@ class Picker:
             log(f"  STOP: going home failed: {e}")
 
     def move_one(self, cups, stamp):
-        """Hand over the first cup that is still "waiting" (the most certain reachable one).
+        """Hand over the "waiting" cup with the fewest neighbours (pick_order.py; tie: most certain).
         True if it was placed, False if there was none left or it failed (then stop)."""
-        cup = next((c for c in cups if c["status"] == "waiting"), None)
+        cup = next_cup(cups)
         if cup is None:
             return False
         try:
@@ -1362,6 +1366,7 @@ class Picker:
                 return False
         what = "left arm only" if self.left_only else f"hand-over, place at location {place['id']}"
         log(f"  cup {cup['id']}: X={cup['x']} Y={cup['y']} Z={cup['z']} base Ø{cup['diameter']} mm -> {what}")
+        log(f"  cup {cup['id']}: {count_neighbours(cup, cups)} neighbour(s) within 2 x 5 cm")
         cup["status"] = "moving"
         self.store.save_cups(cups, stamp)
         placed = False

@@ -17,8 +17,8 @@ import requests
 from camera_client import TransientCameraError
 from cup_inventory import SelectionError, atomic_json
 from failover_coordinator import (CoordinatorConflict, CoordinatorError, CoordinatorUnavailable,
-                                  RECOVERY_CAPABILITY, DEVICE_SPEED_CAPABILITY,
-                                  validate_device_speeds, validate_recovery)
+                                  RECOVERY_CAPABILITY, DEVICE_SPEED_CAPABILITY, ABANDONMENT_CAPABILITY,
+                                  validate_device_speeds, validate_recovery, validate_abandonment)
 from queued_robot_client import ControlUnavailable, QueueNotSubmitted, QueueWaitCancelled
 from robot_client import GatewayControlUnavailable, GatewayReadUnavailable, RobotCommandError
 
@@ -212,6 +212,7 @@ class FailoverRunner:
                                    for p in grid["locations"]],
                     "cell_size_mm": grid.get("cell_size_mm")}
         identity = {"calibration": session.calibration_id, "tag_offset": list(session.tag_offset),
+                    "right_park_pose": session.right_park_pose,
                     "grid": hashlib.sha256(json.dumps(geometry, sort_keys=True,
                         separators=(",", ":"), allow_nan=False).encode()).hexdigest()}
         settings = {"identity": identity, "motion": {"speed": session.speed,
@@ -232,7 +233,7 @@ class FailoverRunner:
                 or set(settings) - {"identity", "motion", "continuous_batch", "device_speeds"}
                 or type(settings.get("continuous_batch", False)) is not bool
                 or settings["identity"] != self.settings()["identity"]):
-            raise SelectionError("Failover worker calibration or placement grid differs from the starting device.")
+            raise SelectionError("Failover worker calibration, placement grid or right-arm parking pose differs from the starting device.")
         motion = settings["motion"]
         validate_motion(motion)
         speed, home_speed = motion["speed"], motion["home_speed"]
@@ -399,6 +400,15 @@ class FailoverRunner:
         journal = (json.loads(session.recovery.path.read_text())
                    if session.recovery.required() else None)
         context = journal.get("context", {}) if journal else {}
+        if record is not None and record["state"] in {"pending", "unknown"}:
+            if record.get("inspected_abandonment") is not None and journal is None and not session.motion_uncertain:
+                session._check_stop()
+                session.scan_usable = False
+                return True
+            receipt = self.coordinator.receipt(record["run_id"], record["submission_id"])
+            if receipt.get("abandonment") is not None:
+                self._retire_abandoned_record(record, receipt)
+                return True
         if record is not None and record["state"] in {"pending", "unknown", "prepared"} and not wait:
             return False
         if (record is not None and record["state"] == "done"
@@ -766,6 +776,9 @@ class FailoverRunner:
         if record["state"] in {"prepared", "pending", "unknown"} and record["dispatch_started"]:
             receipt = self.coordinator.receipt(record["run_id"], record["submission_id"])
             state = receipt.get("state")
+            if receipt.get("abandonment") is not None:
+                self.robot.validate_abandoned_record(record, receipt)
+                return record["run_id"]
             if state in {"failed", "cancelled"} and receipt.get("recovery") is not None:
                 self._checked_inspected_receipt(record, receipt)
                 return record["run_id"]
@@ -825,41 +838,102 @@ class FailoverRunner:
             session._finish_confirmed_motion()
         session.scan_usable = False
 
+    def _retire_abandoned_record(self, record, receipt, *, explicit=False):
+        """Retire an inspected unknown cup without claiming it ever completed."""
+        proof = self.robot.validate_abandoned_record(record, receipt)
+        session = self.session
+        journal = (json.loads(session.recovery.path.read_text())
+                   if session.recovery.required() else None)
+        if not explicit:
+            session._check_stop()
+            if journal is not None:
+                self._validate_recovery_context(record, journal.get("context", {}), record["run_id"])
+            elif session.motion_uncertain and not record.get("inspected_abandonment"):
+                raise SelectionError("Unrelated local recovery still requires inspection.")
+        if record.get("inspected_abandonment") != proof or not record["reconciled"]:
+            archive = self.pending_path.parent / "recovery-history" / ("abandoned-cup-" + uuid.uuid4().hex + ".json")
+            self.robot._write_pending(archive, {"pending": record, "journal": journal, "receipt": receipt})
+            retired = {**record, "state": "unknown", "reconciled": True,
+                       "inspected_abandonment": copy.deepcopy(proof),
+                       "abandoned_receipt_queue": copy.deepcopy(receipt["queue"])}
+            self.robot._write_pending(self.pending_path, retired)
+        if not explicit:
+            session._finish_confirmed_motion()
+        session.scan_usable = False
+
     def recover_after_inspection(self):
-        """Retire inspected terminal failures, preserving all original evidence."""
+        """Retire explicitly inspected failures or lost queues without replaying work."""
         if self.role != "primary":
             raise SelectionError("Acknowledge gateway recovery from the MacBook controller.")
         if not self._execution.acquire(blocking=False):
             raise SelectionError("Wait for shared execution to finish before recovery.")
         acquired = False
         try:
-            def check_shared():
+            def check_shared(*, refresh=False):
                 state = self.coordinator.state()
                 run, head = state.get("run"), state.get("head")
                 pending = self.robot._read_pending(self.pending_path)
                 if run and run["phase"] in ACTIVE:
                     raise SelectionError("The shared batch is still active; stop it before acknowledging recovery.")
-                if head and head["state"] not in {"done", "not_submitted", "failed", "cancelled"}:
-                    raise SelectionError("The shared batch has an unresolved queue receipt; preserve it for coordinated recovery.")
-                target = None
+                unresolved_head = bool(refresh and head and head["state"] in {"pending", "unknown"})
+                if unresolved_head:
+                    if not run or run["id"] != head["run_id"] or run["phase"] not in {"blocked", "stopped"}:
+                        raise SelectionError("The unresolved receipt does not match the stopped batch.")
+                    # State is cached history. The exact receipt read can prove
+                    # completion, or preserve an unknown queue whose history
+                    # was replaced. Never infer completion from a newer queue.
+                    self.coordinator.receipt(head["run_id"], head["submission_id"])
+                    refreshed = self.coordinator.state()
+                    updated_head = refreshed.get("head")
+                    if (refreshed.get("run") != run or not updated_head
+                            or any(updated_head.get(key) != head.get(key)
+                                   for key in ("run_id", "submission_id", "owner"))):
+                        raise SelectionError("The shared batch changed; inspect its current state before recovery.")
+                    state, head = refreshed, updated_head
+                if (unresolved_head and head and pending and pending["state"] in {"pending", "unknown"}
+                        and pending["dispatch_started"] and head["state"] in {"done", "failed", "cancelled"}
+                        and (pending["run_id"], pending["submission_id"]) ==
+                            (head["run_id"], head["submission_id"])):
+                    previous_binding = self.robot._batch_binding
+                    self.robot.bind_batch(self.coordinator, pending["run_id"], self.pending_path)
+                    try:
+                        pending = self.robot.pending_completion(wait=False)
+                    finally:
+                        if previous_binding is None:
+                            self.robot.unbind_batch()
+                        else:
+                            self.robot.bind_batch(*previous_binding)
+                target, kind = None, None
                 if head and head["state"] in {"failed", "cancelled"}:
                     if not run or run["id"] != head["run_id"] or run["phase"] not in {"blocked", "stopped"}:
                         raise SelectionError("The failed receipt does not match the stopped batch.")
-                    target = (head["run_id"], head["submission_id"])
+                    target, kind = (head["run_id"], head["submission_id"]), "failure"
+                elif head and head["state"] == "unknown":
+                    if not run or run["id"] != head["run_id"] or run["phase"] not in {"blocked", "stopped"}:
+                        raise SelectionError("The unknown receipt does not match the stopped batch.")
+                    target, kind = (head["run_id"], head["submission_id"]), "abandonment"
+                elif head and head["state"] not in {"done", "not_submitted"}:
+                    raise SelectionError("The shared batch has an unresolved queue receipt; preserve it for coordinated recovery.")
                 elif (run and run.get("recovery") and pending and not pending["reconciled"]
                       and (pending["run_id"], pending["submission_id"]) ==
                           (run["id"], run["recovery"]["submission_id"])):
-                    target = (run["id"], run["recovery"]["submission_id"])
-                if target and RECOVERY_CAPABILITY not in state.get("capabilities", []):
+                    target, kind = (run["id"], run["recovery"]["submission_id"]), "failure"
+                elif (run and run.get("abandonment") and pending and not pending["reconciled"]
+                      and (pending["run_id"], pending["submission_id"]) ==
+                          (run["id"], run["abandonment"]["submission_id"])):
+                    target, kind = (run["id"], run["abandonment"]["submission_id"]), "abandonment"
+                capability = ABANDONMENT_CAPABILITY if kind == "abandonment" else RECOVERY_CAPABILITY
+                if target and capability not in state.get("capabilities", []):
                     raise SelectionError("The coordinator needs the recovery update before this batch can be unblocked.")
                 if (pending and pending["state"] not in {"done", "not_submitted"}
-                        and not (pending["reconciled"] and pending.get("inspected_recovery"))):
+                        and not (pending["reconciled"] and
+                                 (pending.get("inspected_recovery") or pending.get("inspected_abandonment")))):
                     if (pending["run_id"], pending["submission_id"]) != target:
                         raise SelectionError("This device has an unrelated unresolved cup receipt; preserve it for recovery.")
-                return state, pending, target
+                return state, pending, target, kind
 
-            before_shared, pending, target = check_shared()
-            before = self.robot.queue_status()
+            before_shared, pending, target, kind = check_shared(refresh=True)
+            before = self.robot.inspection_queue_status()
             if before["state"] == "running":
                 raise SelectionError("A gateway queue is running; wait for it to finish before recovery.")
             if before["state"] == "done" and not target:
@@ -867,10 +941,19 @@ class FailoverRunner:
             if target:
                 saved = self.coordinator.receipt(*target)
                 saved_queue = self.robot._validate_queue_status(saved.get("queue"))
-                if saved["state"] not in {"failed", "cancelled"} or saved_queue["state"] != saved["state"]:
-                    raise SelectionError("The failed batch has no confirmed terminal queue record.")
-                if before["state"] != "idle" and before != saved_queue:
-                    raise SelectionError("The gateway queue differs from the failed batch. No queue was cleared.")
+                if kind == "abandonment":
+                    if saved.get("state") != "unknown" or saved_queue["state"] == "idle":
+                        raise SelectionError("The unknown receipt lacks its original bound queue evidence.")
+                    if (before["state"] not in {"idle", "done", "failed", "cancelled"} or before == saved_queue
+                            or before.get("owner") == saved_queue.get("owner")
+                            and before.get("started_at") == saved_queue.get("started_at")
+                            or any(step["name"].startswith("q" + target[1] + "_") for step in before["steps"])):
+                        raise SelectionError("The unknown queue cannot be abandoned while its work may still be current.")
+                else:
+                    if saved["state"] not in {"failed", "cancelled"} or saved_queue["state"] != saved["state"]:
+                        raise SelectionError("The failed batch has no confirmed terminal queue record.")
+                    if before["state"] != "idle" and before != saved_queue:
+                        raise SelectionError("The gateway queue differs from the failed batch. No queue was cleared.")
             owner = self.robot._get_object("/control")
             if owner.get("active") is not False:
                 raise SelectionError("Another controller holds robot control; wait before acknowledging recovery.")
@@ -878,17 +961,47 @@ class FailoverRunner:
                                                     expected_priority=PRIORITIES[self.role])
             if not acquired:
                 raise SelectionError("Could not acquire control for recovery; the failed queue was preserved.")
-            after_shared, after_pending, after_target = check_shared()
+            after_shared, after_pending, after_target, after_kind = check_shared()
             # Heartbeat timestamps may change. The admitted run and last
             # submission must not change while acquiring the recovery lease.
             if (any(before_shared.get(key) != after_shared.get(key) for key in ("run", "head"))
-                    or pending != after_pending or target != after_target):
+                    or pending != after_pending or target != after_target or kind != after_kind):
                 raise SelectionError("The shared batch changed; inspect its current state before recovery.")
             if target:
                 # Archive shared evidence before touching the gateway's only
                 # current queue, even when this Mac did not own the failed cup.
-                archive = self.pending_path.parent / "recovery-history" / ("shared-failure-" + uuid.uuid4().hex + ".json")
-                self.robot._write_pending(archive, {"shared": before_shared, "receipt": saved, "pending": pending})
+                archive = self.pending_path.parent / "recovery-history" / ("shared-inspection-" + uuid.uuid4().hex + ".json")
+                journal = (json.loads(self.session.recovery.path.read_text())
+                           if self.session.recovery.required() else None)
+                self.robot._write_pending(archive, {"shared": before_shared, "receipt": saved,
+                                                    "pending": pending, "journal": journal,
+                                                    "gateway_queue": before})
+            if kind == "abandonment":
+                self.robot.check_lease()
+                if self.robot.inspection_queue_status() != before:
+                    raise SelectionError("The gateway queue changed; inspect its current state before recovery.")
+                observed = before
+                if before["state"] in {"failed", "cancelled"}:
+                    # Resolve the separately inspected current failure FIRST.
+                    # If either its clear or the following metadata commit is
+                    # uncertain, the original unknown head still blocks every
+                    # worker. A fresh explicit inspection can retry from idle.
+                    self.robot.recover_failed_queue(expected_queue=before,
+                        archive_dir=self.pending_path.parent / "recovery-history", acknowledged=True)
+                    observed = self.robot.queue_status()
+                    if observed["state"] != "idle":
+                        raise SelectionError("The current failed queue was not confirmed idle; unknown history remains blocked.")
+                    self.robot.check_lease()
+                receipt = self.coordinator.abandon(*target, acknowledged=True, expected_gateway_queue=observed)
+                proof = validate_abandonment(receipt.get("abandonment"), run_id=target[0],
+                    submission_id=target[1], queue=receipt.get("queue"))
+                if receipt.get("state") != "unknown" or receipt.get("queue") != saved_queue or proof["observed_queue"] != observed:
+                    raise SelectionError("Inspected abandonment did not preserve the original unknown queue.")
+                self.robot.check_lease()
+                if pending and (pending["run_id"], pending["submission_id"]) == target:
+                    self._retire_abandoned_record(pending, receipt, explicit=True)
+                return {"message": "Old unknown batch archived after inspection; its completion remains unknown. "
+                                   "No movement or placement was replayed. Scan again and confirm a new batch."}
             result = self.robot.recover_failed_queue(expected_queue=before,
                 archive_dir=self.pending_path.parent / "recovery-history", acknowledged=True)
             if target:

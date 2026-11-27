@@ -322,6 +322,16 @@ class QueueRobotClient(RobotClient):
                         or any(name not in {job["name"] for job in jobs} for name in names)):
                     raise ValueError("Invalid callback metadata")
             inspection = value.get("inspected_recovery")
+            abandonment = value.get("inspected_abandonment")
+            if abandonment is not None:
+                if (inspection is not None or value["state"] != "unknown" or not value["reconciled"]
+                        or not value["dispatch_started"] or value["rejected_at_coordinator"]):
+                    raise ValueError("Abandonment must retain an inspected unknown submission")
+                QueueRobotClient.validate_abandoned_record(value, {
+                    "state": "unknown", "queue": value.get("abandoned_receipt_queue"),
+                    "abandonment": abandonment})
+            elif "abandoned_receipt_queue" in value:
+                raise ValueError("Abandoned queue evidence requires its inspection")
             if inspection is not None:
                 from failover_coordinator import CoordinatorError, validate_recovery
                 if (value["state"] not in {"failed", "cancelled"} or not value["reconciled"]
@@ -347,11 +357,47 @@ class QueueRobotClient(RobotClient):
                         or value.get("started_at") is not None or value["callback_attempted"]
                         or value["callback_completed"] or value["home_verified"])
                     or value["reconciled"] and value["state"] not in {"done", "not_submitted"}
-                        and inspection is None):
+                        and inspection is None and abandonment is None):
                 raise ValueError("Inconsistent completion metadata")
             return value
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
             raise RobotCommandError("Pending queue metadata is invalid; preserve it for recovery.") from error
+
+    @staticmethod
+    def validate_abandoned_record(record, receipt):
+        """Bind explicit inspection to an unknown original queue, never a completion.
+
+        The coordinator's last observation can contain more completed steps than
+        this client's earlier observation. Keep both unchanged and require exact
+        submission identity with no regression of any completion already known.
+        """
+        from failover_coordinator import CoordinatorError, validate_abandonment
+        try:
+            queue = QueueRobotClient._validate_queue_status(receipt.get("queue"))
+            proof = validate_abandonment(receipt.get("abandonment"), run_id=record["run_id"],
+                submission_id=record["submission_id"], queue=queue)
+            if (receipt.get("state") != "unknown"
+                    or record["state"] not in {"pending", "unknown"}
+                    or not record["dispatch_started"] or record["rejected_at_coordinator"]
+                    or record["callbacks_applied"] or queue["state"] == "idle"
+                    or queue.get("owner") != record["expected_owner"]
+                    or QueueRobotClient._signature(queue["steps"]) !=
+                        QueueRobotClient._signature(record["steps"], submitted=True)
+                    or record.get("started_at") not in (None, queue["started_at"])):
+                raise ValueError("Abandonment refers to another submission")
+            previous = record.get("queue")
+            if previous is not None:
+                previous = QueueRobotClient._validate_queue_status(previous)
+                if (previous["state"] == "idle" or previous.get("owner") != queue["owner"]
+                        or previous.get("started_at") != queue["started_at"]
+                        or QueueRobotClient._signature(previous["steps"]) !=
+                            QueueRobotClient._signature(queue["steps"])
+                        or not {step["name"] for step in previous["steps"] if step["state"] == "done"}
+                            <= {step["name"] for step in queue["steps"] if step["state"] == "done"}):
+                    raise ValueError("Abandonment contradicts the saved queue observation")
+            return proof
+        except (CoordinatorError, ValueError, KeyError, TypeError) as error:
+            raise RobotCommandError("Inspected abandonment does not match this unknown queue; preserve recovery.") from error
 
     @staticmethod
     def _write_pending(path, record):
@@ -455,6 +501,11 @@ class QueueRobotClient(RobotClient):
                     or receipt.get("state") not in {"pending", "unknown", "done", "failed", "cancelled", "not_submitted"}):
                 raise RobotCommandError("Coordinator returned an invalid queue receipt.")
             state, queue = receipt["state"], receipt.get("queue")
+            if receipt.get("abandonment") is not None:
+                # The runner must archive the session journal before retiring
+                # this local record. Do not wait forever or replay callbacks.
+                self.validate_abandoned_record(record, receipt)
+                return copy.deepcopy(record)
             if queue is not None:
                 queue = self._validate_queue_status(queue)
                 if (queue["state"] == "idle" or queue.get("owner") != record["expected_owner"]
@@ -494,6 +545,8 @@ class QueueRobotClient(RobotClient):
             record = self._read_pending(self._batch_binding[2])
             if record is None:
                 return None
+            if record.get("inspected_abandonment") is not None:
+                return copy.deepcopy(record)  # Already validated by _read_pending.
             if record["state"] == "not_submitted":
                 self._reconcile_non_submission(record)
                 return copy.deepcopy(record)
@@ -553,7 +606,7 @@ class QueueRobotClient(RobotClient):
         return None
 
     @staticmethod
-    def _validate_queue_status(reply):
+    def _validate_queue_status(reply, *, inspection=False, completed_history=False):
         if (not isinstance(reply, dict)
                 or reply.get("state") not in {"idle", "running", "done", "failed", "cancelled"}
                 or not isinstance(reply.get("steps"), list)
@@ -573,10 +626,23 @@ class QueueRobotClient(RobotClient):
                 raise ValueError("no timezone")
         except ValueError as error:
             raise RobotCommandError("Gateway queue start time is invalid.") from error
+        # Legacy terminal pickers reused a few unprefixed step names. Such a
+        # failed snapshot is usable only as an exact, whole-array inspection
+        # target; it can never identify completed callbacks or new admission.
+        legacy_labels = all(isinstance(step, dict) and isinstance(step.get("name"), str)
+                            and not re.match(r"q[0-9a-f]{16}_", step["name"])
+                            for step in reply["steps"])
+        legacy_failure = inspection and reply["state"] in {"failed", "cancelled"} and legacy_labels
+        # Older terminal runs can also finish successfully with reused names.
+        # Accept that whole-array history only before admitting NEW work, never
+        # as a receipt or a source of per-step completion callbacks. Every step
+        # must still be DONE, and wait_for_idle_queue checks both arms separately.
+        legacy_completed = completed_history and reply["state"] == "done" and legacy_labels
         names = set()
         for step in reply["steps"]:
             if (not isinstance(step, dict) or not isinstance(step.get("name"), str) or not step["name"]
-                    or step["name"] in names or step.get("type") not in {"move", "path", "home", "gripper"}
+                    or step["name"] in names and not (legacy_failure or legacy_completed)
+                    or step.get("type") not in {"move", "path", "home", "gripper"}
                     or step.get("arm") not in {"left", "right"} or not isinstance(step.get("group"), str)
                     or step.get("state") not in {"pending", "running", "done", "failed", "skipped", "cancelled"}
                     or (step["state"] == "done" and step.get("message") != "DONE")):
@@ -584,10 +650,19 @@ class QueueRobotClient(RobotClient):
             names.add(step["name"])
         if reply["state"] == "done" and any(step["state"] != "done" for step in reply["steps"]):
             raise RobotCommandError("Gateway queue reports done without confirming every step.")
+        if inspection and reply["state"] in {"failed", "cancelled"} and any(
+                step["state"] == "running" for step in reply["steps"]):
+            raise RobotCommandError("A queue step is still running; wait before recovery.")
         return reply
 
-    def queue_status(self):
-        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT))
+    def queue_status(self, *, completed_history=False):
+        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT),
+                                           completed_history=completed_history)
+
+    def inspection_queue_status(self):
+        """Read terminal evidence for explicit inspection, never completion."""
+        return self._validate_queue_status(self._get_object(QUEUE_ENDPOINT), inspection=True,
+                                           completed_history=True)
 
     @staticmethod
     def _terminal_arm_error(result):
@@ -602,7 +677,7 @@ class QueueRobotClient(RobotClient):
         """
         if acknowledged is not True:
             raise RobotCommandError("Inspect both stationary arms and the cup before acknowledging queue recovery.")
-        expected = copy.deepcopy(self._validate_queue_status(expected_queue))
+        expected = copy.deepcopy(self._validate_queue_status(expected_queue, inspection=True))
         if expected["state"] not in {"failed", "cancelled", "idle"}:
             raise RobotCommandError("Only an inspected failed, cancelled, or already idle queue can be recovered.")
         if any(step["state"] == "running" for step in expected["steps"]):
@@ -617,7 +692,7 @@ class QueueRobotClient(RobotClient):
             self.check_lease()
             if self._lease_client_id != "primary":
                 raise RobotCommandError("Explicit queue recovery requires the primary control lease.")
-            if self.queue_status() != expected:
+            if self.inspection_queue_status() != expected:
                 raise RobotCommandError("Gateway queue changed; review it again before recovery.")
             arms = {}
             for arm in ("left", "right"):
@@ -630,7 +705,7 @@ class QueueRobotClient(RobotClient):
                     raise RobotCommandError(f"The {arm} arm has an unconfirmed state; recovery was not performed.")
                 arms[arm] = copy.deepcopy(result)
             self.check_lease()
-            if self.queue_status() != expected:
+            if self.inspection_queue_status() != expected:
                 raise RobotCommandError("Gateway queue changed; review it again before recovery.")
             archive = Path(archive_dir) / f"gateway-recovery-{uuid.uuid4().hex}.json"
             evidence = {"schema_version": 1, "acknowledged": True,
@@ -641,7 +716,7 @@ class QueueRobotClient(RobotClient):
             self.check_lease()
             # Recheck after durable storage: a changed queue is never cancelled
             # as a side effect of acknowledging this older terminal failure.
-            if self.queue_status() != expected:
+            if self.inspection_queue_status() != expected:
                 raise RobotCommandError("Gateway queue changed; review it again before recovery.")
             self.check_lease()
             if expected["state"] != "idle":
@@ -691,7 +766,7 @@ class QueueRobotClient(RobotClient):
             if self._batch_binding is not None and self._receipt_cancel.is_set():
                 raise QueueWaitCancelled("Stopped waiting locally; the previous gateway queue remains untouched.")
             self.check_lease()
-            status = self.queue_status()
+            status = self.queue_status(completed_history=True)
             self.check_lease()
             if status["state"] != "idle":
                 self._acknowledged_idle_errors = {}
@@ -972,6 +1047,8 @@ class QueueRobotClient(RobotClient):
         result = self._observe_receipt(record, wait=True)
         if result["state"] == "not_submitted":
             raise QueueNotSubmitted("Coordinator confirmed this queue was not submitted; no retry was sent.")
+        if result["state"] not in {"done", "failed", "cancelled"}:
+            raise RobotCommandError("This queue remains unknown after inspected retirement; no completion callback was replayed.")
         queue = result["queue"]
         indices = {f"q{submission_id}_{index}_{job['name'][:32]}": index for index, job in enumerate(jobs)}
         if aggregate and after_queue is not None and result["state"] == "done":
