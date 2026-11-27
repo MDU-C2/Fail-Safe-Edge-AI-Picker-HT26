@@ -97,6 +97,25 @@ public:
         target = *parsed;
     }
 
+    void fraction(
+        const char* name,
+        double& target
+    ) {
+        const auto value = lookup(name);
+
+        if (!value) {
+            return;
+        }
+
+        const auto parsed = parse_double(*value);
+
+        if (!parsed || !(*parsed >= 0.0 && *parsed <= 1.0)) {
+            fail(name, *value, "must be a number from 0 to 1");
+        }
+
+        target = *parsed;
+    }
+
     //
     // pydantic's bool: true/false, 1/0, yes/no, on/off (any case).
     //
@@ -240,6 +259,7 @@ Settings load_settings(
     load.integer("camera_rgb_width", settings.camera_rgb_width);
     load.integer("camera_rgb_height", settings.camera_rgb_height);
     load.boolean("camera_undistort", settings.camera_undistort);
+    load.fraction("camera_ir_dot_intensity", settings.camera_ir_dot_intensity);
     load.number("camera_max_frame_age_seconds", settings.camera_max_frame_age_seconds);
 
     load.choice("robot_provider", settings.robot_provider, {"mock", "tcp"});

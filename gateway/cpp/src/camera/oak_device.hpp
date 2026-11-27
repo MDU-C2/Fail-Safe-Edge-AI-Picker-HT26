@@ -44,6 +44,11 @@ struct OakConfig {
     //
     bool undistort = true;
 
+    //
+    // IR dot projector intensity, 0 (off) .. 1.
+    //
+    double ir_dot_intensity = 0.8;
+
     int stereo_width = 640;
     int stereo_height = 400;
 

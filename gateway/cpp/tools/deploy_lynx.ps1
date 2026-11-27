@@ -48,6 +48,9 @@ param(
     # pinhole images and /camera/intrinsics their K ("false" = raw frames).
     [ValidateSet("true", "false")]
     [string]$Undistort = "true",
+    # OAK-D Pro IR dot projector intensity, 0 (off) .. 1.
+    [ValidateRange(0.0, 1.0)]
+    [double]$IrDotIntensity = 0.8,
     [int]$Port = 8000,
     [int]$ServePort = 8099,
     [switch]$Autostart,
@@ -173,6 +176,7 @@ $config = @(
     "environment GATEWAY_RWS_SAFE_ZONE_MAX $SafeZoneMax",
     "environment GATEWAY_RWS_HEARTBEAT_TIMEOUT $HeartbeatTimeout",
     "environment GATEWAY_CAMERA_UNDISTORT $Undistort",
+    "environment GATEWAY_CAMERA_IR_DOT_INTENSITY $($IrDotIntensity.ToString([cultureinfo]::InvariantCulture))",
     # Empty (not "no environment", which may fail silently once it is
     # gone): an empty value makes the gateway use the clients file.
     "environment GATEWAY_AUTH_CLIENTS",

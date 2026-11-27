@@ -71,6 +71,15 @@ TEST(Settings, ParsesBooleans) {
     EXPECT_THROW(load_settings({{"GATEWAY_CAMERA_UNDISTORT", "maybe"}}, {}), SettingsError);
 }
 
+TEST(Settings, ParsesFractions) {
+    EXPECT_DOUBLE_EQ(load_settings({}, {}).camera_ir_dot_intensity, 0.8);
+    EXPECT_DOUBLE_EQ(load_settings({{"GATEWAY_CAMERA_IR_DOT_INTENSITY", "0"}}, {}).camera_ir_dot_intensity, 0.0);
+    EXPECT_DOUBLE_EQ(load_settings({{"GATEWAY_CAMERA_IR_DOT_INTENSITY", "1"}}, {}).camera_ir_dot_intensity, 1.0);
+    EXPECT_THROW(load_settings({{"GATEWAY_CAMERA_IR_DOT_INTENSITY", "1.5"}}, {}), SettingsError);
+    EXPECT_THROW(load_settings({{"GATEWAY_CAMERA_IR_DOT_INTENSITY", "-0.1"}}, {}), SettingsError);
+    EXPECT_THROW(load_settings({{"GATEWAY_CAMERA_IR_DOT_INTENSITY", "nan"}}, {}), SettingsError);
+}
+
 TEST(Settings, UnknownNamesAreIgnored) {
     EXPECT_NO_THROW(load_settings({{"GATEWAY_NOT_A_SETTING", "x"}}, {}));
 }

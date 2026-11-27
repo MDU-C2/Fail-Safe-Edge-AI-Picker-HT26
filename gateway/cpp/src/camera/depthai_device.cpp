@@ -49,6 +49,15 @@ public:
 
         pipeline_->start();
 
+        //
+        // The Pro's IR dot projector (off by default) textures plain
+        // surfaces (cups, table) for the stereo matching. A camera
+        // without one returns false, which is only logged.
+        //
+        if (!device_->setIrLaserDotProjectorIntensity(static_cast<float>(config_.ir_dot_intensity))) {
+            log::info("OAK camera has no IR dot projector; depth without it");
+        }
+
         if (config_.warmup_seconds > 0) {
             std::this_thread::sleep_for(std::chrono::duration<double>(config_.warmup_seconds));
         }

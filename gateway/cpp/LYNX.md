@@ -35,7 +35,7 @@ VLANs of their own and only the gateway reaches them, see
 | Package | `gateway-cpp-<version>.wmopkg`, ~12 MB: an xz squashfs of the runtime image in a FIT image, unsigned |
 | Contents | the static release binary (arm64, depthai-core built in) at `/sbin/init`, `gateway/auth_clients.json` (token hashes only, see [Clients](#clients)) |
 | Image label | `gatewaycpp` (the app refers to the label, so a new version is a label move) |
-| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` (from the deploy script since 0.6.0; the 0.6.0 build deployed on 2026-11-23 predates it), `GATEWAY_CAMERA_UNDISTORT=true` (since 0.8.0, `-Undistort false` in the deploy script for raw frames) and an empty `GATEWAY_AUTH_CLIENTS` (so the package's clients file is used, see [Clients](#clients)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
+| App | `gateway`: `cmd "/sbin/init --host 0.0.0.0 --port 8000"`, `netns host-os` (the Lynx's own addresses and the camera's link-local network), share `external/app/gateway/state` → `/state` (created), environment `GATEWAY_CAMERA_PROVIDER=oak`, `GATEWAY_CAMERA_IP=169.254.1.223`, `GATEWAY_CALIBRATION_FILE=/state/calibration.json`, `GATEWAY_RWS_SAFE_ZONE_MIN=[180,-400,50]`, `GATEWAY_RWS_SAFE_ZONE_MAX=[800,500,700]` (see [Safe zone](#safe-zone)), `GATEWAY_RWS_HEARTBEAT_TIMEOUT=5` (from the deploy script since 0.6.0; the 0.6.0 build deployed on 2026-11-23 predates it), `GATEWAY_CAMERA_UNDISTORT=true` (since 0.8.0, `-Undistort false` in the deploy script for raw frames), `GATEWAY_CAMERA_IR_DOT_INTENSITY=0.8` (since 0.8.2, the OAK-D Pro's IR dot projector, `-IrDotIntensity 0` turns it off) and an empty `GATEWAY_AUTH_CLIENTS` (so the package's clients file is used, see [Clients](#clients)); enabled, autostart (since 2026-11-11); saved in the startup config, so it starts when the Lynx boots. Redeploy with `-Autostart -Save` to keep that, since the script otherwise sets `no autostart` |
 | Everything else | the binary's defaults, the same as the Python gateway's: strict security, `GATEWAY_ROBOT_HOST=192.168.125.1` (the real YuMi), 1920x1080 RGB at 4 fps |
 
 The image is read-only, so the only file the gateway writes, the
@@ -140,6 +140,7 @@ environment GATEWAY_RWS_SAFE_ZONE_MIN [180,-400,50]
 environment GATEWAY_RWS_SAFE_ZONE_MAX [800,500,700]
 environment GATEWAY_RWS_HEARTBEAT_TIMEOUT 5
 environment GATEWAY_CAMERA_UNDISTORT true
+environment GATEWAY_CAMERA_IR_DOT_INTENSITY 0.8
 enable
 no autostart
 leave

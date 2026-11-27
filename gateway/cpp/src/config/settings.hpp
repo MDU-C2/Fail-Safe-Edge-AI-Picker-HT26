@@ -62,6 +62,12 @@ struct Settings {
     //
     bool camera_undistort = true;
 
+    //
+    // The OAK-D Pro's IR dot projector, 0 (off) .. 1: the dots give
+    // plain surfaces texture for the stereo depth.
+    //
+    double camera_ir_dot_intensity = 0.8;
+
     double camera_max_frame_age_seconds = 5.0;
 
     //
