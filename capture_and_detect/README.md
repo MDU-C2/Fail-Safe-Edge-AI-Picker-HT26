@@ -1,5 +1,10 @@
 # Terminal picker and browser dashboard
 
+The **Observer** tab shows read-only gateway health, control handover, queue
+progress, arm poses, grippers, camera status and RAPID tasks. It also runs as an
+independent Windows viewer for Ethernet-disconnect tests; see
+[Browser observer](../diagnostics/OBSERVER.md) for startup and credential setup.
+
 There are two independent entry points. Run only one robot controller at a time.
 
 | Entry point | Workflow |
@@ -7,6 +12,7 @@ There are two independent entry points. Run only one robot controller at a time.
 | `python capture_and_detect.py` | The V4 terminal capture workflow with the same smooth dual-arm handover as the UI. Enter captures and processes all reachable cups. |
 | `python web_app.py --gateway <gateway-url> --live` | The existing browser UI, single-cup selection, Assistant, smooth handover, placement checks, confirmations and recovery. |
 | `python web_app.py --demo` | The browser UI with simulated data and no gateway or robot connection. |
+| `python web_app.py --monitor --gateway <gateway-url>` | All UI tabs on a second computer, with read-only camera, robot/3D and Observer updates. Install `requirements-monitor.txt`; see [Windows setup](../diagnostics/OBSERVER.md#windows-the-full-ui-alongside-the-mac). |
 | `python picker_workflow.py --commands` | The optional advanced scan/goto/confirm shell sharing the UI backend. |
 
 Commands in this guide run from the `capture_and_detect` directory unless stated
@@ -568,19 +574,30 @@ An optional **frozen empty-table reference** corrects spatial bias in the
 below-table check. The app automatically loads the grid's sibling file
 `<grid-stem>.table-reference.json` when present. The current outside-tray grid
 uses `placing_grid_outside_tray.table-reference.json`, fitted from the independently
-clear scan `20261112_115617_554897_scan`. Its provenance includes the saved depth
-hash and three advancing frame sequences. No reference is learned during normal
-scans or from a scene containing cups. The fitter rejects corrected scans as a
-new baseline to prevent cumulative drift.
+cleared placement area captured on 2026-11-26 after the camera calibration changed.
+Its provenance records three independently clear five-frame bursts and a median
+of all 15 depth frames, retaining pixels invalid in any source frame as invalid.
+The fit RMS is 4.64 mm and the largest cell residual P99 is 11.18 mm, within the
+unchanged 5 mm and 15 mm limits. Cups outside the placement area are not included
+in the fit. No reference is learned during normal scans or from occupied cells;
+the fitter rejects corrected scans as a new baseline to prevent cumulative drift.
+
+`calibration_grid.json` uses the new `session_20261126_132106` scale, rotation,
+translation and camera intrinsics, while retaining its established grid tag
+offset `[-122, 0, 40]`. The terminal's source `calibration.json` remains unchanged
+with its Z offset of 20 mm. Picking applies only the X/Y tag offset; preserving
+the grid's Z offset does not change pick height. The grid's seven robot placement
+positions and 90 mm cells are unchanged. All execution devices must receive the
+same calibration/reference pair before using automatic failover.
 
 The reference is a robust plane fitted to observed empty-table samples, balanced
 on a 2 mm XY raster, with bounded slope, offset, residuals and spatial support.
 Only its negative offset extends the original below-table band. **Both positive
 floor mismatch and raised-object checks retain the original 30 mm limit**;
 robot calibration, placement coordinates, cup ownership and missing-depth checks
-are unchanged. This resolves the saved P9 failure where the measured table was
+are unchanged. The original reference resolved the saved P9 failure where the measured table was
 32–34 mm below ideal Z=0 but within 30 mm of its independently observed reference.
-It also clears 18 table-depth unknowns across 44 archived frames; the two frames'
+It also cleared 18 table-depth unknowns across 44 archived frames; the two frames'
 cells with insufficient valid depth remain unknown.
 
 Reference identity binds the calibration, camera intrinsics, grid coordinates,
@@ -796,13 +813,12 @@ overlay and the robot's destinations. The earlier cell-size reduction changed
 only the assessment footprints. Removing locations does not prove every
 remaining target is reachable.
 
-The matching frozen table reference was derived from the original verified
-empty-table capture. Only the last RGB/depth pair of that three-frame scan is
-archived, so reassessment for the shifted layout uses that pair, with this
-limitation recorded in the reference provenance. The seven-cell reference is
-fitted only after all seven unchanged areas independently pass the empty-frame
-check without a reference or cup exclusions. The live scene is not used to fit a
-new reference; a fresh scan is still required after the layout changes.
+The matching frozen table reference was rebuilt from three independently clear
+depth bursts on 2026-11-26 for the replacement/moved camera. All seven unchanged
+areas passed the empty-frame check without a reference or cup exclusions before
+fitting the 15-frame median. Its provenance records the source sequences and
+depth hash. Normal live scans never refit this baseline; a fresh scan is still
+required after a calibration or layout change.
 
 The grid file's optional `cell_size_mm` is now authoritative for each capture,
 including initial scan placement checks. This file sets it to 90. `--grid-cell-size` is

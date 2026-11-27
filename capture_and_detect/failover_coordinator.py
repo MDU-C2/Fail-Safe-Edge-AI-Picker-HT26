@@ -37,6 +37,7 @@ MAX_STATE = 32 * 1024 * 1024
 MAX_RECORDS = 8192
 MAX_STEPS = 64
 RECOVERY_CAPABILITY = "inspected_queue_recovery"
+ABANDONMENT_CAPABILITY = "inspected_unknown_recovery"
 CONTINUOUS_CAPABILITY = "continuous_batches"
 DEVICE_SPEED_CAPABILITY = "device_speed_profiles"
 
@@ -272,6 +273,59 @@ def _recovery(value, *, run_id, submission_id, item):
     return validate_recovery(value, run_id=run_id, submission_id=submission_id, queue=item.get("queue"))
 
 
+def _abandonment_observation(value, *, queue, submission_id):
+    """A stopped, different queue cannot prove the old cup completed."""
+    observed = _queue(value)
+    if (observed["state"] not in {"idle", "done", "failed", "cancelled"}
+            or any(step["state"] == "running" for step in observed["steps"])
+            or any(step["name"].startswith("q" + submission_id + "_") for step in observed["steps"])
+            or (observed["state"] != "idle" and observed.get("owner") == queue.get("owner")
+                and observed.get("started_at") == queue.get("started_at"))):
+        raise CoordinatorError("Abandonment requires a different terminal gateway queue.")
+    return observed
+
+
+def validate_abandonment(value, *, run_id, submission_id, queue):
+    """Validate explicit retirement while preserving the unknown original result."""
+    _identifier(run_id)
+    _identifier(submission_id, submission=True)
+    queue = _queue(queue)
+    value = _json_copy(value)
+    fields = {"run_id", "submission_id", "acknowledged", "acknowledged_by", "abandoned_at",
+              "queue_sha256", "observed_queue", "observed_queue_sha256", "arm_status"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value["run_id"] != run_id or value["submission_id"] != submission_id
+            or value["acknowledged"] is not True or value["acknowledged_by"] != "primary"
+            or queue["state"] == "idle"
+            or any(not step["name"].startswith("q" + submission_id + "_") for step in queue["steps"])
+            or value["queue_sha256"] != _queue_digest(queue)
+            or not isinstance(value["arm_status"], dict) or set(value["arm_status"]) != {"left", "right"}
+            or not all(_inspected_arm_status(status) for status in value["arm_status"].values())):
+        raise CoordinatorError("Coordinator abandonment evidence is invalid.")
+    observed = _abandonment_observation(value["observed_queue"], queue=queue, submission_id=submission_id)
+    if value["observed_queue_sha256"] != _queue_digest(observed):
+        raise CoordinatorError("Coordinator abandonment evidence is invalid.")
+    _timestamp(value["abandoned_at"])
+    return value
+
+
+def _abandonment_queue(item, *, submission_id):
+    """Bind preserved unknown evidence to the exact originally admitted plan."""
+    queue = _queue(item.get("queue"))
+    steps = _steps(item.get("steps"), submission_id)
+    if (item["state"] != "unknown" or "recovery" in item or queue["state"] == "idle"
+            or queue.get("owner") != item["owner"] or queue.get("started_at") != item.get("started_at")
+            or _signature(queue["steps"]) != _signature(steps, submitted=True)
+            or ("identity_conflict" in item and type(item["identity_conflict"]) is not bool)):
+        raise CoordinatorError("Coordinator abandonment identity is invalid.")
+    return queue
+
+
+def _abandonment(value, *, run_id, submission_id, item):
+    queue = _abandonment_queue(item, submission_id=submission_id)
+    return validate_abandonment(value, run_id=run_id, submission_id=submission_id, queue=queue)
+
+
 def _http_json(method, url, headers, *, timeout, payload=None, limit=MAX_BODY):
     """One bounded HTTP attempt. Never retry a possibly committed operation."""
     response = None
@@ -350,6 +404,10 @@ class CoordinatorClient:
     def recover(self, run_id, submission_id, *, acknowledged):
         return self._call("recover", {"run_id": run_id, "submission_id": submission_id,
                                       "acknowledged": acknowledged})
+
+    def abandon(self, run_id, submission_id, *, acknowledged, expected_gateway_queue):
+        return self._call("abandon", {"run_id": run_id, "submission_id": submission_id,
+            "acknowledged": acknowledged, "expected_gateway_queue": expected_gateway_queue})
 
     def finish(self, run_id, reason):
         return self._call("finish", {"run_id": run_id, "reason": reason})
@@ -488,6 +546,13 @@ class CoordinatorStore:
                 if (not isinstance(saved_run, dict) or saved_run.get("recovery") != recovery
                         or value["head"] == identity):
                     raise CoordinatorError("Coordinator recovery history is inconsistent.")
+            if "abandonment" in item:
+                abandonment = _abandonment(item["abandonment"], run_id=item["run_id"],
+                                           submission_id=identity, item=item)
+                saved_run = value["runs"][item["run_id"]]
+                if (not isinstance(saved_run, dict) or saved_run.get("abandonment") != abandonment
+                        or value["head"] == identity):
+                    raise CoordinatorError("Coordinator abandonment history is inconsistent.")
         for run_id, saved in value["runs"].items():
             _identifier(run_id)
             if (not isinstance(saved, dict) or saved.get("id") != run_id
@@ -509,6 +574,16 @@ class CoordinatorStore:
                         or item.get("recovery") != recovery):
                     raise CoordinatorError("Coordinator recovery history is inconsistent.")
                 _recovery(recovery, run_id=run_id, submission_id=submission_id, item=item)
+            if "abandonment" in saved:
+                abandonment = saved["abandonment"]
+                if not isinstance(abandonment, dict) or "recovery" in saved:
+                    raise CoordinatorError("Coordinator abandonment history is invalid.")
+                submission_id = _identifier(abandonment.get("submission_id"), submission=True)
+                item = value["submissions"].get(submission_id)
+                if (saved.get("phase") != "stopped" or item is None or item.get("run_id") != run_id
+                        or item.get("abandonment") != abandonment):
+                    raise CoordinatorError("Coordinator abandonment history is inconsistent.")
+                _abandonment(abandonment, run_id=run_id, submission_id=submission_id, item=item)
             homes, receipts = saved.get("confirmed_homes", []), saved.get("home_receipts", {})
             if homes not in ([], ["right"], ["right", "left"]) or not isinstance(receipts, dict) or set(receipts) != set(homes):
                 raise CoordinatorError("Coordinator Home confirmations are invalid.")
@@ -562,7 +637,8 @@ class CoordinatorStore:
         head = ({"submission_id": submission_id, **{key: item.get(key)
                 for key in ("run_id", "owner", "state", "queue")}} if item is not None else None)
         return copy.deepcopy({"run": value["run"], "workers": self._workers, "head": head,
-                              "capabilities": [RECOVERY_CAPABILITY, CONTINUOUS_CAPABILITY, DEVICE_SPEED_CAPABILITY]})
+                              "capabilities": [RECOVERY_CAPABILITY, CONTINUOUS_CAPABILITY, DEVICE_SPEED_CAPABILITY,
+                                               ABANDONMENT_CAPABILITY]})
 
     @staticmethod
     def _result(item):
@@ -572,6 +648,8 @@ class CoordinatorStore:
                 result[key] = item[key]
         if "recovery" in item:
             result["recovery"] = item["recovery"]
+        if "abandonment" in item:
+            result["abandonment"] = item["abandonment"]
         return copy.deepcopy(result)
 
     def state(self, role):
@@ -624,10 +702,24 @@ class CoordinatorStore:
             return value
 
     def _observe(self, value, item, queue=None):
-        if item["state"] in TERMINAL_RECEIPTS or item.get("identity_conflict") is True:
+        if (item["state"] in TERMINAL_RECEIPTS or item.get("identity_conflict") is True
+                or "abandonment" in item):
             return
         before = copy.deepcopy(item)
-        queue = _queue(self._get("/robot/rws/queue")) if queue is None else queue
+        if queue is None:
+            raw = self._get("/robot/rws/queue")  # Transport failures remain retryable errors.
+            try:
+                queue = _queue(raw)
+            except CoordinatorError:
+                if item.get("queue") is None:
+                    raise
+                # A later legacy queue may contain invalid/duplicate labels.
+                # It cannot establish completion of an already bound cup, but
+                # must not hide that cup's original evidence from inspection.
+                # Keep the original queue unchanged and latch uncertainty.
+                item.update(state="unknown", identity_conflict=True)
+                self._commit(value)
+                return
         matches = (queue["state"] != "idle" and queue.get("owner") == item["owner"]
                    and _signature(queue["steps"]) == _signature(item["steps"], submitted=True))
         if matches and item.get("started_at") not in (None, queue["started_at"]):
@@ -789,6 +881,69 @@ class CoordinatorStore:
                         "queue_sha256": _queue_digest(item["queue"]), "arm_status": arms}
             item["recovery"] = recovery
             run.update(phase="stopped", recovery=copy.deepcopy(recovery))
+            value["runs"][run_id] = copy.deepcopy(run)
+            value["head"] = None
+            self._commit(value)
+            return self._result(item)
+
+    def abandon(self, role, run_id, submission_id, *, acknowledged, expected_gateway_queue):
+        """Retire inspected unknown work without claiming completion or changing the robot.
+
+        The original receipt and queue remain unknown history. Only the current
+        inactive run may lose its admission blocker, after the operator's exact
+        different terminal queue has been observed twice under primary control.
+        """
+        if _role(role) != "primary":
+            raise CoordinatorConflict("Only the primary UI can acknowledge inspected abandonment.")
+        if acknowledged is not True:
+            raise CoordinatorError("Abandonment requires explicit operator inspection.")
+        _identifier(run_id)
+        _identifier(submission_id, submission=True)
+        expected = _queue(expected_gateway_queue)
+        with self._transaction() as value:
+            run = self._run(value, run_id)
+            item = value["submissions"].get(submission_id)
+            if (run["phase"] not in {"blocked", "stopped"} or item is None or item["run_id"] != run_id
+                    or item["state"] != "unknown" or item.get("queue") is None
+                    or "recovery" in run or "recovery" in item):
+                raise CoordinatorConflict("Abandonment requires the exact unknown receipt of an inactive batch.")
+            original = _abandonment_queue(item, submission_id=submission_id)
+            prior = item.get("abandonment")
+            if prior is None:
+                if value["head"] != submission_id or "abandonment" in run:
+                    raise CoordinatorConflict("Abandonment receipt is no longer the current queue.")
+            elif value["head"] is not None or run.get("abandonment") != prior:
+                raise CoordinatorConflict("Newer execution prevents retrying historical abandonment.")
+            try:
+                _abandonment_observation(expected, queue=original, submission_id=submission_id)
+            except CoordinatorError as error:
+                raise CoordinatorConflict(str(error)) from error
+            expected_digest = _queue_digest(expected)
+            if prior is not None and prior["observed_queue_sha256"] != expected_digest:
+                raise CoordinatorConflict("Gateway evidence differs from the inspected abandonment.")
+            self._lease("primary")
+            if _queue_digest(_queue(self._get("/robot/rws/queue"))) != expected_digest:
+                raise CoordinatorConflict("Gateway queue differs from the inspected snapshot.")
+            arms = {}
+            for arm in ("left", "right"):
+                status = _json_copy(self._get(f"/robot/rws/status?arm={arm}"))
+                if not _inspected_arm_status(status):
+                    raise CoordinatorConflict("Both arms must report an idle terminal move result.")
+                arms[arm] = status
+            if _queue_digest(_queue(self._get("/robot/rws/queue"))) != expected_digest:
+                raise CoordinatorConflict("Gateway queue changed during inspected abandonment.")
+            self._lease("primary")
+            if prior is not None:
+                if prior["arm_status"] != arms:
+                    raise CoordinatorConflict("Arm evidence differs from the inspected abandonment.")
+                return self._result(item)
+            evidence = {"run_id": run_id, "submission_id": submission_id, "acknowledged": True,
+                        "acknowledged_by": "primary", "abandoned_at": _now(),
+                        "queue_sha256": _queue_digest(original), "observed_queue": expected,
+                        "observed_queue_sha256": expected_digest, "arm_status": arms}
+            evidence = _abandonment(evidence, run_id=run_id, submission_id=submission_id, item=item)
+            item["abandonment"] = evidence
+            run.update(phase="stopped", abandonment=copy.deepcopy(evidence))
             value["runs"][run_id] = copy.deepcopy(run)
             value["head"] = None
             self._commit(value)
@@ -987,6 +1142,7 @@ class CoordinatorHandler(BaseHTTPRequestHandler):
                           "prepare_queue": {"run_id", "submission_id", "steps"},
                           "reject_queue": {"run_id", "submission_id"}, "finish": {"run_id", "reason"},
                           "recover": {"run_id", "submission_id", "acknowledged"},
+                          "abandon": {"run_id", "submission_id", "acknowledged", "expected_gateway_queue"},
                           "stop": {"run_id", "reason"}, "block": {"run_id", "reason"},
                           "set_phase": {"run_id", "phase"}, "confirm_home": {"run_id", "submission_id", "arm"}}
                 routes["watch"] = {"run_id"}

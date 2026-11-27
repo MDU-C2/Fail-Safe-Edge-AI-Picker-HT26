@@ -139,9 +139,23 @@ test("an explicit idle acknowledgement sends one local recovery request", async 
 
 test("unblocking is named clearly and explains the new-batch boundary", () => {
   assert.match(html, /id="recovery-button"[^>]*>Unblock failed batch<\/button>/);
-  assert.match(html, /It sends no movement and does not resume the interrupted pick/);
+  assert.match(html, /Recovery sends no movement and does not resume the interrupted pick/);
   assert.match(html, /Scan again, then start and confirm a new batch/);
   assert.match(html, /id="robot-local-recovery-button"[^>]*>Review blocked workflow<\/button>/);
+});
+
+test("recovery failure is explained beside the inspection without reusing acknowledgement", async () => {
+  const page = dashboard(); page.acknowledge();
+  page.context.postResponse = { ok: false, status: 409,
+    json: async () => ({ accepted: false, error: "The gateway queue changed during inspection." }) };
+  await page.context.send("/api/recovery", { acknowledged: true });
+  assert.equal(page.dom["recovery-error"].hidden, false);
+  assert.match(page.dom["recovery-error"].textContent, /gateway queue changed/);
+  assert.equal(page.dom["recovery-ack"].checked, false);
+  assert.equal(page.dom["recovery-button"].disabled, true);
+  await page.update(snapshot());
+  assert.match(page.dom["recovery-error"].textContent, /gateway queue changed/);
+  assert.equal(page.requests.length, 1);
 });
 
 test("recovery dispatch requires the current inspection checkbox and an outstanding block", async () => {

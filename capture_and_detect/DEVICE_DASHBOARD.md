@@ -12,6 +12,15 @@ see [the deployment check and startup commands](DEVICE_CHECK_2026-11-13.md). Rep
 the example repository, model and state paths and the `192.0.2.*` documentation
 addresses with the verified installation values.
 
+## Monitor from Windows while the Mac keeps controlling
+
+Run the full UI with `--monitor` for a second, read-only dashboard. It keeps every
+tab and reads camera, robot pose, ownership and queue status directly through the
+Windows Ethernet connection. It does not acquire ownership or start a picker.
+See [full Windows monitoring setup](../diagnostics/OBSERVER.md#windows-the-full-ui-alongside-the-mac)
+for commands, diagnostics credentials and the limits of shared worker data.
+The transfer procedure below is only for moving the **controlling** dashboard.
+
 ## Move the dashboard between Mac and Windows
 
 The local option is **Windows PC** on Windows and **MacBook** on macOS when the
@@ -71,7 +80,8 @@ the Windows dashboard and **export a new bundle from its current config**.
 Install it into a new private directory on the Mac and launch `web_app.py` with
 that new `devices.json`. It will offer MacBook processing automatically. Reusing
 an older bundle or the older Mac launcher after a transfer can have stale ownership
-generations; use the newest exported config. Run only one dashboard at a time.
+generations; use the newest exported config. Run only one controlling dashboard
+at a time; a separate `--monitor` dashboard can remain open.
 Existing saved-cup libraries and Assistant settings stay on their original host;
 the minimal transfer does not migrate them. API keys can be entered per session
 in Settings on the new host. On Windows, the Assistant uses session-only keys;

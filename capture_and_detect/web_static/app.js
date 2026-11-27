@@ -39,14 +39,14 @@
   const hide = (id, hidden) => { dom[id].hidden = hidden; };
   const cups = () => Array.isArray(state?.inventory?.cups) ? state.inventory.cups : [];
   const currentCup = () => selectedCapture === state?.inventory?.capture ? cups().find((cup) => cup.id === selectedId) : null;
-  const idle = () => connected && Boolean(state?.ready) && !state?.busy && !state?.devices?.switching && !posting && !stopPosting;
+  const idle = () => connected && !state?.read_only && Boolean(state?.ready) && !state?.busy && !state?.devices?.switching && !posting && !stopPosting;
   const gatewayRecovery = { status: null, client_id: null, queue: null };
   const needsRecovery = () => Boolean(state?.recovery_required || (state?.mode === "live"
     && gatewayRecovery.status === "idle" && !gatewayRecovery.client_id
     && ["failed", "cancelled"].includes(gatewayRecovery.queue?.state)));
   const actionable = () => idle() && !localStopInhibit && !state?.stop_requested;
   const controlActionable = () => actionable() && !needsRecovery();
-  const canStop = () => connected && Boolean(state?.ready || state?.devices?.active_id) && !stopPosting && !state?.stop_in_flight;
+  const canStop = () => connected && !state?.read_only && Boolean(state?.ready || state?.devices?.active_id) && !stopPosting && !state?.stop_in_flight;
   const isStop = (value) => ["stop", "halt", "stop robot", "stop the robot"].includes(value.trim().toLowerCase().replace(/\s+/g, " "));
   const safeScan = () => Boolean(state?.inventory && state?.scan_usable && !needsRecovery() && !localStopInhibit && !state?.stop_requested);
   const pickableCups = () => cups().filter((cup) => cup.selectable && cup.pick_available);
@@ -89,7 +89,7 @@
   }
 
   // Workspace navigation changes only the local view, never controller state.
-  const workspaceTabs = ["pick", "assistant", "robot", "scene", "settings"];
+  const workspaceTabs = ["pick", "assistant", "robot", "scene", "observer", "settings"];
   let activeWorkspaceTab = "pick";
   const navigationProposalKeys = { pick: null, robot: null };
 
@@ -396,7 +396,8 @@
     if (!list.length) {
       const empty = document.createElement("p");
       empty.className = "empty-list";
-      empty.textContent = inventory ? "No cup candidates found. Adjust the scene and scan again." : "Your detected cups will appear here.";
+      empty.textContent = state?.read_only ? "Cup detections stay on the active worker. This view shows the gateway camera without detection labels."
+        : inventory ? "No cup candidates found. Adjust the scene and scan again." : "Your detected cups will appear here.";
       dom["cup-list"].append(empty);
       return;
     }
@@ -458,7 +459,7 @@
         try { imageURL = new URL(inventory.image_url, window.location.origin); } catch { /* Invalid image URLs are never loaded. */ }
         if (imageURL?.origin === window.location.origin && imageURL.pathname.startsWith("/api/image/")) {
           dom["camera-image"].src = imageURL.href;
-          dom["camera-image"].alt = `Latest workspace scan with ${cups().length} numbered cup candidates`;
+          dom["camera-image"].alt = state?.read_only ? "Gateway camera frame without cup detection labels" : `Latest workspace scan with ${cups().length} numbered cup candidates`;
         } else {
           dom["camera-image"].removeAttribute("src");
         }
@@ -1139,6 +1140,9 @@
     dom["cancel-button"].disabled = !canAct || !pending;
     dom["recovery-button"].disabled = !idle() || Boolean(state?.stop_in_flight) || !dom["recovery-ack"].checked || !needsRecovery();
     dom["recovery-ack"].disabled = !idle() || Boolean(state?.stop_in_flight);
+    const recoveryError = needsRecovery() ? asMessage(transientError || state?.error) : "";
+    text("recovery-error", recoveryError ? `Recovery is still blocked: ${recoveryError}` : "");
+    hide("recovery-error", !recoveryError);
     document.querySelectorAll(".cup-card").forEach((card) => { card.disabled = !connected || Boolean(state?.busy) || posting || pending; });
     text("model-label", state?.mode === "demo" ? "Sample commands · demo" : "Commands · use Assistant for Astra");
     text("command-hint", "Start prepares a batch. Stop, status and help also work while the controller is busy. Every movement requires confirmation.");
@@ -1147,6 +1151,73 @@
     renderRobotControls();
     renderPickHeight();
     renderSavedCups();
+  }
+
+  function renderMonitoring() {
+    if (dom["monitor-banner"]) dom["monitor-banner"].hidden = !state?.read_only;
+    if (!state?.read_only) return;
+    const monitor = state.monitor || {};
+    const live = connected && monitor.gateway_online === true;
+    text("monitor-description", monitor.notice);
+    text("mode-badge", monitor.demo ? "SIMULATED MONITOR" : "READ-ONLY MONITOR");
+    text("mode-title", "Monitoring alongside the main controller");
+    text("mode-description", "All controls remain on the main dashboard. This computer only reads status.");
+    text("mode-icon", "◎");
+    text("mode-footer", "Independent gateway connection · no controller started");
+    text("connection-text", !connected ? "Monitor disconnected" : monitor.demo ? "Simulated gateway" : live ? "Gateway connected" : "Gateway unavailable");
+    dom.connection.classList.toggle("connected", live);
+    dom.connection.classList.toggle("disconnected", !live);
+    text("stop-button", "Stop · main dashboard");
+    dom["stop-button"].disabled = true;
+    text("activity-status", monitor.demo ? "Simulated" : !live ? "Unavailable" : state.busy ? "Queue running" : "Monitoring");
+    text("operation-title", !live ? "Waiting for gateway readings" : state.busy ? "Following the robot queue" : "Monitoring the robot");
+    text("operation-description", !live ? "Last received measurements may be stale. This page reconnects automatically."
+      : "Queue progress and control ownership come directly from the gateway; the picker continues on its active worker.");
+    text("scan-button-label", "Camera updates automatically");
+    text("image-label", "GATEWAY CAMERA");
+    text("scan-summary", "Gateway camera · detection labels are not shared");
+    const frame = monitor.camera;
+    const fresh = connected && frame && !frame.stale;
+    text("scan-state", !frame ? "Waiting for camera" : fresh ? "Recent camera frame" : "Last known frame");
+    dom["scan-state"].classList.toggle("fresh", Boolean(fresh));
+    dom["scan-state"].classList.toggle("stale", Boolean(frame && !fresh));
+    text("image-time", frame ? `${frame.saved_at ? "Captured " + clockText(frame.saved_at) : "Received " + clockText(frame.received_at)} · ${Math.floor(frame.age_seconds || 0)}s since received` : "");
+    if (!frame) {
+      dom["empty-camera"].querySelector("h3").textContent = monitor.demo ? "Camera preview unavailable in demo" : "Waiting for the camera";
+      dom["empty-camera"].querySelector("p").textContent = "The latest gateway camera frame will appear here. No scan or robot command is sent.";
+    }
+    text("placement-next", "Worker data not shared");
+    text("placement-summary", "Placement occupancy stays on the active worker. It cannot be inferred from gateway queue status.");
+    text("placement-observation", "Open the main dashboard for its saved placement records.");
+    text("placement-snapshot", "No placement records are copied or changed by this monitor.");
+    text("scene-description", "Robot joints and grippers are read directly from the gateway. Cup detections and placement records remain on the active worker and are not shown here.");
+    for (const id of ["scene-show-cups", "scene-show-grid"]) {
+      dom[id].checked = false;
+      dom[id].disabled = true;
+    }
+    text("command-hint", "Commands are disabled here. Use the main dashboard to control the robot.");
+    text("selected-status", "Monitoring only");
+    text("selected-reason", "Choose cups and start picks from the main dashboard.");
+    text("pick-height-status", "Pickup height is set on the main dashboard.");
+    text("model-label", "Monitoring only");
+    text("robot-controls-badge", "Read-only status");
+    text("robot-capability-notice", "Robot status refreshes automatically. Movement and recovery controls remain on the main dashboard.");
+    text("robot-control-inhibit", "This computer cannot send robot commands, including Stop.");
+    hide("robot-control-inhibit", false);
+    text("robot-status-time", `${live ? "Gateway reading" : "Last known gateway reading"}${state.robot_controls?.status?.read_at ? " · " + clockText(state.robot_controls.status.read_at) : " pending"}.`);
+    text("release-locations-status", "Placement records cannot be edited from the monitor.");
+    text("assistant-phone-unavailable", "This monitor runs locally on this computer and does not require pairing.");
+    text("assistant-phone-heading", "Independent connection");
+    text("assistant-phone-network", "SECOND COMPUTER");
+    text("assistant-phone-note", "This computer reads the gateway through its own Ethernet connection. The main dashboard keeps controlling the picker.");
+    text("assistant-phone-footnote", "The monitor stays connected when the Mac's Ethernet is unplugged, as long as this computer can reach the gateway.");
+    hide("recovery-panel", true);
+    // Counts describe unavailable worker data, not a scan with zero cups.
+    text("cup-count", "—");
+    if (monitor.gateway_status === "auth_error") {
+      text("operation-title", "Diagnostics access required");
+      text("operation-description", "Provide the diagnostics token when starting this monitor. The gateway rejected access.");
+    }
   }
 
   function render() {
@@ -1163,6 +1234,7 @@
     renderActivity();
     renderControls();
     renderNavigation();
+    renderMonitoring();
   }
 
   function receiveGatewayState(value) {
@@ -1188,7 +1260,8 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4500);
     try {
-      const response = await fetch("/api/state", { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+      const path = state?.read_only && activeWorkspaceTab === "pick" && !document.hidden ? "/api/state?camera=true" : "/api/state";
+      const response = await fetch(path, { cache: "no-store", credentials: "same-origin", signal: controller.signal });
       if (!response.ok) throw new Error(`Controller status unavailable (${response.status}).`);
       const incoming = await response.json();
       if (!incoming || typeof incoming.instance_id !== "string" || typeof incoming.csrf_token !== "string") throw new Error("Invalid controller status.");
@@ -1258,6 +1331,7 @@
   }
 
   async function post(path, payload = {}) {
+    if (state?.read_only) return;
     // randomUUID is HTTPS-only in browsers. getRandomValues is also available
     // on an ordinary Wi-Fi HTTP origin, so request deduplication works there.
     function requestId() {
