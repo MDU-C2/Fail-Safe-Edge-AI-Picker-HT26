@@ -4,6 +4,7 @@
 #include <vector>
 #include <utility>
 #include "vendor/nlohmann/json.hpp"
+#include "placement_common.hpp"
 
 namespace lynx::placement {
 using json = nlohmann::json;
@@ -20,13 +21,13 @@ struct DepthResult {
 // consume_owners permits reusing the ownership buffer when its values fit [-1,64];
 // the caller must relinquish that input after the call. Other inputs stay read-only.
 // Pixel attribution preserves exact-mask conflicts and keeps multi-cup ownership explicit.
-DepthResult assign_depth_regions(const cv::Mat& depth, const json& objects,
+DepthResult assign_depth_regions(const DepthImage& depth, const json& objects,
     const json& locations, const cv::Mat& owners, const json& assignments,
     const cv::Matx33d& transform, const cv::Vec3d& translation,
     const json& intrinsics, double cell_size, double table_z = 0., double check_height = 160.,
     bool consume_owners = false);
 std::pair<std::vector<SharedRegion>, json> cup_uncertainty_regions(
-    const cv::Mat& depth, const json& objects, const json& locations, const json& assignments,
+    const DepthImage& depth, const json& objects, const json& locations, const json& assignments,
     const cv::Matx33d& transform, const cv::Vec3d& translation, const json& intrinsics,
     double cell_size, double table_z = 0., double check_height = 160.,
     double radius_mm = 40., double tail_radius_mm = 80.);

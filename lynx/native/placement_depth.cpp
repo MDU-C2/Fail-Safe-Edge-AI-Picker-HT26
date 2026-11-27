@@ -31,7 +31,7 @@ bool integer(const json& v) { return v.is_number_integer(); }
 bool finite(const cv::Vec3d& v) {
     return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
 }
-bool valid_global(const cv::Mat& depth, const json& objects, const json& locations,
+bool valid_global(const DepthImage& depth, const json& objects, const json& locations,
                   const cv::Matx33d& matrix, const cv::Vec3d& origin, const json& K,
                   double cell, double table, double height) {
     if (depth.empty() || depth.dims != 2 || (depth.type() != CV_16U && depth.type() != CV_32F && depth.type() != CV_64F) || depth.total() > kMaxFrame ||
@@ -121,7 +121,7 @@ bool near_hull(const cv::Vec3d& point, const std::vector<cv::Point2f>& hull, dou
     return !(positive && negative) || closest <= radius*radius+1e-9;
 }
 struct FrameGeometry {
-    const cv::Mat& depth;
+    const DepthImage& depth;
     const json& locations;
     const cv::Matx33d& matrix;
     const cv::Vec3d& origin;
@@ -285,7 +285,7 @@ std::vector<Boundary> shared_boundaries(const cv::Mat& component, const std::vec
 }
 std::optional<std::pair<cv::Mat,json>> shared_group_region(const cv::Mat& component,
     const std::vector<cv::Mat>& seeds,const std::vector<std::vector<cv::Point2f>>& hulls,
-    const cv::Mat& world,const cv::Mat& optical,const cv::Mat& eligible,const json& locations,
+    const cv::Mat& world,const DepthImage& optical,const cv::Mat& eligible,const json& locations,
     const std::vector<int>& owner_indices,double cell_size,double scale,double focal) {
     cv::Mat count=zeros(component.size());
     for (const auto& seed:seeds) for (auto p:pixels(seed)) ++count.at<uchar>(p);
@@ -343,7 +343,7 @@ std::optional<std::pair<cv::Mat,json>> shared_group_region(const cv::Mat& compon
     return std::make_pair(selected,evidence);
 }
 } // namespace
-DepthResult assign_depth_regions(const cv::Mat& depth,const json& objects,const json& locations,
+DepthResult assign_depth_regions(const DepthImage& depth,const json& objects,const json& locations,
     const cv::Mat& owners,const json& assignments,const cv::Matx33d& matrix,const cv::Vec3d& origin,
     const json& K,double cell_size,double table_z,double check_height,bool consume_owners) {
     DepthResult original{owners,assignments,{}};
@@ -580,7 +580,7 @@ DepthResult assign_depth_regions(const cv::Mat& depth,const json& objects,const 
     }
     return result;
 }
-std::pair<std::vector<SharedRegion>,json> cup_uncertainty_regions(const cv::Mat& depth,const json& objects,
+std::pair<std::vector<SharedRegion>,json> cup_uncertainty_regions(const DepthImage& depth,const json& objects,
     const json& locations,const json& assignments,const cv::Matx33d& matrix,const cv::Vec3d& origin,
     const json& K,double cell_size,double table_z,double check_height,double radius_mm,double tail_radius_mm) {
     const std::pair<std::vector<SharedRegion>,json> empty{{},json::array()};

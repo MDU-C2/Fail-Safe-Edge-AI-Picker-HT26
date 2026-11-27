@@ -82,13 +82,13 @@ def armed_launcher(tmp_path, monkeypatch):
 
 
 def test_native_armed_worker_waits_without_capture_and_releases_model_and_lease(armed_launcher):
-    from handover_plan import right_via_pose
+    from handover_plan import right_camera_park_pose
     rig = armed_launcher
     assert rig.run() == 0
     assert rig.credentials == [rig.state / "tertiary-token", rig.state / "coordinator-token"]
     settings = rig.sessions[0].settings
     assert settings["between_cup_check"] and settings["between_cup_grid_check"]
-    assert settings["continuous_batch"] is False and settings["right_park_pose"] == right_via_pose()
+    assert settings["continuous_batch"] is False and settings["right_park_pose"] == right_camera_park_pose()
     assert rig.runner.options["role"] == "tertiary"
     assert rig.runner.options["state_dir"] == rig.state
     rig.runner.serve.assert_called_once()
@@ -211,7 +211,7 @@ def test_python_worker_reuses_shared_finite_capture_backend_and_checks_lease_onl
     import failover_worker
     import camera_client
     import placing_grid
-    from handover_plan import right_via_pose
+    from handover_plan import right_camera_park_pose
     state = tmp_path
     store = SimpleNamespace(folder=state / "captures", save=Mock())
     store.folder.mkdir()
@@ -240,7 +240,7 @@ def test_python_worker_reuses_shared_finite_capture_backend_and_checks_lease_onl
         captures.capture.assert_not_called()
         robot.check_lease.assert_not_called()
         assert result.settings["between_cup_check"] and result.settings["between_cup_grid_check"]
-        assert result.settings["continuous_batch"] is False and result.settings["right_park_pose"] == right_via_pose()
+        assert result.settings["continuous_batch"] is False and result.settings["right_park_pose"] == right_camera_park_pose()
         assert factory.call_args.kwargs["depth_frames"] == 5
         result.capture("scan")
         robot.check_lease.assert_not_called()

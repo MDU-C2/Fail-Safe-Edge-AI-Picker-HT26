@@ -15,7 +15,7 @@ double median(std::vector<double> values) {
     return n%2?values[n/2]:(values[n/2-1]+values[n/2])/2;
 }
 struct Fringe { bool area_rejected=false; std::vector<cv::Point> pixels; };
-Fringe fringe_radius(const cv::Mat& depth,const json& objects,const std::vector<int>& indices,
+Fringe fringe_radius(const DepthImage& depth,const json& objects,const std::vector<int>& indices,
                      const cv::Mat& mask,int x0,int y0,const std::vector<cv::Vec3d>& seed_physical,
                      double radius,const cv::Matx33d& transform,const cv::Vec3d& translation,
                      const json& K,double table_z,double check_height) {
@@ -100,7 +100,7 @@ bool inside_part(const cv::Vec4d& part,const cv::Vec4d& parent,bool handle) {
     return parent[0]-margin<=x&&x<=parent[2]+margin&&parent[1]-margin<=y&&y<=parent[3]+margin;
 }
 }
-CupResult assign_cups(const cv::Mat& depth,const json& objects,const json& locations,
+CupResult assign_cups(const DepthImage& depth,const json& objects,const json& locations,
                       const cv::Matx33d& transform,const cv::Vec3d& translation,const json& K,
                       double cell_size,double table_z,double check_height) {
     if(!objects.is_array())throw std::invalid_argument("Placement detections must be labelled objects.");

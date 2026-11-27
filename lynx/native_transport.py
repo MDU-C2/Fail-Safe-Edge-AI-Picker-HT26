@@ -39,6 +39,7 @@ class WorkerTransport:
             ready, masks = self._response(0, time.monotonic() + startup_timeout, max_mask_bytes=0)
             if masks or ready.get("ready") is not True or ready.get("protocol_version") != 1 or (perception and ready.get("perception_version") != 2) or ready.get("input_size") != model.input_size or ready.get("classes_count") != len(model.names) or ready.get("max_detections") != max_detections:
                 raise InferenceError("Native worker readiness disagrees with the configured model.")
+            self.depth_calibration_version = ready.get("depth_calibration_version", 0)
         except BaseException:
             self.close()
             raise

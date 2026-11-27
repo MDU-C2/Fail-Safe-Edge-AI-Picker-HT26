@@ -24,7 +24,7 @@
 
 namespace {
 
-constexpr char kVersion[] = "2.0.0";
+constexpr char kVersion[] = "2.1.0";
 
 void release_unused_heap() {
 #if defined(__GLIBC__)
@@ -309,7 +309,7 @@ int main(int argc, char** argv) {
             (void)segmenter.infer(warmup);
         }
         lynx::write_response(std::cout, 0, 0,
-            "{\"ready\":true,\"protocol_version\":1,\"perception_version\":2,\"version\":\"" + std::string(kVersion) +
+            "{\"ready\":true,\"protocol_version\":1,\"perception_version\":2,\"depth_calibration_version\":1,\"version\":\"" + std::string(kVersion) +
             "\",\"ncnn_version\":\"" + NCNN_VERSION_STRING + "\",\"opencv_version\":\"" + CV_VERSION +
             "\",\"postprocess\":\"ultralytics-8.4.166-retina\",\"input_size\":" + std::to_string(options.side) +
             ",\"classes_count\":" + std::to_string(options.classes) + ",\"max_detections\":" +

@@ -590,6 +590,22 @@ the grid's Z offset does not change pick height. The grid's seven robot placemen
 positions and 90 mm cells are unchanged. All execution devices must receive the
 same calibration/reference pair before using automatic failover.
 
+Hand-eye calibration files may also contain `depth_scale` and `depth_offset`.
+These describe optical depth in millimetres:
+`corrected_z = depth_scale * raw_z + depth_offset`. The detector applies this
+before calculating camera X/Y and cup diameter, then applies the saved rigid
+transform. Grid checks and reference fitting use the same mapping. Missing raw
+depth remains missing, and saved depth PNGs retain the camera's raw values.
+The file's `tag_offset`, including `[0, 0, 0]`, is used as supplied; an offset
+from an older calibration must not be copied into a new hand-eye fit.
+
+An active depth correction is part of the reference identity. A different
+mapping needs a separately validated reference; a reference cannot repair an
+incorrect camera-to-robot calibration. Check the transformed empty table
+against the configured table height before activation. Hand-eye board fitting
+errors alone do not validate the depth correction. Files without these two
+fields retain the existing identity depth mapping.
+
 The reference is a robust plane fitted to observed empty-table samples, balanced
 on a 2 mm XY raster, with bounded slope, offset, residuals and spatial support.
 Only its negative offset extends the original below-table band. **Both positive

@@ -10,7 +10,8 @@ namespace lynx {
 // detections is the native response document; masks is its cropped uint8 payload.
 // depths contains 1..9 aligned CV_16UC1 frames, oldest first and newest last.
 // One frame omits temporal telemetry; multiple frames average available positive mask medians.
-// config contains calibration{scale,R,t,tag_offset}, intrinsics{fx,fy,cx,cy}, names.
+// config contains calibration{scale,R,t,tag_offset,depth_scale,depth_offset},
+// intrinsics{fx,fy,cx,cy}, names. Optional affine depth correction defaults to identity.
 // Extra config fields (grid/reference identity, etc.) are deliberately ignored.
 // Returns the Python Detector object's JSON array, including exact packed masks.
 // Retained object crops are limited to 262144 pixels each and 8388608 in total.

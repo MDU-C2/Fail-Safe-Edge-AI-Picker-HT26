@@ -84,6 +84,7 @@ import requests
 from ultralytics import YOLO
 
 import depth_average                               # depth of several frames, mask edge left out
+from calibration_depth import corrected_depth, depth_parameters
 from handover_plan import handover_jobs
 
 # ================================================================
@@ -608,6 +609,7 @@ class Calibration:
         self.scale, self.R, self.t = cal["scale"], np.array(cal["R"]), np.array(cal["t"])
         # tag centre minus gripper TCP (robot mm); Arm.goto() adds its x, y to every pick move
         self.offset = tuple(cal.get("tag_offset", (0, 0, 0)))
+        self.depth_scale, self.depth_offset = depth_parameters(cal)
 
     def to_robot(self, x, y, z):
         return tuple(self.scale * self.R @ np.array([x, y, z]) + self.t)
@@ -643,7 +645,7 @@ class Detector:
         return objects, annotated
 
     def to_robot(self, u, v, z):
-        """Pixel (u, v) at camera distance z -> (camera x, y) and robot (x, y, z), mm (pinhole model)."""
+        """Backproject already-corrected optical Z into camera and robot mm."""
         x = (u - self.K["cx"]) * z / self.K["fx"]
         y = (v - self.K["cy"]) * z / self.K["fy"]
         return x, y, self.calibration.to_robot(x, y, z)
@@ -654,16 +656,17 @@ class Detector:
         ys, xs = np.nonzero(mask)
         u, v = float(xs.mean()), float(ys.mean())
         diameter_px = 2 * np.sqrt(mask.sum() / np.pi)   # of a circle with the mask's area
+        depth_scale, depth_offset = depth_parameters(self.calibration)
         z_frames, robot_z_frames = [], []          # the same object in each single frame
         for d in depths:
-            zf = depth_average.mask_depth(d, mask)  # median inside the mask, its edge left out
+            zf = corrected_depth(depth_average.mask_depth(d, mask), depth_scale, depth_offset)
             z_frames.append(mm(zf))
             robot_z_frames.append(mm(self.to_robot(u, v, zf)[2][2]) if zf else None)
         valid = [zf for zf in z_frames if zf]
         if valid:                                  # Z = mean of the frames (robot Z then = mean of robot_z_frames)
             z = sum(valid) / len(valid)
         else:                                      # no single frames given: the depth image as it is
-            z = depth_average.mask_depth(depth, mask)
+            z = corrected_depth(depth_average.mask_depth(depth, mask), depth_scale, depth_offset)
 
         x = y = None
         robot = (None, None, None)

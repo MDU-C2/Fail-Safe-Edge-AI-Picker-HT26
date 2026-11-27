@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 
 from cup_inventory import SelectionError, finite_number
+from calibration_depth import corrected_depth_image, depth_parameters
 from detection_masks import decode_mask
 from placement_cups import assign_cups
 from placement_depth_regions import assign_depth_regions
@@ -41,6 +42,7 @@ class PlacementVision:
         if not finite_number(table_z) or not finite_number(cell_size) or not 20 <= cell_size <= 200:
             raise ValueError("Grid table Z must be finite; cell size must be 20..200 mm.")
         self.calibration, self.K = calibration, intrinsics
+        depth_parameters(calibration)
         self.table_z, self.cell_size = float(table_z), float(cell_size)
         self.table_reference = copy.deepcopy(table_reference)
         self.table_reference_metadata = None
@@ -152,6 +154,9 @@ class PlacementVision:
         height, width = depth.shape
         if (height, width) != (self.K["height"], self.K["width"]):
             raise SelectionError("Placement depth image does not match camera intrinsics.")
+        # The incoming frame and saved PNG stay raw. Every geometric helper
+        # below receives the same corrected optical distances exactly once.
+        depth = corrected_depth_image(depth, self.calibration)
         reference = (TableReference.from_dict(
             self.table_reference, calibration=self.calibration, intrinsics=self.K,
             locations=locations, cell_size=self.cell_size, table_z=self.table_z)
