@@ -24,6 +24,13 @@ Json CameraIntrinsics::to_json() const {
     };
 }
 
+Json CameraIntrinsics::distortion_json() const {
+    return Json{
+        {"model", distortion_model},
+        {"coefficients", distortion},
+    };
+}
+
 CameraService::CameraService(
     EventBus& events,
     const Clock& clock

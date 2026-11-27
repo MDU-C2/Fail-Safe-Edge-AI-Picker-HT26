@@ -55,6 +55,13 @@ struct Settings {
     long long camera_rgb_width = 1920;
     long long camera_rgb_height = 1080;
 
+    //
+    // Undistort CAM_A on the camera, so /camera/rgb and the aligned
+    // /camera/depth are pinhole images: /camera/intrinsics is then
+    // all a client needs and /camera/distortion gives zeros.
+    //
+    bool camera_undistort = true;
+
     double camera_max_frame_age_seconds = 5.0;
 
     //

@@ -26,6 +26,7 @@ TEST(Settings, DefaultsMatchThePythonGateway) {
     EXPECT_DOUBLE_EQ(settings.control_contention_seconds, 3.0);
     EXPECT_DOUBLE_EQ(settings.control_startup_grace_seconds, 5.0);
     EXPECT_EQ(settings.camera_rgb_width, 1920);
+    EXPECT_TRUE(settings.camera_undistort);
     EXPECT_EQ(settings.rws_safe_zone_min, (Vector3{180.0, -400.0, 50.0}));
     EXPECT_EQ(settings.rws_safe_zone_max, (Vector3{800.0, 500.0, 600.0}));
 }
@@ -61,6 +62,13 @@ TEST(Settings, ParsesNumbersAndTuples) {
     EXPECT_DOUBLE_EQ(settings.camera_fps, 4.0);
     EXPECT_EQ(settings.rws_safe_zone_min, (Vector3{180.0, -400.0, 50.0}));
     EXPECT_EQ(settings.rws_safe_zone_max, (Vector3{800.5, 500.0, 600.0}));
+}
+
+TEST(Settings, ParsesBooleans) {
+    EXPECT_FALSE(load_settings({{"GATEWAY_CAMERA_UNDISTORT", "false"}}, {}).camera_undistort);
+    EXPECT_FALSE(load_settings({{"GATEWAY_CAMERA_UNDISTORT", "0"}}, {}).camera_undistort);
+    EXPECT_TRUE(load_settings({{"GATEWAY_CAMERA_UNDISTORT", "True"}}, {}).camera_undistort);
+    EXPECT_THROW(load_settings({{"GATEWAY_CAMERA_UNDISTORT", "maybe"}}, {}), SettingsError);
 }
 
 TEST(Settings, UnknownNamesAreIgnored) {

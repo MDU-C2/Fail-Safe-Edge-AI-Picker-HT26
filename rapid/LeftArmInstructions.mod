@@ -1,7 +1,7 @@
 MODULE LeftArm
 
   ! Gripper tool, kept so the YuMi background task finds tGrip (not used for moves)
-  PERS tooldata tGrip := [TRUE, [[0, 0, 159], [1, 0, 0, 0]], [0.230, [8.2, 11.7, 52.0], [1, 0, 0, 0], 0.00021, 0.00024, 0.00009]];
+  PERS tooldata tGrip := [TRUE, [[0, 0, 155.5], [1, 0, 0, 0]], [0.230, [8.2, 11.7, 52.0], [1, 0, 0, 0], 0.00021, 0.00024, 0.00009]];
 
   VAR robtarget pTarget;
   VAR jointtarget jTarget;                     ! CHANGED: joint angles found by Reachable

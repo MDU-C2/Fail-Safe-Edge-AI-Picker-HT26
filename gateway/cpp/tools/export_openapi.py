@@ -10,6 +10,7 @@ from the repository root after changing a Python route or model:
 Only the schema is built; no camera, robot or controller is contacted.
 """
 
+import copy
 import json
 import os
 import sys
@@ -58,6 +59,73 @@ def drop_unused_components(
             del components[name]
 
 
+def add_cpp_only_paths(
+    schema: dict,
+) -> None:
+    """Add the routes only the C++ gateway has.
+
+    GET /camera/distortion is built from GET /camera/intrinsics
+    (same authentication and parameters) and placed right after it.
+    """
+
+    intrinsics_path = "/api/v1/camera/intrinsics"
+    distortion_path = "/api/v1/camera/distortion"
+
+    operation = copy.deepcopy(schema["paths"][intrinsics_path]["get"])
+
+    operation["summary"] = "Get the RGB camera lens distortion"
+    operation["description"] = (
+        "CAM_A's distortion model and coefficients (C++ gateway only). While the "
+        "gateway undistorts the frames (GATEWAY_CAMERA_UNDISTORT, default) they are "
+        "zeros; otherwise they are the device calibration's and apply to normalised "
+        "coordinates, with GET /camera/intrinsics."
+    )
+    operation["operationId"] = "get_camera_distortion_api_v1_camera_distortion_get"
+    operation["responses"]["200"]["content"]["application/json"]["schema"] = {
+        "$ref": "#/components/schemas/CameraDistortion",
+    }
+
+    schema["components"]["schemas"]["CameraDistortion"] = {
+        "title": "CameraDistortion",
+        "type": "object",
+        "required": [
+            "model",
+            "coefficients",
+        ],
+        "properties": {
+            "model": {
+                "title": "Model",
+                "type": "string",
+                "enum": [
+                    "perspective",
+                    "fisheye",
+                    "equirectangular",
+                    "radial_division",
+                ],
+                "description": "DepthAI's camera model; perspective is OpenCV's pinhole model (cv2.undistortPoints), fisheye cv2.fisheye.",
+            },
+            "coefficients": {
+                "title": "Coefficients",
+                "type": "array",
+                "items": {
+                    "type": "number",
+                },
+                "description": "OpenCV order: k1, k2, p1, p2, k3, k4, k5, k6, s1, s2, s3, s4, tx, ty.",
+            },
+        },
+    }
+
+    paths = {}
+
+    for path, item in schema["paths"].items():
+        paths[path] = item
+
+        if path == intrinsics_path:
+            paths[distortion_path] = {"get": operation}
+
+    schema["paths"] = paths
+
+
 def main() -> None:
     os.chdir(REPOSITORY_ROOT)
 
@@ -79,6 +147,8 @@ def main() -> None:
     #
     for path in LEFT_OUT_PATHS:
         schema["paths"].pop(path, None)
+
+    add_cpp_only_paths(schema)
 
     drop_unused_components(schema)
 

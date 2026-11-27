@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "http/message.hpp"
 #include "util/time.hpp"
@@ -65,7 +66,20 @@ struct CameraIntrinsics {
 
     std::array<std::array<double, 3>, 3> matrix{};
 
+    //
+    // CAM_A lens distortion, as DepthAI gives it: the model
+    // ("perspective" = OpenCV's, "fisheye", ...) and its coefficients
+    // in OpenCV order (k1, k2, p1, p2, k3, k4, k5, k6, s1..s4, tx, ty).
+    // They apply to normalised coordinates, so they do not depend on
+    // the frame size.
+    //
+    std::string distortion_model = "perspective";
+
+    std::vector<double> distortion;
+
     http::Json to_json() const;
+
+    http::Json distortion_json() const;
 };
 
 struct FrameInput {
