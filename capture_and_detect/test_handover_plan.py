@@ -60,9 +60,9 @@ class HandoverPlanTests(unittest.TestCase):
         # plan, rather than imported constants: this catches drift in tuning.
         expected = {
             "approach_cup": [(400, 100, 450, 180, 0, 180, False, 10),
-                             (500, 100, 334, 180, 0, 180, False, 10),
+                             (500, 100, 409, 180, 0, 180, False, 10),
                              (500, 100, 229, 180, 0, 180, True, 0)],
-            "left_handover": [(500, 100, 334, 180, 0, 180, True, 10),
+            "left_handover": [(500, 100, 409, 180, 0, 180, True, 10),
                               (350, -100, 655, 180, 0, 180, False, 0)],
             "left_clear": [(350, -100, 690, 180, 0, 180, True, 0)],
             "left_park": [(350, 400, 690, 180, 0, 180, False, 0)],
@@ -102,7 +102,7 @@ class HandoverPlanTests(unittest.TestCase):
                         for index in indices:
                             point = changed["body"]["points"][index]
                             self.assertEqual((point["x"], point["y"]), (385, 125))
-                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 2 else 334)
+                            self.assertEqual(point["z"], 229 if name == "approach_cup" and index == 2 else 409)
                             point["x"], point["y"] = 500, 100
                     self.assertEqual(changed, initial)
         self.assertEqual(self.cup, original)
@@ -112,7 +112,7 @@ class HandoverPlanTests(unittest.TestCase):
         jobs = {job["name"]: job for job in handover_jobs(cup, place=self.place, camera_z=True)}
         approach = jobs["approach_cup"]["body"]["points"]
         self.assertEqual([p["rz"] for p in approach], [180, 145, 145])
-        self.assertEqual([p["z"] for p in approach], [450, 334, 254])
+        self.assertEqual([p["z"] for p in approach], [450, 409, 254])
         lift = jobs["left_handover"]["body"]["points"]
         self.assertEqual([p["rz"] for p in lift], [145, 180])
         self.assertEqual(jobs["left_open"]["body"],
