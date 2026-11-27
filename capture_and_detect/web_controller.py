@@ -14,7 +14,7 @@ import uuid
 from cup_inventory import SelectionError, hover_moves
 from handover_plan import (CAMERA_Z_FLOOR, CAMERA_Z_OFFSET, FLIP_ACCELERATION, FLIP_SPEED,
                            SMOOTH_ACCELERATION, SMOOTH_RAMP, CARRY_MAX_ACC, handover_jobs,
-                           pick_position_problem,
+                           pick_position_problem, pick_tcp_z,
                            normalize_phase_speeds, effective_phase_speeds)
 from operator_commands import COMMAND_HELP, START_COMMANDS, STOP_COMMANDS
 from robot_controls import RobotControls, control_plan, valid_speed
@@ -365,6 +365,12 @@ class WebController:
                                          and (bool(inventory.get("images", {}).get("rgb"))
                                               or (self.mode == "demo" and cup.get("demo_identity")
                                                   in ("teal", "white", "orange")))))
+                # UI cup card: base height from the camera and the planned grip height (TCP).
+                try:
+                    visible["pick_z"] = pick_tcp_z(cup, camera_z=session.camera_z)
+                except SelectionError:
+                    visible["pick_z"] = None
+                visible["camera_z"] = session.camera_z
                 cups.append(visible)
                 execution = cup.get("execution")
                 # 3D view: which gripper holds the cup follows from the

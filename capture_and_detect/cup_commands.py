@@ -7,6 +7,7 @@ import threading
 import time
 
 from cup_inventory import GRIPPER_TCP_Z, SelectionError, hover_moves, selected_cup
+from pick_order import sort_fewest_neighbours
 from handover_plan import (handover_jobs, left_only_jobs, handover_settings, motion_speeds,
                            normalize_handover_offset, pick_position_problem,
                            normalize_phase_speeds, effective_phase_speeds, normalize_right_park_pose)
@@ -301,7 +302,7 @@ class CupSession:
             raise SelectionError("No placement grid configured. Restart with --placing-grid.")
         candidates = [cup for cup in self.inventory["cups"] if cup.get("selectable")
                       and not cup.get("blocked_reason") and not pick_position_problem(cup, self.tag_offset)]
-        candidates.sort(key=lambda cup: (-(cup.get("confidence") or 0), cup["id"]))
+        sort_fewest_neighbours(candidates, self.inventory["cups"])   # pick_order.py: fewest neighbours first
         if not candidates:
             raise SelectionError("No cups in this scan are available for picking.")
         if self.left_only:
@@ -627,7 +628,7 @@ class CupSession:
         """Rebuild remaining work from current sources and observed clear slots."""
         candidates = [cup for cup in self.inventory["cups"] if cup.get("selectable")
                       and not cup.get("blocked_reason") and not pick_position_problem(cup, self.tag_offset)]
-        candidates.sort(key=lambda cup: (-(cup.get("confidence") or 0), cup["id"]))
+        sort_fewest_neighbours(candidates, self.inventory["cups"])   # pick_order.py: fewest neighbours first
         self._check_stop()
         if self.between_cup_grid_check:
             # The new observation supersedes all old occupancy/reservations.

@@ -430,7 +430,12 @@
       label.className = "cup-status-label";
       label.textContent = ["placed", "replaced"].includes(cup.status) ? "Completed" : cup.selectable ? (cup.pick_available ? "Available" : "Hover only") : "Blocked";
       status.append(dot, label);
-      card.append(topline, confidence, status);
+      const height = document.createElement("span");
+      height.className = "confidence cup-height";
+      const baseZ = cup.robot_mm ? cup.robot_mm.z : null;
+      const gripText = Number.isFinite(cup.pick_z) ? ` · grip ${Math.round(cup.pick_z)} mm${cup.camera_z ? "" : " (fixed)"}` : "";
+      height.textContent = Number.isFinite(baseZ) ? `Height ${Math.round(baseZ)} mm${gripText}` : "Height unavailable";
+      card.append(topline, confidence, height, status);
       card.title = cup.blocked_reason || `Select cup ${cup.id}`;
       card.setAttribute("aria-label", `Cup ${cup.id}, ${label.textContent}${cup.blocked_reason ? `: ${cup.blocked_reason}` : ""}`);
       card.addEventListener("click", () => chooseCup(cup.id));

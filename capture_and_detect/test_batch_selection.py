@@ -34,8 +34,12 @@ class BatchSelectionTests(unittest.TestCase):
         self.capture_count += 1
         self.capture_trace.append((kind, len(self.robot.jobs)))
         objects = []
-        for u, x in ((100, 500), (200, 550), (300, 600)):
-            objects.extend([detection("CUP", u, x=x), detection("CUP BASE", u, x=x)])
+        # y spread > 100 mm apart: no cup has a neighbour (pick_order.py), so confidence decides.
+        for u, x, y in ((100, 500, -100), (200, 550, 100), (300, 600, 300)):
+            pair = [detection("CUP", u, x=x), detection("CUP BASE", u, x=x)]
+            for item in pair:
+                item["robot_y_mm"] = y
+            objects.extend(pair)
         objects.append(detection("CUP", 400, x=650))  # Missing base: never selected.
         if self.transform is not None:
             objects = self.transform(kind, objects)
@@ -54,6 +58,18 @@ class BatchSelectionTests(unittest.TestCase):
 
     def locations(self):
         return self.grid.snapshot()["locations"]
+
+    def test_batch_preview_picks_fewest_neighbours_first_then_confidence(self):
+        def in_a_row(_kind, objects):              # x 500, 550, 600 at one y: 50 mm apart
+            for item in objects:
+                item["robot_y_mm"] = 100
+            return objects
+        self.transform = in_a_row
+        preview = self.session.preview_batch(capture_id=self.scan())
+        # Cup 2 (0.95, the most certain) is in the middle with 2 neighbours, so it goes last;
+        # the two end cups have 1 neighbour each and keep confidence order (3: 0.85, 1: 0.7).
+        self.assertEqual(preview["cup_ids"], [3, 1, 2])
+        self.assertEqual(self.robot.jobs, [])
 
     def test_batch_preview_confidence_order_filters_blocked_cups_without_motion_or_mutation(self):
         capture_id = self.scan()

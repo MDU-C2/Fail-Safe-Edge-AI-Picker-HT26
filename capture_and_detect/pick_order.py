@@ -58,6 +58,35 @@ def next_cup(cups, radius_mm=CUP_RADIUS_MM):
     return min(waiting, key=lambda c: count_neighbours(c, cups, radius_mm))   # min keeps list order on ties
 
 
+GONE_STATUSES = ("placed", "replaced")             # web app: these cups are no longer on the table
+
+
+def _on_table(cup):
+    """A cup still standing in the source area, with a usable robot x and y."""
+    x, y = cup.get("x"), cup.get("y")
+    return (cup.get("status") not in GONE_STATUSES and not cup.get("placement_location_ids")
+            and isinstance(x, (int, float)) and isinstance(y, (int, float))
+            and math.isfinite(x) and math.isfinite(y))
+
+
+def web_neighbours(cup, cups, radius_mm=CUP_RADIUS_MM):
+    """count_neighbours for the web app's inventory cups (other statuses, x/y may be missing)."""
+    if not _on_table(cup):
+        return 0
+    return sum(1 for other in cups
+               if other is not cup and _on_table(other)
+               and math.hypot(cup["x"] - other["x"], cup["y"] - other["y"]) < 2 * radius_mm)
+
+
+def sort_fewest_neighbours(candidates, cups, radius_mm=CUP_RADIUS_MM):
+    """Web app (cup_commands.py): the pickable candidates, fewest neighbours first, then the
+    most certain (confidence), then the lowest id. Neighbours are counted among all cups
+    still on the table (cups), not only the candidates. Sorts the list in place."""
+    candidates.sort(key=lambda cup: (web_neighbours(cup, cups, radius_mm),
+                                     -(cup.get("confidence") or 0), cup["id"]))
+    return candidates
+
+
 # ==== orientation ====
 
 def _diameter(cup):
