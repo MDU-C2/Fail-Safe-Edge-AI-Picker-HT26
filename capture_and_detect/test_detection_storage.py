@@ -92,7 +92,7 @@ class DetectionStorageTests(unittest.TestCase):
         self.assertEqual(cup["acceptance_reasons"], ["in_cup", "cup_height"])
         self.assertEqual(record["objects"][1]["diameter_mm"], 12.4)
         self.assertEqual(cup["diameter"], 12.4)
-        self.assertEqual(cup["aperture"], 82.4)
+        self.assertEqual(cup["aperture"], 52.4)
         self.assertNotEqual(scan["capture"], verification["capture"])
         for observation in (scan, verification):
             self.assertEqual(json.loads((self.out_dir / f"cups_{observation['capture']}.json").read_text()), observation)

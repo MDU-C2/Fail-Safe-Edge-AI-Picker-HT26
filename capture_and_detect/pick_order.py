@@ -23,7 +23,8 @@ Orientation (grip_angle) and both together (next_cup_and_grip)
 Angles: axis angle 0 = jaws close along robot X (LEFT_DOWN, rz 180), counter-clockwise seen
 from above, as in set_grip_rotation in capture_and_detect.py; rz = LEFT_DOWN_RZ + angle.
 
-Not used by capture_and_detect.py yet (only next_cup is).
+Web app: cup_commands.py sorts with sort_fewest_neighbours; cup_inventory.build_inventory
+calls set_web_grips, which sets each cup's rz and aperture from grip_angle.
 """
 
 import math
@@ -31,7 +32,7 @@ import math
 CUP_RADIUS_MM = 50.0              # 5 cm around each cup base (neighbour count)
 
 LEFT_DOWN_RZ = 180.0              # rz of LEFT_DOWN in capture_and_detect.py: jaws along robot X
-MAX_MARGIN_MM = 70.0              # full opening = diameter + this (GRIP_MARGIN in capture_and_detect.py)
+MAX_MARGIN_MM = 40.0              # full opening = diameter + this (= GRIP_MARGIN in cup_inventory.py)
 MIN_MARGIN_MM = 10.0              # smallest opening tried in a tight spot
 MARGIN_STEP_MM = 5.0
 JAW_RADIUS_MM = 10.0              # a jaw seen from above, as a circle (finger about 20 mm wide) - MEASURE
@@ -172,6 +173,22 @@ def _preferred(cup):
     if cup.get("has_handle") and cup.get("rz") is not None:
         return cup["rz"] - LEFT_DOWN_RZ
     return None
+
+
+def set_web_grips(cups, walls=()):
+    """Web app (cup_inventory.build_inventory): gripper rotation and opening for every cup.
+
+    Turns the jaws away from the neighbours (the handle angle is kept when it is safe) and
+    opens them to diameter + margin (smaller in a tight spot). Sets cup["rz"],
+    cup["aperture"] (None stays None = fully open), cup["grip_clearance"], cup["grip_safe"]."""
+    on_table = [cup for cup in cups if _on_table(cup)]
+    for cup in on_table:
+        grip = grip_angle(cup, on_table, walls, _preferred(cup))
+        cup["rz"] = grip["rz"]
+        if cup.get("diameter"):
+            cup["aperture"] = round(cup["diameter"] + grip["margin"], 1)
+        cup["grip_clearance"] = grip["clearance"]
+        cup["grip_safe"] = grip["safe"]
 
 
 # ==== both ====

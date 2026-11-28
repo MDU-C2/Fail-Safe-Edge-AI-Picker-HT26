@@ -156,12 +156,12 @@ class CameraZPlanTests(unittest.TestCase):
                 with self.subTest(left_only=left_only, value=value), self.assertRaises(SelectionError):
                     self.plan(left_only=left_only, cup=dict(self.cup, z=value), camera_z=True)
 
-    def test_grip_margin_is_70_mm_without_changing_measured_diameter(self):
+    def test_grip_margin_is_40_mm_without_changing_measured_diameter(self):
         cup = scene(80, diameter=50)["cups"][0]
         self.assertEqual(cup["diameter"], 50)
-        self.assertEqual(cup["aperture"], 120)
+        self.assertEqual(cup["aperture"], 90)
         result = bodies(self.plan(cup=cup, camera_z=True))
-        self.assertEqual(result["left_open"]["position"], 22.5)
+        self.assertEqual(result["left_open"]["position"], 7.5)
 
 
 class CameraZSessionTests(unittest.TestCase):

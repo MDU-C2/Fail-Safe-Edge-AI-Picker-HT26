@@ -118,14 +118,14 @@ class CupSelectionTests(unittest.TestCase):
         session.scan()
         jobs = self.select(session, action="goto")
         bodies = {job["name"]: job["body"] for job in jobs}
-        self.assertEqual(bodies["left_open"]["position"], 22.5)
+        self.assertEqual(bodies["left_open"]["position"], 7.5)
         pick_points = bodies["approach_cup"]["points"][1:] + bodies["left_handover"]["points"][:1]
         self.assertEqual([point["rz"] for point in pick_points], [90, 90, 90])
         self.assertEqual(bodies["left_handover"]["points"][-1]["rz"], 180)
         self.assertEqual(capture.call_count, 1)
         self.assertEqual(robot.jobs, jobs)
         geometry = original["cups"][0]["last_verification"]["grip_geometry"]
-        self.assertEqual(geometry, {"diameter": 50, "aperture": 120, "rz": 90,
+        self.assertEqual(geometry, {"diameter": 50, "aperture": 90, "rz": 90,
                                     "has_handle": True, "pick_tcp_z_mm": 70})
 
     def test_later_camera_geometry_is_not_requested_or_substituted(self):
